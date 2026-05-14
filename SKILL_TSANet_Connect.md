@@ -1,0 +1,649 @@
+---
+name: tsanet-connect
+description: Expert implementation guide for TSANet Connect integrations with Zendesk. Covers the ZAF sidebar app, ZIS bearer token infrastructure, GitHub Actions automation, Zendesk custom fields, and all known API quirks and gotchas discovered through production implementation.
+trigger: Use when the user is implementing TSANet Connect with Zendesk, building a ZAF (Zendesk Apps Framework) sidebar app for TSANet, setting up ZIS (Zendesk Integration Services) for TSANet, working with the TSANet REST API, configuring GitHub Actions for TSANet token refresh or SLA monitoring, creating Zendesk custom fields for TSANet data, debugging TSANet collaboration case flows, or asks about TSANet Connect, TSANet API, ZAF app, ZIS bearer token, SLA breach detection, or collaboration case lifecycle. Also trigger on "tsanet", "collaboration case", "TSANet token", "respondBy", "ZIS bearer", or "ZAF sidebar" in any implementation context.
+---
+
+# TSANet Connect — Zendesk Integration Expert
+
+You are a specialized implementation assistant for TSANet Connect + Zendesk integrations. You have deep knowledge of the TSANet REST API, Zendesk Apps Framework (ZAF), Zendesk Integration Services (ZIS), and all the undocumented quirks, API restrictions, and architectural constraints discovered through a complete production implementation.
+
+When a member asks for implementation help, always:
+1. Identify which integration layer they need (ZAF app, ZIS, GitHub Actions, or custom REST)
+2. Surface relevant API gotchas before they hit them
+3. Recommend the proven patterns from production — don't invent new approaches for solved problems
+
+---
+
+## Architecture Overview
+
+A complete TSANet Connect + Zendesk integration has three layers:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  LAYER 1: ZAF Sidebar App (agents use this)             │
+│  • sidebar panel on every Zendesk ticket                │
+│  • reads/writes TSANet API via ZAF proxy                │
+│  • background page polls for inbound cases every 5 min  │
+│  • mirrors TSANet notes → Zendesk internal comments     │
+└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  LAYER 2: ZIS Bearer Token (infrastructure)             │
+│  • stores live TSANet JWT inside Zendesk's ZIS layer    │
+│  • enables ZIS flows to call TSANet API without auth    │
+│  • must be refreshed before JWT expires (~60 min)       │
+└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  LAYER 3: GitHub Actions (server-side automation)       │
+│  • refresh-token job: keeps ZIS bearer connection live  │
+│  • sla-monitor job: tags Zendesk tickets on SLA breach  │
+│  • runs at :00 and :50 every hour, no browser required  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**What ZIS flows are NOT used for:**
+ZIS scheduled polling (`flow_poll_tsanet`) is architecturally broken — ZIS flows cannot call ZIS management endpoints (circular OAuth scope), and ZIS cannot receive TSANet push notifications (TSANet sends no `Authorization` header on webhooks). GitHub Actions is the only viable server-side scheduler. Do not attempt to build ZIS-based polling or ZIS-based token refresh flows.
+
+---
+
+## TSANet REST API
+
+### Environments
+| Environment | Base URL |
+|---|---|
+| Beta | `https://connect2.tsanet.net/v1` |
+| Production | `https://connect2.tsanet.org/v1` |
+
+### Authentication
+JWT Bearer. Always call `POST /v1/login` first. Token expires in ~60 minutes.
+
+```javascript
+// Login
+POST /v1/login
+{ "username": "api@yourcompany.com", "password": "yourpassword" }
+→ { "accessToken": "eyJ...", "tokenType": "Bearer", "expiresIn": 3600 }
+
+// All subsequent calls
+Authorization: Bearer <accessToken>
+```
+
+> **Verify identity after login:** always call `GET /v1/me` during development to confirm credentials and capture `companyId`. The `company.domain` field is important — see Accept bug below.
+
+### Key Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/login` | Authenticate, get JWT |
+| `GET` | `/v1/me` | Verify identity, get companyId/domain |
+| `GET` | `/v1/partners/{searchTerm}` | Find partner companyId/departmentId |
+| `GET` | `/v1/forms/department/{departmentId}` | Get form template + required `documentId` |
+| `GET` | `/v1/forms/company/{companyId}` | Same, by company |
+| `POST` | `/v1/collaboration-requests` | Submit new outbound case |
+| `GET` | `/v1/collaboration-requests` | List cases (filter by type, status, updatedAfter) |
+| `GET` | `/v1/collaboration-requests/{token}` | Full case details including notes |
+| `POST` | `/v1/collaboration-requests/{token}/approval` | Accept an inbound case |
+| `POST` | `/v1/collaboration-requests/{token}/information-request` | Request more info |
+| `POST` | `/v1/collaboration-requests/{token}/information-response` | Respond to info request |
+| `POST` | `/v1/collaboration-requests/{token}/rejection` | Reject an inbound case |
+| `POST` | `/v1/collaboration-requests/{token}/closure` | Close the case |
+| `POST` | `/v1/collaboration-requests/{token}/notes` | Post a note |
+| `GET` | `/v1/collaboration-requests/{token}/notes` | Get all notes |
+
+### Case Lifecycle
+```
+OPEN → INFORMATION → ACCEPTED → CLOSED
+                         ↓
+                      REJECTED
+```
+- `responded: false` = OPEN (SLA clock running)
+- `responded: true` = case has been Accepted/Rejected/Info Requested (SLA stopped)
+- Only the **submitting company** can call `/closure` — attempting it as the receiver returns an error
+
+### Case Statuses and the `responded` Flag
+**Critical:** The TSANet SLA tracks only the **initial acknowledgment** deadline (`respondBy`). Once `responded === true`, TSANet stops tracking SLA. Never show SLA countdowns or run breach detection on cases where `responded === true`. Gate all SLA logic on `responded === false`.
+
+### Polling for Inbound Cases
+```javascript
+// Incremental poll — store updatedAt of last synced record
+GET /v1/collaboration-requests?type=INBOUND&updatedAfter=2026-01-01T00:00:00Z
+```
+
+### Notes API — Critical Behavior
+- `summary` is **required**, max 500 chars
+- `description` is optional, max 5,000 chars
+- **IMPORTANT:** The TSANet web UI always renders both `summary` AND `description` as separate labeled sections. If you POST `{ summary: "text", description: "text" }` with identical values, the web UI shows it twice — it looks like duplication but it's intentional rendering.
+- **Correct pattern for Add Note UI:** present two separate fields — Subject (→ `summary`) and Details (→ `description`, only included if the user fills it in). Never auto-copy `summary` into `description`.
+
+```javascript
+// Correct Add Note POST body
+var body = { summary: subject };
+if (details && details.trim()) body.description = details;
+POST /v1/collaboration-requests/{token}/notes
+```
+
+### Notes: HTML in Responses
+TSANet returns note content as HTML (e.g. `<p>text</p>`, `<br/>` tags). Strip HTML before displaying:
+```javascript
+function stripHtml(html) {
+  if (!html) return '';
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
+    .trim();
+}
+```
+
+### Accept Endpoint — Hidden Required Field
+The `POST /v1/collaboration-requests/{token}/approval` endpoint has an **undocumented required field**: `engineerEmail`. Omitting it returns "Error processing request" with no helpful message.
+
+Additionally, `engineerEmail` **must be from your company's TSANet-registered domain**. You cannot use a Zendesk agent's personal email — it will fail domain validation. Use your TSANet API username (the dedicated API user email) as the value.
+
+```javascript
+POST /v1/collaboration-requests/{token}/approval
+{
+  "caseNumber": "your-internal-case-number",
+  "engineerName": "Support Team",
+  "engineerPhone": "+1-800-555-0100",
+  "engineerEmail": settings.tsanet_username,  // ← must be TSANet-registered domain
+  "nextSteps": "We are investigating. Will update shortly."
+}
+```
+
+---
+
+## ZAF App Architecture
+
+### What ZAF Is
+ZAF (Zendesk Apps Framework) apps run inside cross-origin sandboxed iframes inside Zendesk. This has critical implications:
+
+- **`prompt()` and `confirm()` are silently blocked** in cross-origin iframes. All modals must be custom inline HTML — never use native browser dialogs.
+- **All API calls must go through `client.request()`** — the ZAF proxy. Direct `fetch()` or `XMLHttpRequest()` to external domains will be CORS-blocked unless those domains are in `manifest.json` → `domainWhitelist`.
+- **No `localStorage`, no `sessionStorage`** — state lives in memory or Zendesk ticket fields.
+
+### Manifest Structure
+```json
+{
+  "name": "Your App Name",
+  "id": "your_app_id",
+  "version": "1.0.0",
+  "frameworkVersion": "2.0",
+  "icon": "assets/logo.png",
+  "defaultLocale": "en",
+  "private": true,
+  "location": {
+    "support": {
+      "ticket_sidebar": {
+        "url": "assets/index.html",
+        "flexible_height": true
+      },
+      "background": "assets/background.html"
+    }
+  },
+  "domainWhitelist": [
+    "connect2.tsanet.net",
+    "connect2.tsanet.org"
+  ],
+  "parameters": [
+    { "name": "tsanet_username", "type": "text", "required": true },
+    { "name": "tsanet_password", "type": "text", "required": true },
+    { "name": "tsanet_env",      "type": "text", "required": true, "default": "BETA" },
+    { "name": "field_id_token",  "type": "text", "required": true }
+  ]
+}
+```
+
+**Required files in the ZIP:**
+- `manifest.json`
+- `assets/index.html`
+- `assets/main.js`
+- `assets/background.html` (if using background page)
+- `assets/logo.png` (128×128 px transparent PNG — required for app tray icon)
+- `translations/en.json` ← **Zendesk rejects the upload without this** even if you have no i18n strings
+
+Minimum `translations/en.json`:
+```json
+{
+  "app": {
+    "name": "Your App Name",
+    "description": "Short description",
+    "short_description": "Short description"
+  }
+}
+```
+
+### ZAF API Calls (Proxy Pattern)
+```javascript
+// All API calls go through client.request()
+// Zendesk proxies them to external domains in domainWhitelist
+function tsanetRequest(method, path, body) {
+  return getSettings().then(function(settings) {
+    return getToken(settings).then(function(jwt) {
+      var baseUrl = settings.tsanet_env === 'PRODUCTION'
+        ? 'https://connect2.tsanet.org/v1'
+        : 'https://connect2.tsanet.net/v1';
+      var opts = {
+        url: baseUrl + path,
+        type: method,
+        headers: { 'Authorization': 'Bearer ' + jwt },
+        contentType: 'application/json'
+      };
+      if (body) opts.data = JSON.stringify(body);
+      return client.request(opts);
+    });
+  });
+}
+```
+
+### Reading Ticket Fields
+```javascript
+// Reading a custom ticket field value
+client.get('ticket.customField:custom_field_' + fieldId)
+  .then(function(data) {
+    var value = data['ticket.customField:custom_field_' + fieldId];
+  });
+```
+
+### Writing Ticket Fields
+```javascript
+// Writing a custom ticket field value
+client.set('ticket.customField:custom_field_' + fieldId, value);
+```
+
+Note: `client.set()` queues a change in the ZAF form state. It does NOT call the Zendesk API directly. The change is saved when the agent saves the ticket. For guaranteed writes (e.g. writing `respondBy` without agent action), use `client.request()` to call `PUT /api/v2/tickets/{id}.json` directly:
+```javascript
+client.request({
+  url: '/api/v2/tickets/' + ticketId + '.json',
+  type: 'PUT',
+  contentType: 'application/json',
+  data: JSON.stringify({
+    ticket: {
+      custom_fields: [{ id: fieldIdRespondBy, value: respondBy.substring(0, 10) }]
+    }
+  })
+});
+```
+
+> **Date field format:** Zendesk date fields require `YYYY-MM-DD`. ISO datetimes like `2026-05-08T14:00:00Z` are silently rejected. Always truncate with `.substring(0, 10)`.
+
+### Custom Modal Pattern (Required — No prompt()/confirm())
+```html
+<!-- In index.html -->
+<div id="tsanet-modal" style="display:none; background:#fff; border:1px solid #d8dcde; border-radius:4px; padding:12px; margin:8px 0;">
+  <div id="modal-msg" style="font-size:12px; margin-bottom:8px;"></div>
+  <div id="modal-input1-wrap">
+    <div id="modal-input1-label" class="modal-field-label"></div>
+    <textarea id="modal-input" rows="2" style="width:100%; box-sizing:border-box;"></textarea>
+  </div>
+  <div id="modal-input2-wrap" style="display:none;">
+    <div id="modal-input2-label" class="modal-field-label"></div>
+    <textarea id="modal-input2" rows="4" style="width:100%; box-sizing:border-box;"></textarea>
+  </div>
+  <div style="text-align:right; margin-top:8px;">
+    <button id="modal-cancel">Cancel</button>
+    <button id="modal-ok">OK</button>
+  </div>
+</div>
+```
+
+```javascript
+var _modalCb = null;
+
+// Single-input prompt
+function showPrompt(msg, callback) {
+  _modalCb = callback;
+  document.getElementById('modal-msg').textContent = msg;
+  document.getElementById('modal-input2-wrap').style.display = 'none';
+  document.getElementById('modal-input').value = '';
+  document.getElementById('tsanet-modal').style.display = 'block';
+}
+
+// Two-input prompt (e.g. Add Note: Subject + Details)
+function showPrompt2(msg, label1, label2, callback) {
+  _modalCb = callback;
+  document.getElementById('modal-msg').textContent = msg;
+  document.getElementById('modal-input1-label').textContent = label1;
+  document.getElementById('modal-input').value = '';
+  document.getElementById('modal-input2-label').textContent = label2;
+  document.getElementById('modal-input2-wrap').style.display = 'block';
+  document.getElementById('modal-input2').value = '';
+  document.getElementById('tsanet-modal').style.display = 'block';
+}
+
+// Confirm dialog
+function showConfirm(msg, callback) {
+  _modalCb = function(val) { callback(val !== null); };
+  document.getElementById('modal-msg').textContent = msg;
+  document.getElementById('modal-input2-wrap').style.display = 'none';
+  document.getElementById('modal-input').style.display = 'none';
+  document.getElementById('tsanet-modal').style.display = 'block';
+}
+
+// OK handler — must handle both 1-field and 2-field cases
+document.getElementById('modal-ok').addEventListener('click', function() {
+  var input1 = document.getElementById('modal-input').value.trim();
+  var input2wrap = document.getElementById('modal-input2-wrap');
+  var input2 = input2wrap.style.display !== 'none'
+    ? document.getElementById('modal-input2').value.trim()
+    : null;
+  document.getElementById('tsanet-modal').style.display = 'none';
+  if (_modalCb) _modalCb(input1, input2);
+});
+
+document.getElementById('modal-cancel').addEventListener('click', function() {
+  document.getElementById('tsanet-modal').style.display = 'none';
+  if (_modalCb) _modalCb(null);
+});
+```
+
+### Adaptive Height (Compact Mode for Non-TSANet Tickets)
+ZAF apps load at their full configured height on every ticket. To avoid a 500px+ sidebar panel appearing on every regular support ticket:
+
+```javascript
+// On ticket load:
+// 1. Check if ticket has a TSANet token field value
+// 2. If no token → collapse to compact mode (44px bar)
+// 3. If token found → expand to full height
+
+var FULL_HEIGHT = 500;   // px
+var COMPACT_HEIGHT = 44; // px
+
+function checkToken() {
+  client.get('ticket.customField:custom_field_' + fieldIdToken)
+    .then(function(data) {
+      var token = data['ticket.customField:custom_field_' + fieldIdToken];
+      if (token) {
+        client.invoke('resize', { width: '100%', height: FULL_HEIGHT + 'px' });
+        showFullPanel(token);
+      } else {
+        client.invoke('resize', { width: '100%', height: COMPACT_HEIGHT + 'px' });
+        showCompactBar(); // show "+ New" button only
+      }
+    });
+}
+```
+
+### Background Page (Inbound Polling + SLA Monitoring)
+The `background.html` page runs continuously while any Zendesk tab is open. Use it for polling — it survives ticket navigation.
+
+```javascript
+// background.html — polling loop
+var POLL_INTERVAL = 5 * 60 * 1000; // 5 minutes
+
+function pollLoop() {
+  checkInboundCases();
+  checkSlaBreaches();
+  setTimeout(pollLoop, POLL_INTERVAL);
+}
+
+ZAFClient.init(function(client) {
+  pollLoop();
+});
+```
+
+### Syncing TSANet Notes → Zendesk Ticket Thread
+Agents should be able to see partner notes in the Zendesk ticket thread without opening the ZAF sidebar. Implement note mirroring using `tsanet-note-id:{id}` markers for deduplication:
+
+```javascript
+function syncNotesToZendesk(notes, ticketId) {
+  if (!notes || !notes.length) return;
+  // Fetch existing comments to check what's already been synced
+  client.request({
+    url: '/api/v2/tickets/' + ticketId + '/comments.json?per_page=100',
+    type: 'GET'
+  }).then(function(data) {
+    var existingBodies = (data.comments || []).map(function(c) {
+      return c.plain_body || '';
+    });
+    // Filter to only notes not yet synced
+    var unsyncedNotes = notes.filter(function(note) {
+      var marker = 'tsanet-note-id:' + note.id;
+      return !existingBodies.some(function(b) { return b.indexOf(marker) !== -1; });
+    });
+    // Post each missing note sequentially (chained promises — avoids race conditions)
+    unsyncedNotes.reduce(function(chain, note) {
+      return chain.then(function() {
+        var d = new Date(note.createdAt);
+        var dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+        var summary = stripHtml(note.summary || '');
+        var description = note.description ? stripHtml(note.description) : '';
+        var body = '[TSANet Note] ' + (note.companyName || 'Partner') + ' — ' + dateStr
+          + '\n\n' + summary;
+        if (description && description !== summary) body += '\n\n' + description;
+        body += '\n\ntsanet-note-id:' + note.id; // dedup marker — never remove this
+        return client.request({
+          url: '/api/v2/tickets/' + ticketId + '.json',
+          type: 'PUT',
+          contentType: 'application/json',
+          data: JSON.stringify({ ticket: { comment: { body: body, public: false } } })
+        }).catch(function(e) {
+          console.warn('[TSANet] Note sync failed for note', note.id, e.message);
+          // best-effort — silently continue
+        });
+      });
+    }, Promise.resolve());
+  }).catch(function() {});
+}
+```
+
+Call `syncNotesToZendesk(notes, ticketId)` every time you load the notes list for a ticket.
+
+### SLA Countdown Display
+```javascript
+function slaDisplay(respondBy) {
+  // Only show on OPEN cases (responded === false)
+  var now = Date.now();
+  var deadline = new Date(respondBy).getTime();
+  var remaining = deadline - now;
+  if (remaining <= 0) return '<span style="color:#c00; font-weight:bold;">⚠ BREACHED</span>';
+  var hours = Math.floor(remaining / 3600000);
+  var mins  = Math.floor((remaining % 3600000) / 60000);
+  var color = remaining > 3600000 ? '#2b7' : remaining > 1800000 ? '#f90' : '#c00';
+  return '<span style="color:' + color + '; font-weight:bold;">'
+    + (hours ? hours + 'h ' : '') + mins + 'm remaining</span>';
+}
+```
+
+### Deploying a ZAF App
+The Zendesk apps API (`PUT /api/v2/apps/{id}.json`) is broken — it returns a Ruby "no implicit conversion of nil into String" error. **Always deliver a ZIP and have the user upload manually:**
+
+1. Admin Center → Apps and Integrations → Zendesk Support Apps
+2. Click the app → **Update** → upload ZIP
+3. Settings (credentials, field IDs) are preserved across updates
+
+**Build the ZIP:**
+```bash
+cd /path/to/your/app
+zip -r your-app-v1.0.0.zip manifest.json assets/ translations/ -x "*.DS_Store"
+```
+
+---
+
+## ZIS Bearer Token Setup
+
+ZIS needs to store the live TSANet JWT so that ZIS flows can call the TSANet API. This requires three one-time setup steps:
+
+### Step 1 — Create a ZIS Integration (once per Zendesk subdomain)
+```bash
+curl -X POST \
+  "https://SUBDOMAIN.zendesk.com/api/services/zis/integrations" \
+  -u "EMAIL/token:API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"integration":{"name":"tsanet_connect","description":"TSANet Connect"}}'
+```
+409 Conflict = already exists, proceed.
+
+### Step 2 — Create a ZIS OAuth Client (in Admin Center)
+Admin Center → Apps and integrations → APIs → OAuth clients → Add OAuth client.
+- Name: `tsanet_zis_client`
+- Copy the Client ID — needed for token refresh job
+
+### Step 3 — Install GitHub Actions Workflow
+See GitHub Actions section below.
+
+### Verifying the ZIS Connection
+ZIS custom integrations **do not appear in Admin Center UI**. Verify via API:
+```bash
+curl -s -u "EMAIL/token:API_TOKEN" \
+  "https://SUBDOMAIN.zendesk.com/api/services/zis/integrations/tsanet_connect/connections"
+```
+Note: ZIS management endpoints (`/api/services/zis/`) **always return 404 with a standard API token**. They require a ZIS OAuth token (obtained via the OAuth2 flow with your ZIS OAuth client). This is by design — it's not an error.
+
+---
+
+## GitHub Actions — TSANet Maintenance Workflow
+
+Two jobs in one workflow file. Run at :00 and :50 every hour.
+
+### Required Repository Secrets
+| Secret | Value |
+|---|---|
+| `TSANET_USERNAME` | TSANet API user email |
+| `TSANET_PASSWORD` | TSANet API user password |
+| `ZENDESK_SUBDOMAIN` | e.g. `yourcompany` (no `.zendesk.com`) |
+| `ZENDESK_EMAIL` | Zendesk admin email for API auth |
+| `ZENDESK_API_TOKEN` | Zendesk API token |
+| `ZIS_CLIENT_ID` | ZIS OAuth client ID from Admin Center |
+| `ZENDESK_FIELD_ID_TOKEN` | Field ID of the TSANet Token custom field |
+
+### Job 1: refresh-token
+1. `POST /v1/login` → get fresh TSANet JWT
+2. `POST /oauth/tokens` (Zendesk) → get ZIS OAuth token using ZIS Client ID
+3. `DELETE` old ZIS bearer connection `tsanet_api` (204 or 404 = both OK)
+4. `POST` new ZIS bearer connection with fresh JWT
+
+### Job 2: sla-monitor
+1. `POST /v1/login` → get fresh TSANet JWT
+2. `GET /v1/collaboration-requests?status=OPEN` → find all open cases
+3. For each case where `respondBy` is in the past:
+   - Search Zendesk for ticket by TSANet token field value
+   - Check if ticket already has `tsanet_sla_breached` tag (skip if so — prevents duplicate triggers)
+   - `POST /api/v2/tickets/{id}/tags.json` with `{"tags":["tsanet_sla_breached"]}`
+   - Zendesk trigger fires → emails ticket assignee
+
+> **Tag POST is additive** — `POST /api/v2/tickets/{id}/tags.json` preserves existing tags. It doesn't replace them. This is what you want.
+
+### Push scope issue
+If `git push` with the workflow file is rejected:
+```bash
+gh auth refresh -s workflow
+```
+
+---
+
+## Zendesk Custom Fields
+
+Create these in Admin Center → Objects and rules → Tickets → Fields:
+
+| Field Label | Type | Notes |
+|---|---|---|
+| TSANet Token | Text | Primary key — single token per ticket |
+| TSANet Tokens Multi | Text | Optional — multi-token reference store |
+| TSANet Status | Dropdown | Values: `tsanet_status_open`, `tsanet_status_accepted`, `tsanet_status_information`, `tsanet_status_rejected`, `tsanet_status_closed` |
+| TSANet Partner | Text | Stores partner company name |
+| TSANet Respond By | **Date** | YYYY-MM-DD format only |
+
+After creating each field, note the **Field ID** from the URL (e.g. `48849323029652`). These are passed as ZAF app settings.
+
+### Zendesk Views
+Create a view for agents to monitor active TSANet cases without opening individual tickets.
+
+**View conditions:**
+- TSANet Status | is not | Closed
+- TSANet Status | is not | (empty)
+
+**Column limitation:** The Zendesk Views API (`PUT /api/v2/views/{id}.json`) silently ignores custom field columns in `execution.columns`. Custom field columns **must be added manually** in Admin Center → Workspaces → Views after the view is created.
+
+### SLA Breach Trigger
+Create in Admin Center → Objects and rules → Business rules → Triggers:
+
+- **Name:** `TSANet SLA Breach — Notify Assignee`
+- **Conditions:** `Current tags` | `includes` | `tsanet_sla_breached` AND `Update type` | `is` | `Changed`
+- **Action:** Notify user → (Assignee)
+
+> Use `current_tags` (not `tags`) in trigger conditions — wrong field name causes silent failure.
+
+---
+
+## Known Bugs and Proven Fixes
+
+| Symptom | Root Cause | Fix |
+|---|---|---|
+| Action buttons 2–4 do nothing silently | `prompt()`/`confirm()` blocked in cross-origin iframes | Replace with custom inline modal HTML |
+| Accept returns "Error processing request" | `engineerEmail` required but undocumented | Include `engineerEmail` in approval POST body |
+| Accept fails with domain validation error | Agent's Zendesk email ≠ TSANet company domain | Use `settings.tsanet_username` as `engineerEmail` |
+| Notes show raw HTML tags | TSANet returns HTML-formatted note content | Add `stripHtml()` helper; apply before display |
+| Add Note causes duplication in TSANet web app | TSANet renders both `summary` and `description` as separate labeled sections | Use two-field modal (Subject/Details); only send `description` if user fills it |
+| Close button fails on inbound cases | TSANet only allows the submitting company to close | Show Close button only for outbound (`direction === 'OUTBOUND'`) cases |
+| Respond By field not updating in Zendesk | Zendesk Date fields silently reject ISO datetimes | Truncate TSANet `respondBy` to `YYYY-MM-DD` with `.substring(0, 10)` |
+| SLA shown on ACCEPTED cases | TSANet SLA is acknowledgment-only | Gate all SLA display and breach detection on `responded === false` |
+| ZIS polling automation triggers "no requestToken" | ZIS flow requires `requestToken` but automation payload has none | ZIS polling is not viable; retire `flow_poll_tsanet`, use ZAF poller + GitHub Actions |
+| ZIS Admin Center shows no `tsanet_connect` integration | ZIS custom integrations are API-only; don't appear in Admin Center UI | Verify via `GET /api/services/zis/integrations/tsanet_connect/connections` API call |
+| App upload fails with "Missing translation file for locale 'en'" | `translations/en.json` absent from ZIP | Add `translations/en.json` with minimum app name/description JSON |
+| App icon missing from Zendesk apps tray | No `icon` field in manifest + no logo file | Add `"icon": "assets/logo.png"` to manifest; include 128×128 transparent PNG |
+| App loads at full height on every ticket | No height check on load | Implement adaptive height: check token field on load; collapse to 44px if empty |
+| `pillow`/PIL import errors on macOS Python 3.14+ | Homebrew pip3 installs to Python 3.9 site-packages | Use Node `sharp` for image generation instead |
+
+---
+
+## Zendesk API Gotchas
+
+- **Trigger field names:** use `current_tags` (not `tags`) for tag conditions; `assignee_id` (not `assignee`) for recipient. Wrong values return "Invalid rule target."
+- **Tag POST is additive:** `POST /api/v2/tickets/{id}/tags.json` adds to existing tags. Use this — don't PUT (which replaces).
+- **Ticket comments via PUT:** to post an internal comment programmatically: `PUT /api/v2/tickets/{id}.json` with `ticket.comment.public: false`. Do not use the Comments endpoint — it doesn't support the internal flag the same way.
+- **Views API custom columns:** silently ignored for custom fields. Manual configuration required.
+- **ZIS management endpoints:** always return 404 with standard API tokens. Require ZIS OAuth scope. This is expected behavior, not a bug.
+
+---
+
+## TSANet API Gotchas
+
+- **`documentId` is required on case submission** — get it fresh from the form endpoint every time. Do not cache long-term; vendors update their forms.
+- **Partner search returns an array** — a company with multiple departments returns multiple results. Use `departmentId` for precise routing when available.
+- **Test submissions:** set `testSubmission: true` on POST to submit without creating real SLA timers or notifications.
+- **`token` is the primary key** — save it immediately on case creation. The numeric `id` field exists but `token` is used in all API paths.
+- **Incremental poll pattern:** store `updatedAt` of the last synced record; pass as `updatedAfter` on next poll. This matches the Salesforce connector's 15-minute sync pattern.
+
+---
+
+## Quick Implementation Checklist
+
+**For a new member implementing ZAF + ZIS:**
+
+- [ ] Get TSANet API credentials from membership@tsanet.org
+- [ ] Create 5 Zendesk custom fields (Token, Tokens Multi, Status, Partner, Respond By)
+- [ ] Note all Field IDs
+- [ ] Create ZIS OAuth client in Admin Center
+- [ ] Create `tsanet_connect` ZIS integration via API
+- [ ] Build ZAF app (use custom modal — no `prompt()`/`confirm()`)
+- [ ] Test Accept with `engineerEmail` = `tsanet_username`
+- [ ] Verify note add uses Subject+Details two-field pattern
+- [ ] Implement note mirroring (`syncNotesToZendesk`) with `tsanet-note-id:` dedup marker
+- [ ] Add `translations/en.json` to ZIP (Zendesk rejects without it)
+- [ ] Add 128×128 `logo.png` + `"icon"` to manifest
+- [ ] Implement adaptive height (collapse on non-TSANet tickets)
+- [ ] Deploy via Admin Center manual upload (API upload is broken)
+- [ ] Push GitHub Actions `tsanet-maintenance.yml` (with `workflow` scope)
+- [ ] Set all 7 GitHub Actions secrets
+- [ ] Create `TSANet SLA Breach — Notify Assignee` Zendesk trigger
+- [ ] Create TSANet Active Collaborations view; add custom field columns manually
+
+---
+
+## Reference: CollaborationRequestDTO Fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `token` | string | **Primary key — save this immediately** |
+| `id` | int64 | Internal numeric ID |
+| `status` | enum | OPEN, INFORMATION, ACCEPTED, REJECTED, CLOSED |
+| `direction` | enum | OUTBOUND (you submitted), INBOUND (you received) |
+| `priority` | enum | LOW, MEDIUM, HIGH |
+| `respondBy` | datetime | SLA deadline — truncate to YYYY-MM-DD for Zendesk date fields |
+| `responded` | bool | `false` = SLA clock running; `true` = acknowledged |
+| `submitterCaseNumber` | string | Your case number (set on submission) |
+| `receiverCaseNumber` | string | Partner's case number (set on their acceptance) |
+| `caseNotes` | array | All CaseNoteDTO records — HTML content, strip before display |
+| `caseResponses` | array | Approval, rejection, info request records |
