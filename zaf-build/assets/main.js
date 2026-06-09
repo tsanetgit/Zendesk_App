@@ -1,5 +1,5 @@
 /**
- * TSANet Connect ZAF App — v1.0.25
+ * TSANet Connect ZAF App — v1.0.30
  * client.metadata() with .then() chains after app.registered
  * Includes: New Collaboration, Sync Inbound Cases, action buttons
  */
