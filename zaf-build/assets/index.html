@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TSANet Connect</title>
+
+  <!-- ZAF SDK from Zendesk CDN -->
+  <script src="https://static.zdassets.com/zendesk_app_framework_sdk/2.0/zaf_sdk.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; color: #1f2d3d; background: #f8f9fa; padding: 8px; }
+    #loading { display: flex; align-items: center; justify-content: center; padding: 24px; color: #68737d; }
+    #error-banner { display: none; background: #fff0f0; border-left: 4px solid #cc3340; padding: 10px 12px; margin-bottom: 8px; border-radius: 0 4px 4px 0; font-size: 12px; color: #cc3340; }
+    #info-banner { display: none; background: #fff8ec; border-left: 4px solid #c97c0a; padding: 10px 12px; margin-bottom: 8px; border-radius: 0 4px 4px 0; }
+    #info-banner .info-title { font-weight: 700; color: #c97c0a; font-size: 12px; margin-bottom: 4px; }
+    #info-banner .info-msg { font-size: 12px; color: #1f2d3d; margin-bottom: 8px; }
+    #info-banner .btn-respond { background: #c97c0a; color: #fff; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; }
+    #btn-new-collab { display: none; width: 100%; background: #1f73b7; color: #fff; border: none; padding: 8px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+    #btn-new-collab:hover { background: #144f82; }
+    #btn-sync-inbound { display: none; width: 100%; background: #fff; color: #1f73b7; border: 1px solid #1f73b7; padding: 6px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+    #btn-sync-inbound:hover { background: #e9f0f8; }
+    #btn-sync-inbound:disabled { opacity: 0.5; cursor: not-allowed; }
+    #tsanet-notice { display: none; gap: 6px; align-items: flex-start; background: #fff8ec; border-left: 3px solid #c97c0a; padding: 7px 9px; border-radius: 0 4px 4px 0; font-size: 11px; color: #6b4c00; margin-bottom: 8px; line-height: 1.4; }
+    #tsanet-notice span:first-child { flex-shrink: 0; }
+    #compact-bar { display: none; background: #fff; border: 1px solid #d8dcde; border-radius: 4px; padding: 10px 12px; }
+    #compact-bar .compact-inner { display: flex; align-items: center; justify-content: space-between; }
+    #compact-bar .compact-label { font-size: 12px; color: #68737d; }
+    #compact-bar .compact-btn { background: #1f73b7; color: #fff; border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    #compact-bar .compact-btn:hover { background: #144f82; }
+    .collab-card { background: #fff; border: 1px solid #d8dcde; border-radius: 4px; margin-bottom: 8px; }
+    .card-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: #f3f4f5; border-bottom: 1px solid #d8dcde; }
+    .card-partner { font-weight: 700; font-size: 13px; }
+    .status-badge { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 10px; text-transform: uppercase; }
+    .status-OPEN { background: #e9f8f8; color: #0e7c7b; }
+    .status-ACCEPTED { background: #edf7ed; color: #1a7a3a; }
+    .status-INFORMATION { background: #fff8ec; color: #c97c0a; }
+    .status-CLOSED { background: #f3f4f5; color: #68737d; }
+    .status-REJECTED { background: #fff0f0; color: #cc3340; }
+    .card-body { padding: 10px; }
+    .card-row { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 12px; }
+    .card-label { color: #68737d; }
+    .card-value { font-weight: 600; text-align: right; }
+    .sla-green { color: #1a7a3a; } .sla-amber { color: #c97c0a; } .sla-red { color: #cc3340; font-weight: 700; } .sla-breach { color: #cc3340; font-weight: 700; }
+    .card-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; padding: 8px 10px; border-top: 1px solid #f3f4f5; }
+    .btn-action { background: #fff; border: 1px solid #d8dcde; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; color: #1f2d3d; text-align: center; }
+    .btn-action:hover { background: #f3f4f5; }
+    .btn-action.primary { background: #1f73b7; color: #fff; border-color: #1f73b7; }
+    .btn-action.danger { color: #cc3340; border-color: #cc3340; }
+    #new-collab-dialog { display: none; background: #fff; border: 1px solid #d8dcde; border-radius: 4px; padding: 12px; margin-bottom: 8px; }
+    #new-collab-dialog h4 { font-size: 13px; margin-bottom: 8px; }
+    #partner-search-input { width: 100%; padding: 6px 8px; border: 1px solid #d8dcde; border-radius: 4px; font-size: 13px; margin-bottom: 6px; }
+    #partner-results { max-height: 150px; overflow-y: auto; margin-bottom: 8px; }
+    .partner-result { padding: 6px 8px; cursor: pointer; border-radius: 4px; font-size: 12px; }
+    .partner-result:hover { background: #f3f4f5; }
+    .partner-result.selected { background: #e9f0f8; font-weight: 600; }
+    #collab-form { display: none; }
+    .form-field { margin-bottom: 8px; }
+    .form-field label { display: block; font-size: 12px; color: #68737d; margin-bottom: 3px; }
+    .form-field input, .form-field textarea, .form-field select { width: 100%; padding: 6px 8px; border: 1px solid #d8dcde; border-radius: 4px; font-size: 13px; font-family: inherit; }
+    .form-field textarea { resize: vertical; min-height: 60px; }
+    .admin-note { background: #e9f0f8; border-left: 3px solid #1f73b7; padding: 6px 8px; font-size: 12px; margin-bottom: 8px; border-radius: 0 4px 4px 0; }
+    .form-actions { display: flex; gap: 6px; }
+    .btn-cancel { flex: 1; background: #fff; border: 1px solid #d8dcde; padding: 7px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    .btn-submit { flex: 2; background: #1f73b7; color: #fff; border: none; padding: 7px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; }
+    .btn-submit:disabled { background: #adcce4; cursor: not-allowed; }
+    #empty-state { display: none; text-align: center; padding: 16px; color: #68737d; font-size: 12px; }
+    .notes-container { border-top: 1px solid #f3f4f5; padding: 8px 10px 4px; }
+    .notes-header { font-size: 11px; font-weight: 700; color: #68737d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+    .notes-loading, .notes-empty { font-size: 11px; color: #68737d; padding: 4px 0; }
+    .note-item { background: #f8f9fa; border-left: 3px solid #d8dcde; padding: 6px 8px; margin-bottom: 5px; border-radius: 0 4px 4px 0; }
+    .note-meta { font-size: 10px; color: #68737d; margin-bottom: 2px; }
+    .note-summary { font-size: 12px; font-weight: 600; color: #1f2d3d; }
+    .note-body { font-size: 12px; color: #49545c; margin-top: 2px; white-space: pre-wrap; }
+    #tsanet-modal { display: none; background: #fff; border: 1px solid #c8d8e8; border-radius: 4px; padding: 12px; margin-bottom: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+    #modal-msg { font-size: 12px; font-weight: 600; color: #1f2d3d; margin-bottom: 8px; }
+    .modal-field-label { font-size: 11px; font-weight: 600; color: #68737d; margin-bottom: 3px; }
+    #modal-input { width: 100%; padding: 6px 8px; border: 1px solid #d8dcde; border-radius: 4px; font-size: 12px; font-family: inherit; resize: vertical; min-height: 52px; margin-bottom: 6px; box-sizing: border-box; }
+    #modal-input2-wrap { margin-bottom: 6px; }
+    #modal-input2 { width: 100%; padding: 6px 8px; border: 1px solid #d8dcde; border-radius: 4px; font-size: 12px; font-family: inherit; resize: vertical; min-height: 72px; box-sizing: border-box; }
+    .modal-actions { display: flex; gap: 6px; }
+    #modal-cancel { flex: 1; background: #fff; border: 1px solid #d8dcde; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; color: #1f2d3d; }
+    #modal-ok { flex: 2; background: #1f73b7; color: #fff; border: none; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div id="error-banner"></div>
+  <div id="tsanet-modal">
+    <div id="modal-msg"></div>
+    <div id="modal-input1-wrap">
+      <div id="modal-input1-label" class="modal-field-label"></div>
+      <textarea id="modal-input" rows="2" placeholder=""></textarea>
+    </div>
+    <div id="modal-input2-wrap" style="display:none;">
+      <div id="modal-input2-label" class="modal-field-label"></div>
+      <textarea id="modal-input2" rows="4" placeholder=""></textarea>
+    </div>
+    <div class="modal-actions">
+      <button id="modal-cancel">Cancel</button>
+      <button id="modal-ok">OK</button>
+    </div>
+  </div>
+  <div id="info-banner">
+    <div class="info-title">⚠️ ACTION REQUIRED</div>
+    <div class="info-msg" id="info-msg">The partner has requested more information.</div>
+    <button class="btn-respond" id="btn-respond-now">Respond Now</button>
+  </div>
+  <button id="btn-new-collab">+ New Collaboration</button>
+  <button id="btn-sync-inbound" title="Auto-polls every 5 min. Click to sync immediately.">↙ Sync Now</button>
+  <div id="tsanet-notice">
+    <span>⚠️</span>
+    <span>Use the buttons below to communicate with partners. Zendesk comments and replies are <strong>not</strong> sent to TSANet.</span>
+  </div>
+  <div id="new-collab-dialog">
+    <h4>New Collaboration Request</h4>
+    <input type="text" id="partner-search-input" placeholder="Search for a partner..." autocomplete="off" />
+    <div id="partner-results"></div>
+    <div id="collab-form">
+      <div id="admin-note-container"></div>
+      <div id="custom-fields-container"></div>
+      <div class="form-actions">
+        <button class="btn-cancel" id="btn-cancel-form">Cancel</button>
+        <button class="btn-submit" id="btn-submit-collab">Submit</button>
+      </div>
+    </div>
+  </div>
+  <div id="compact-bar">
+    <div class="compact-inner">
+      <span class="compact-label">No active TSANet cases</span>
+      <button class="compact-btn" onclick="enterNewCollaboration()">+ New</button>
+    </div>
+  </div>
+  <div id="loading">Loading...</div>
+  <div id="empty-state">No active collaborations on this ticket.</div>
+  <div id="collab-list"></div>
+  <script src="main.js"></script>
+</body>
+</html>
