@@ -1,0 +1,93 @@
+{
+  "name": "TSANet Connect",
+  "id": "tsanet_connect",
+  "author": {
+    "name": "TSANet",
+    "email": "membership@tsanet.org",
+    "url": "https://www.tsanet.org"
+  },
+  "defaultLocale": "en",
+  "private": true,
+  "location": {
+    "support": {
+      "ticket_sidebar": {
+        "url": "assets/index.html",
+        "flexible_height": true
+      },
+      "background": "assets/background.html"
+    }
+  },
+  "version": "1.0.29",
+  "icon": "assets/logo.png",
+  "frameworkVersion": "2.0",
+  "parameters": [
+    {
+      "name": "tsanet_username",
+      "type": "text",
+      "secure": false,
+      "required": true,
+      "default": "",
+      "description": "TSANet API username (email of your dedicated TSANet API user)"
+    },
+    {
+      "name": "tsanet_password",
+      "type": "text",
+      "secure": false,
+      "required": true,
+      "default": "",
+      "description": "TSANet API password"
+    },
+    {
+      "name": "tsanet_env",
+      "type": "text",
+      "secure": false,
+      "required": true,
+      "default": "BETA",
+      "description": "TSANet environment: BETA or PRODUCTION"
+    },
+    {
+      "name": "field_id_token",
+      "type": "text",
+      "secure": false,
+      "required": true,
+      "default": "",
+      "description": "Zendesk numeric Field ID for TSANet Token (Admin Center > Tickets > Fields)"
+    },
+    {
+      "name": "field_id_tokens_multi",
+      "type": "text",
+      "secure": false,
+      "required": false,
+      "default": "",
+      "description": "Zendesk numeric Field ID for TSANet Tokens Multi (optional)"
+    },
+    {
+      "name": "field_id_status",
+      "type": "text",
+      "secure": false,
+      "required": true,
+      "default": "",
+      "description": "Zendesk numeric Field ID for TSANet Status (Admin Center > Tickets > Fields)"
+    },
+    {
+      "name": "field_id_partner",
+      "type": "text",
+      "secure": false,
+      "required": true,
+      "default": "",
+      "description": "Zendesk numeric Field ID for TSANet Partner (Admin Center > Tickets > Fields)"
+    },
+    {
+      "name": "field_id_respond_by",
+      "type": "text",
+      "secure": false,
+      "required": true,
+      "default": "",
+      "description": "Zendesk numeric Field ID for TSANet Respond By (Admin Center > Tickets > Fields)"
+    }
+  ],
+  "domainWhitelist": [
+    "connect2.tsanet.net",
+    "connect2.tsanet.org"
+  ]
+}

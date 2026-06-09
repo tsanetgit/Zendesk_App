@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>TSANet Connect — Background</title>
+  <!-- ZAF SDK — required even for background pages -->
+  <script src="https://static.zdassets.com/zendesk_app_framework_sdk/2.0/zaf_sdk.min.js"></script>
+</head>
+<body>
+<script>
+/**
+ * TSANet Connect — Background Poller
+ *
+ * Runs silently whenever Zendesk is open in the browser.
+ * No UI. No agent interaction required.
+ *
+ * Every 5 minutes:
+ *   1. Fetch all OPEN/INFORMATION inbound collaboration requests from TSANet
+ *   2. For each one, search Zendesk for an existing ticket with that token
+ *   3. Create a Zendesk ticket for any that are missing
+ *
+ * Reuses the same credentials configured in the app settings.
+ */
+
+(function() {
+  'use strict';
+
+  var POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  var client   = null;
+  var settings = {};
+  var _jwt     = null;
+  var _jwtExp  = 0;
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  if (typeof ZAFClient === 'undefined') {
+    console.error('[TSANet BG] ZAFClient not available');
+    return;
+  }
+
+  client = ZAFClient.init();
+
+  client.on('app.registered', function() {
+    client.metadata().then(function(meta) {
+      settings = meta.settings || {};
+
+      if (!settings.tsanet_username || !settings.tsanet_password) {
+        console.warn('[TSANet BG] Credentials not configured — background polling disabled');
+        return;
+      }
+
+      console.log('[TSANet BG] Started — polling every 5 minutes');
+
+      // Run immediately on startup, then every 5 minutes
+      pollForInboundCases();
+      pollForSlaBreaches();
+      setInterval(pollForInboundCases, POLL_INTERVAL_MS);
+      setInterval(pollForSlaBreaches, POLL_INTERVAL_MS);
+
+    }).catch(function(err) {
+      console.error('[TSANet BG] Failed to load settings:', err);
+    });
+  });
+
+  // ── TSANet Auth ───────────────────────────────────────────────────────────
+  function baseUrl() {
+    return (settings.tsanet_env === 'PRODUCTION')
+      ? 'https://connect2.tsanet.org/v1'
+      : 'https://connect2.tsanet.net/v1';
+  }
+
+  function getJwt() {
+    if (_jwt && Date.now() < _jwtExp) return Promise.resolve(_jwt);
+    return fetch(baseUrl() + '/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: settings.tsanet_username,
+        password: settings.tsanet_password
+      })
+    }).then(function(res) {
+      if (!res.ok) throw new Error('TSANet login failed: ' + res.status);
+      return res.json();
+    }).then(function(data) {
+      if (!data.accessToken) throw new Error('No accessToken in response');
+      _jwt    = data.accessToken;
+      _jwtExp = Date.now() + 50 * 60 * 1000; // cache for 50 min
+      return _jwt;
+    });
+  }
+
+  function tsanetGet(path) {
+    return getJwt().then(function(jwt) {
+      return fetch(baseUrl() + path, {
+        headers: { Authorization: 'Bearer ' + jwt }
+      });
+    }).then(function(res) {
+      if (res.status === 401) { _jwt = null; return tsanetGet(path); }
+      if (!res.ok) throw new Error('TSANet GET failed: ' + res.status);
+      return res.json();
+    });
+  }
+
+  // ── SLA Breach Detection ──────────────────────────────────────────────────
+  // Every 5 minutes: find any OPEN/INFORMATION cases past their respondBy
+  // deadline and add tag tsanet_sla_breached to the corresponding Zendesk ticket.
+  // The tag is only added once (idempotent check prevents repeat notifications).
+  // A Zendesk trigger fires on tag addition → emails the assignee.
+  function pollForSlaBreaches() {
+    console.log('[TSANet BG] Checking for SLA breaches...');
+
+    // Only check OPEN cases — SLA is acknowledgment-only per TSANet policy.
+    // Once a case is acknowledged (Accept/Reject/Req Info), TSANet stops tracking it.
+    Promise.all([
+      tsanetGet('/collaboration-requests?status=OPEN').catch(function() { return []; })
+    ]).then(function(results) {
+      var allActive = results[0] || [];
+      var now = Date.now();
+
+      var breached = allActive.filter(function(c) {
+        return c.respondBy && c.responded === false && new Date(c.respondBy).getTime() < now;
+      });
+
+      if (!breached.length) {
+        console.log('[TSANet BG] No SLA breaches found');
+        return;
+      }
+
+      console.log('[TSANet BG] Found ' + breached.length + ' SLA breach(es) — tagging tickets');
+
+      return Promise.all(breached.map(function(c) {
+        // Find the Zendesk ticket for this token
+        return client.request({
+          url: '/api/v2/search.json?query=custom_field_' +
+               settings.field_id_token + ':' + c.token + '&type=ticket',
+          type: 'GET'
+        }).then(function(res) {
+          if (!res.count || !res.results.length) return;
+          var ticket = res.results[0];
+
+          // Skip if already tagged — prevents duplicate trigger fires
+          if ((ticket.tags || []).indexOf('tsanet_sla_breached') !== -1) return;
+
+          // Add breach tag via POST (additive — preserves existing tags)
+          return client.request({
+            url: '/api/v2/tickets/' + ticket.id + '/tags.json',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ tags: ['tsanet_sla_breached'] })
+          }).then(function() {
+            console.log('[TSANet BG] ⚠️ SLA breached — tagged ticket #' + ticket.id +
+                        ' (token ' + c.token.substring(0, 8) + '...)');
+          });
+        }).catch(function(err) {
+          console.warn('[TSANet BG] SLA tag error for token ' +
+                       c.token.substring(0, 8) + '...:', err.message || String(err));
+        });
+      }));
+
+    }).catch(function(err) {
+      console.error('[TSANet BG] SLA breach check failed:', err.message || String(err));
+    });
+  }
+
+  // ── Core Poll Logic ───────────────────────────────────────────────────────
+  function pollForInboundCases() {
+    console.log('[TSANet BG] Polling for inbound cases...');
+
+    tsanetGet('/collaboration-requests?type=INBOUND').then(function(cases) {
+      var open = (cases || []).filter(function(c) {
+        return c.status === 'OPEN' || c.status === 'INFORMATION';
+      });
+
+      if (!open.length) {
+        console.log('[TSANet BG] No open inbound cases');
+        return;
+      }
+
+      console.log('[TSANet BG] Found ' + open.length + ' open inbound case(s) — checking for missing tickets');
+
+      // Check each token against Zendesk search
+      return Promise.all(open.map(function(collab) {
+        return client.request({
+          url: '/api/v2/search.json?query=custom_field_' +
+               settings.field_id_token + ':' + collab.token + '&type=ticket',
+          type: 'GET'
+        }).then(function(res) {
+          return { collab: collab, exists: res.count > 0 };
+        }).catch(function() {
+          return { collab: collab, exists: true }; // assume exists on error — be conservative
+        });
+      })).then(function(checked) {
+        var toCreate = checked.filter(function(r) { return !r.exists; });
+
+        if (!toCreate.length) {
+          console.log('[TSANet BG] All inbound cases already have Zendesk tickets');
+          return;
+        }
+
+        console.log('[TSANet BG] Creating ' + toCreate.length + ' missing ticket(s)');
+
+        return Promise.all(toCreate.map(function(r) {
+          var c = r.collab;
+          var zdPriority = c.priority === 'HIGH' ? 'urgent'
+                         : c.priority === 'MEDIUM' ? 'normal' : 'low';
+
+          return client.request({
+            url: '/api/v2/tickets.json',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+              ticket: {
+                subject: 'TSANet Inbound from ' + c.submitCompanyName + ': ' + c.summary,
+                description: 'Inbound TSANet Collaboration Request.\n\nFrom: ' +
+                  c.submitCompanyName + '\nPriority: ' + c.priority +
+                  '\nToken: ' + c.token + '\n\n' + (c.description || ''),
+                priority: zdPriority,
+                tags: ['tsanet_inbound', 'tsanet_status_open'],
+                comment: {
+                  body: '\u2b05\ufe0f New inbound TSANet Collaboration Request from ' +
+                    c.submitCompanyName + '.\n\nPriority: ' + c.priority +
+                    '\nToken: ' + c.token +
+                    '\n\nUse the TSANet Connect app to Accept, Request Info, or Reject.',
+                  public: false
+                },
+                custom_fields: [
+                  { id: parseInt(settings.field_id_token),   value: c.token },
+                  { id: parseInt(settings.field_id_status),  value: 'tsanet_status_open' },
+                  { id: parseInt(settings.field_id_partner), value: c.submitCompanyName }
+                ]
+              }
+            })
+          }).then(function(resp) {
+            console.log('[TSANet BG] \u2705 Created ticket #' + resp.ticket.id +
+                        ' for inbound case ' + c.token.substring(0, 8) + '...');
+          });
+        }));
+      });
+
+    }).catch(function(err) {
+      console.error('[TSANet BG] Poll error:', err.message || String(err));
+      // Token may have expired — clear so next poll re-authenticates
+      if (String(err).includes('401') || String(err).includes('login')) {
+        _jwt = null;
+      }
+    });
+  }
+
+})();
+</script>
+</body>
+</html>
