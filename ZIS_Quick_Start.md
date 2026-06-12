@@ -1,16 +1,14 @@
 # TSANet Connect — ZIS Quick Start Guide
 
 **Last updated:** June 2026  
-**Time to complete:** ~20 minutes (Steps 1–4); add ~20 minutes for the optional SLA monitor
+**Time to complete:** ~30 minutes (Steps 1–5); add ~20 minutes for the optional SLA monitor
 
 This guide covers two things:
 
-1. **Connecting ZIS to the TSANet API** (Steps 1–4) — so ZIS flows can call TSANet without handling auth themselves. The method is **OAuth client credentials (Microsoft Entra)**: ZIS stores a long-lived client credential issued by TSANet and mints/renews short-lived tokens itself. Nothing scheduled, no server, no token-refresh automation ([issue #1](https://github.com/tsanetgit/Zendesk/issues/1)).
-2. **SLA Breach Monitor** (Steps 5–8) — **optional.** A GitHub Actions job that checks for overdue TSANet acknowledgments and tags Zendesk tickets, triggering email alerts to assignees. TSANet enforces only one SLA (case creation → initial acknowledgment) and does so server-side regardless — the integration is complete without this. Implement it if you want breach alerting inside Zendesk, or skip it and build something more robust with Zendesk's native SLA policies.
+1. **Connecting ZIS to the TSANet API and deploying the flow bundle** (Steps 1–5) — so ZIS flows can call TSANet without handling auth themselves. The method is **OAuth client credentials (Microsoft Entra)**: ZIS stores a long-lived client credential issued by TSANet and mints/renews short-lived tokens itself. Nothing scheduled, no server, no token-refresh automation ([issue #1](https://github.com/tsanetgit/Zendesk/issues/1)).
+2. **SLA Breach Monitor** (Steps 6–9) — **optional.** A GitHub Actions job that checks for overdue TSANet acknowledgments and tags Zendesk tickets, triggering email alerts to assignees. TSANet enforces only one SLA (case creation → initial acknowledgment) and does so server-side regardless — the integration is complete without this. Implement it if you want breach alerting inside Zendesk, or skip it and build something more robust with Zendesk's native SLA policies.
 
-> **Shortest path:** if you skip the optional SLA monitor, you need no GitHub repository, no secrets, and no workflow — Steps 1–4 and you're done.
-
-> **Flow bundle:** the ready-made ZIS flow bundle for event-driven inbound (ping-then-pull) lives in [`zis/`](zis/) with its own deploy guide.
+> **Shortest path:** if you skip the optional SLA monitor, you need no GitHub repository, no secrets, and no workflow — Steps 1–5 and you're done.
 
 ---
 
@@ -142,7 +140,7 @@ The response contains a `redirect_url` with a `verification_code`. **GET that UR
 curl -s -H "Authorization: Bearer $ZIS_TOKEN" \
   "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/connections/tsanet_connect?name=tsanet_oauth"
 ```
-ZIS renews the token automatically when it expires. **If you are not implementing the optional SLA monitor, you are finished here.**
+ZIS renews the token automatically when it expires. Continue to Step 5 to deploy the flow bundle that puts this connection to work.
 
 > Gotcha: to change the stored credential later, the endpoint is **`PATCH`** `/api/services/zis/connections/oauth/clients/tsanet_connect/{uuid}` — `PUT` returns 405.
 
@@ -150,9 +148,25 @@ ZIS renews the token automatically when it expires. **If you are not implementin
 
 ---
 
-## Step 5 — Set GitHub Repository Secrets
+## Step 5 — Deploy the Flow Bundle
 
-> **Steps 5–8 are entirely optional** — they set up the SLA breach alerting described in the intro. Skip them if you don't want it.
+The connection from Step 4 does nothing by itself — the flows that create and update Zendesk tickets live in the **flow bundle** under [`zis/`](zis/). Three calls deploy it (full detail, per-instance substitutions, and gotchas in [`zis/README.md`](zis/README.md)):
+
+1. **Upload** [`zis/tsanet_connect_bundle.json`](zis/tsanet_connect_bundle.json) (after substituting your custom field IDs) to `POST /api/services/zis/registry/tsanet_connect/bundles`
+2. **Create the inbound webhook** (`source_system: tsanet`, `event_type: collaboration_event`) and keep the returned ingest URL + Basic credentials
+3. **Install the job spec** — and re-run this after *every* bundle upload, uploads orphan installs
+
+Also create the **basic-auth `zendesk` connection** the bundle's Zendesk-side actions require (see the README's prerequisites).
+
+> Direct webhook delivery from TSANet to the ingest URL requires the `callbackAuth` capability tracked in [issue #2](https://github.com/tsanetgit/Zendesk/issues/2). Until it ships, the pipeline can be exercised by POSTing a `WebhookPayload`-shaped body to the ingest URL with its Basic credentials.
+
+**If you are not implementing the optional SLA monitor, you are finished here.**
+
+---
+
+## Step 6 — Set GitHub Repository Secrets
+
+> **Steps 6–9 are entirely optional** — they set up the SLA breach alerting described in the intro. Skip them if you don't want it.
 
 In your GitHub repository, add the following secrets via the CLI or the GitHub UI (**Settings → Secrets and variables → Actions**):
 
@@ -169,7 +183,7 @@ gh secret set ZENDESK_FIELD_ID_TOKEN --body "your-tsanet-token-field-id"
 
 ---
 
-## Step 6 — Add the Workflow File
+## Step 7 — Add the Workflow File
 
 Create `.github/workflows/tsanet-maintenance.yml` in your repository:
 
@@ -251,7 +265,7 @@ jobs:
 
 ---
 
-## Step 7 — Push and Verify
+## Step 8 — Push and Verify
 
 ```bash
 git add .github/workflows/tsanet-maintenance.yml
@@ -274,7 +288,7 @@ Then verify:
 
 ---
 
-## Step 8 — Create the SLA Breach Trigger in Zendesk (optional — pairs with sla-monitor)
+## Step 9 — Create the SLA Breach Trigger in Zendesk (optional — pairs with sla-monitor)
 
 If you haven't done this as part of the ZAF setup:
 
