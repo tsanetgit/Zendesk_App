@@ -672,12 +672,12 @@
               "Choices": [
                 {
                   "Variable": "$.input.author_role",
-                  "StringEquals": "agent",
+                  "StringMatches": "*gent*",
                   "Next": "ForwardNote"
                 },
                 {
                   "Variable": "$.input.author_role",
-                  "StringEquals": "admin",
+                  "StringMatches": "*dmin*",
                   "Next": "ForwardNote"
                 }
               ],
