@@ -1,7 +1,8 @@
 /**
- * TSANet Connect ZAF App — v1.0.31
+ * TSANet Connect ZAF App — v1.0.38
  * client.metadata() with .then() chains after app.registered
- * Includes: New Collaboration, Sync Inbound Cases, action buttons
+ * Includes: New Collaboration, Sync Inbound Cases, action buttons,
+ * forwarded-reply echo suppression in syncNotesToZendesk (issue #34)
  */
 (function() {
 'use strict';
@@ -345,8 +346,20 @@ function loadNotes(token, container) {
 // ── Sync TSANet notes → Zendesk internal comments ─────────────────────────────
 // Fetches existing ticket comments, finds TSANet notes not yet posted (by marker),
 // and adds them as internal notes so agents can see them without opening ZAF.
+// Echo suppression (issue #34): a public agent reply is forwarded to TSANet as a
+// note by the ZIS flow_forward_comment flow. That note would otherwise mirror back
+// here as an internal "[TSANet Note]" comment — a redundant echo of a reply already
+// visible in the thread. So we skip any note whose text matches an existing PUBLIC
+// comment. Notes added via the Add Note action have no matching public comment and
+// still mirror as before.
 function syncNotesToZendesk(notes) {
   if (!notes || !notes.length) return;
+
+  // Normalize text so a TSANet note (HTML-wrapped) compares equal to the plain
+  // Zendesk comment body it was forwarded from.
+  function normForMatch(s) {
+    return stripHtml(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
 
   getTicketId().then(function(ticketId) {
     // Fetch existing comments to check which notes are already synced
@@ -354,14 +367,23 @@ function syncNotesToZendesk(notes) {
       url: '/api/v2/tickets/' + ticketId + '/comments.json?per_page=100',
       type: 'GET'
     }).then(function(data) {
-      var existingBodies = (data.comments || []).map(function(c) {
+      var comments = data.comments || [];
+      var existingBodies = comments.map(function(c) {
         return c.plain_body || '';
       });
+      // Public comment bodies — a note matching one is a forwarded-reply echo (#34).
+      var publicBodies = comments
+        .filter(function(c) { return c.public; })
+        .map(function(c) { return normForMatch(c.plain_body); })
+        .filter(Boolean);
 
-      // Filter to only notes not yet in Zendesk
+      // Filter to only notes not yet in Zendesk, and not echoes of forwarded replies
       var unsyncedNotes = notes.filter(function(note) {
         var marker = 'tsanet-note-id:' + note.id;
-        return !existingBodies.some(function(body) { return body.indexOf(marker) !== -1; });
+        if (existingBodies.some(function(body) { return body.indexOf(marker) !== -1; })) return false;
+        var noteText = normForMatch(note.summary);
+        if (noteText && publicBodies.indexOf(noteText) !== -1) return false;
+        return true;
       });
 
       if (!unsyncedNotes.length) return;
