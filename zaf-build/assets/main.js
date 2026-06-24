@@ -313,12 +313,12 @@ function renderCard(collab) {
   notesContainer.className = 'notes-container';
   notesContainer.innerHTML = '<div class="notes-loading">Loading notes...</div>';
   card.appendChild(notesContainer);
-  loadNotes(collab.token, notesContainer);
+  loadNotes(collab.token, notesContainer, isInbound ? collab.receiveCompanyName : collab.submitCompanyName);
 
   return card;
 }
 
-function loadNotes(token, container) {
+function loadNotes(token, container, ourCompany) {
   tsanetGet('/collaboration-requests/' + token + '/notes').then(function(notes) {
     if (!notes || !notes.length) {
       container.innerHTML = '<div class="notes-empty">No notes yet.</div>';
@@ -337,7 +337,7 @@ function loadNotes(token, container) {
     });
     container.innerHTML = html;
     // Mirror any new TSANet notes to Zendesk ticket as internal comments
-    syncNotesToZendesk(notes);
+    syncNotesToZendesk(notes, ourCompany);
   }).catch(function() {
     container.innerHTML = '';
   });
@@ -349,10 +349,13 @@ function loadNotes(token, container) {
 // Echo suppression (issue #34): a public agent reply is forwarded to TSANet as a
 // note by the ZIS flow_forward_comment flow. That note would otherwise mirror back
 // here as an internal "[TSANet Note]" comment — a redundant echo of a reply already
-// visible in the thread. So we skip any note whose text matches an existing PUBLIC
-// comment. Notes added via the Add Note action have no matching public comment and
+// visible in the thread. So we skip a note when it is BOTH self-authored
+// (companyName === our member company) AND its text matches an existing PUBLIC
+// comment. Gating on self-authored is what prevents data loss: a genuine partner
+// note that happens to equal an earlier public comment ("Any update?") is never
+// dropped. Notes added via the Add Note action have no matching public comment and
 // still mirror as before.
-function syncNotesToZendesk(notes) {
+function syncNotesToZendesk(notes, ourCompany) {
   if (!notes || !notes.length) return;
 
   // Normalize text so a TSANet note (HTML-wrapped) compares equal to the plain
@@ -381,8 +384,13 @@ function syncNotesToZendesk(notes) {
       var unsyncedNotes = notes.filter(function(note) {
         var marker = 'tsanet-note-id:' + note.id;
         if (existingBodies.some(function(body) { return body.indexOf(marker) !== -1; })) return false;
-        var noteText = normForMatch(note.summary);
-        if (noteText && publicBodies.indexOf(noteText) !== -1) return false;
+        // Suppress only OUR OWN forwarded replies (self-authored + matches a public
+        // comment). Partner notes are never suppressed, even on a text collision.
+        var selfAuthored = ourCompany && note.companyName === ourCompany;
+        if (selfAuthored) {
+          var noteText = normForMatch(note.summary);
+          if (noteText && publicBodies.indexOf(noteText) !== -1) return false;
+        }
         return true;
       });
 
