@@ -127,8 +127,22 @@
                   "Variable": "$.search.count"
                 }
               ],
-              "Default": "CreateTicket",
+              "Default": "GuardCreate",
               "Type": "Choice"
+            },
+            "GuardCreate": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.input.eventType",
+                  "StringEquals": "note.created",
+                  "Next": "NoOp"
+                }
+              ],
+              "Default": "CreateTicket"
+            },
+            "NoOp": {
+              "Type": "Succeed"
             },
             "CreateTicket": {
               "ActionName": "zis:tsanet_connect:action:action_create_ticket",
