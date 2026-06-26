@@ -109,7 +109,9 @@
       _jwtExp = Date.now() + 50 * 60 * 1000; // cache for 50 min
       return _jwt;
     }, function(err) {
-      throw new Error('TSANet login failed: ' + ((err && err.status) || '?'));
+      var status = (err && err.status) || '?';
+      var detail = (err && (err.responseText || (err.responseJSON && JSON.stringify(err.responseJSON)))) || '';
+      throw new Error('TSANet login failed (HTTP ' + status + '). ' + String(detail).substring(0, 80));
     });
   }
 
