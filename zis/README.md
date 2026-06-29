@@ -18,10 +18,12 @@ TSANet webhook ping (eventType + requestToken)
   → jobspec_handle_ping → flow_handle_ping
       GetCollaboration   pull full case from TSANet API   (OAuth connection "tsanet_oauth")
       SearchTicket       find ticket by TSANet Token field (connection "zendesk")
-      CheckTicketExists  branch
-      ├─ CreateTicket    new Zendesk ticket with token/status/partner fields
-      └─ TransformForUpdate → UpdateTicket
-                         jq: status → lowercase option value, respondBy → YYYY-MM-DD
+      CheckTicketExists  branch on whether the ticket already exists
+      ├─ exists   → TransformForUpdate → UpdateTicket
+      │              jq: status → lowercase option value, respondBy → YYYY-MM-DD
+      └─ no match → GuardCreate                                   (idempotency guard, issue #42)
+                     ├─ eventType note.created → NoOp        skip; a note can't be the first event
+                     └─ else                   → CreateTicket  new ticket w/ token/status/partner
 ```
 
 ## Prerequisites
@@ -41,6 +43,7 @@ TSANet webhook ping (eventType + requestToken)
 | What | Where | Note |
 |---|---|---|
 | Custom field IDs | `action_create_ticket`, `action_search_ticket`, `action_update_ticket` | Replace the three numeric IDs (TSANet Token / Status / Partner, plus Respond By in the update action) with **your** instance's field IDs |
+| Field-driven field IDs | `flow_field_action` `GuardField`, `action_zd_finish_status` / `_silent` / `_fail`, and the `Extract` jq | Placeholders for the two field-driven fields: **TSANet Action** dropdown (`1234567891`) and **TSANet Action Text** (`1234567895`). Replace both with **your** instance's field IDs — see *Field-driven case actions* below |
 | API host | **all five** TSANet API actions — `action_get_collaboration`, `action_ts_accept`, `action_ts_reject`, `action_ts_info`, `action_ts_note` | File ships with Production (`connect2.tsanet.org`); use `connect2.tsanet.net` for Beta. The host appears in every action that calls the TSANet API, not just `action_get_collaboration` — substitute all five or the lifecycle actions will hit the wrong environment |
 | `engineerEmail` | `action_ts_accept` | Replace `YOUR_TSANET_API_EMAIL` with your TSANet API user email. It **must** be on your member-registered domain — TSANet's Accept endpoint rejects emails from any other domain. See *Field-driven case actions* below |
 | OAuth connection name | **all five** TSANet API actions (the same five as API host) | File ships with `tsanet_oauth`. If your instance named its OAuth connection differently (e.g. `tsanet_beta_oauth`), substitute it in **all five** actions, or every TSANet call fails auth against a nonexistent connection. Symptom: ingest accepts (HTTP 200) but the flow's `action_ts_*` silently no-op via their `Catch`. Verify the live name with `GET /api/services/zis/connections/{integration}?name=<name>` |
@@ -136,4 +139,73 @@ Then, in **Zendesk Admin** (or via `/api/v2/webhooks` + `/api/v2/triggers`):
 - **Request bodies are mustache-templated** (`{{$.x}}`). JSONPath-style keys (`"value.$": "$.x"`) inside `requestBody` fail with `Error Resolving JSON Params`.
 - **Zendesk date fields reject ISO datetimes** (422 `InvalidValue`). The flow's Jq transform truncates `respondBy` to `YYYY-MM-DD`; keep that state if you modify the flow.
 - **The Integration Log is the only debugging surface** (Admin Center → Apps and integrations → Integrations → Integration logs; there is no API). Each entry's `execution_states` + `details` pinpoints the failing state.
-- **Zendesk search is eventually consistent** — `SearchTicket` can miss a ticket created seconds earlier. Harmless in real usage (events for the same case arrive minutes apart), but rapid-fire test pings can produce a duplicate.
+- **Zendesk search is eventually consistent.** `SearchTicket` can miss a ticket created seconds earlier. The common redelivery race (a `note.created` arriving before the just-created ticket is searchable) is handled by `GuardCreate`, which no-ops `note.created` events that find no ticket instead of creating a second one (issue #42). Other rapid-fire test pings can still in theory duplicate; real usage is safe because events for one case arrive minutes apart.
+
+## Reference (generated)
+
+<!-- BEGIN GENERATED: bundle reference (do not edit by hand; run zis/gen_readme_reference.py) -->
+> Generated from `tsanet_connect_bundle.json` by `zis/gen_readme_reference.py`.
+> Do not edit between the markers; run the script to refresh.
+
+Bundle `tsanet_connect` · template `2019-10-14` · 12 actions, 3 flows, 3 job specs.
+
+### Job specs (event → flow)
+
+| Job spec | event_source | event_type | Flow |
+|---|---|---|---|
+| `jobspec_field_action` | `support` | `ticket.CustomFieldChanged` | `flow_field_action` |
+| `jobspec_forward_comment` | `zendesk` | `public_comment` | `flow_forward_comment` |
+| `jobspec_handle_ping` | `tsanet` | `collaboration_event` | `flow_handle_ping` |
+
+### Actions
+
+| Action | Connection | Method | Endpoint |
+|---|---|---|---|
+| `action_create_ticket` | `zendesk` | POST | `/api/v2/tickets.json` |
+| `action_get_collaboration` | `tsanet_oauth` | GET | `https://connect2.tsanet.org/v1/collaboration-requests/{requestToken}` |
+| `action_search_ticket` | `zendesk` | GET | `/api/v2/tickets.json?external_id={requestToken}` |
+| `action_ts_accept` | `tsanet_oauth` | POST | `https://connect2.tsanet.org/v1/collaboration-requests/{token}/approval` |
+| `action_ts_info` | `tsanet_oauth` | POST | `https://connect2.tsanet.org/v1/collaboration-requests/{token}/information-request` |
+| `action_ts_note` | `tsanet_oauth` | POST | `https://connect2.tsanet.org/v1/collaboration-requests/{token}/notes` |
+| `action_ts_reject` | `tsanet_oauth` | POST | `https://connect2.tsanet.org/v1/collaboration-requests/{token}/rejection` |
+| `action_update_ticket` | `zendesk` | PUT | `/api/v2/tickets/{ticket_id}.json` |
+| `action_zd_finish_fail` | `zendesk` | PUT | `/api/v2/tickets/{ticket_id}.json` |
+| `action_zd_finish_silent` | `zendesk` | PUT | `/api/v2/tickets/{ticket_id}.json` |
+| `action_zd_finish_status` | `zendesk` | PUT | `/api/v2/tickets/{ticket_id}.json` |
+| `action_zd_get_ticket` | `zendesk` | GET | `/api/v2/tickets/{ticket_id}.json` |
+
+### Flows (states)
+
+- **`flow_field_action`** — StartAt `GuardField`
+  - `AcceptCase` (Action) → `action_ts_accept`
+  - `CheckToken` (Choice)
+  - `Dispatch` (Choice)
+  - `Extract` (Action) → `Jq`
+  - `FailComment` (Action) → `action_zd_finish_fail`
+  - `FinishAccept` (Action) → `action_zd_finish_status`
+  - `FinishInfo` (Action) → `action_zd_finish_status`
+  - `FinishNote` (Action) → `action_zd_finish_silent`
+  - `FinishReject` (Action) → `action_zd_finish_status`
+  - `GetTicket` (Action) → `action_zd_get_ticket`
+  - `GuardField` (Choice)
+  - `GuardValue` (Choice)
+  - `InfoCase` (Action) → `action_ts_info`
+  - `NoOp` (Succeed)
+  - `NoteCase` (Action) → `action_ts_note`
+  - `RejectCase` (Action) → `action_ts_reject`
+- **`flow_forward_comment`** — StartAt `GuardToken`
+  - `ForwardNote` (Action) → `action_ts_note`
+  - `GuardAuthor` (Choice)
+  - `GuardComment` (Choice)
+  - `GuardToken` (Choice)
+  - `NoOp` (Succeed)
+- **`flow_handle_ping`** — StartAt `GetCollaboration`
+  - `CheckTicketExists` (Choice)
+  - `CreateTicket` (Action) → `action_create_ticket`
+  - `GetCollaboration` (Action) → `action_get_collaboration`
+  - `GuardCreate` (Choice)
+  - `NoOp` (Succeed)
+  - `SearchTicket` (Action) → `action_search_ticket`
+  - `TransformForUpdate` (Action) → `Jq`
+  - `UpdateTicket` (Action) → `action_update_ticket`
+<!-- END GENERATED: bundle reference -->

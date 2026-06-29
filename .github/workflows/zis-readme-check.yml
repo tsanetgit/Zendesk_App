@@ -1,0 +1,37 @@
+name: ZIS README reference
+
+# Fail if the generated reference block in zis/README.md has drifted from
+# tsanet_connect_bundle.json. The block is produced by zis/gen_readme_reference.py;
+# regenerate and commit it whenever the bundle changes:
+#
+#   python3 zis/gen_readme_reference.py
+#
+# Only the marker-fenced block is machine-maintained — the hand-written prose
+# around it is never touched by the script or this check.
+
+on:
+  push:
+    paths:
+      - 'zis/tsanet_connect_bundle.json'
+      - 'zis/README.md'
+      - 'zis/gen_readme_reference.py'
+      - '.github/workflows/zis-readme-check.yml'
+  pull_request:
+    paths:
+      - 'zis/tsanet_connect_bundle.json'
+      - 'zis/README.md'
+      - 'zis/gen_readme_reference.py'
+      - '.github/workflows/zis-readme-check.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Verify README reference block is in sync with the bundle
+        run: python3 zis/gen_readme_reference.py --check
