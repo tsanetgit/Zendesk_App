@@ -341,8 +341,13 @@ function loadNotes(token, container, ourCompany) {
       var d = new Date(note.createdAt);
       var dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
       var bodyText = note.description ? stripHtml(note.description) : '';
+      // Direction label (#62 short-term): companyName === our company => we sent it.
+      // Best-effort — companyName is the only signal and is ambiguous when both orgs
+      // share a name (e.g. sandbox "test IBM"); the durable fix is a platform direction field.
+      var mine = ourCompany && note.companyName === ourCompany;
+      var who = mine ? 'You' : esc(note.companyName || 'Partner');
       html += '<div class="note-item">' +
-        '<div class="note-meta">' + esc(note.companyName) + ' · ' + esc(dateStr) + '</div>' +
+        '<div class="note-meta">' + (mine ? '↗ ' : '↙ ') + who + ' · ' + esc(dateStr) + '</div>' +
         '<div class="note-summary">' + esc(stripHtml(note.summary)) + '</div>' +
         (bodyText && bodyText !== stripHtml(note.summary) ? '<div class="note-body">' + esc(bodyText) + '</div>' : '') +
         '</div>';
@@ -421,7 +426,10 @@ function syncNotesToZendesk(notes, ourCompany) {
           var summary = stripHtml(note.summary || '');
           var description = note.description ? stripHtml(note.description) : '';
 
-          var body = '[TSANet Note] ' + (note.companyName || 'Partner') + ' — ' + dateStr
+          // Direction label (#62 short-term) — see loadNotes for the companyName caveat.
+          var mine = ourCompany && note.companyName === ourCompany;
+          var who = mine ? 'You' : (note.companyName || 'Partner');
+          var body = '[TSANet Note ' + (mine ? '→ sent' : '← received') + '] ' + who + ' — ' + dateStr
             + '\n\n' + summary;
           if (description && description !== summary) {
             body += '\n\n' + description;
