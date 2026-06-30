@@ -87,9 +87,40 @@ The bundle also includes `flow_field_action` + `jobspec_field_action` (issue #22
 
 ### Behavior
 
-- **Success:** internal comment + TSANet Status updated + Action field cleared. Exception: **Add Note succeeds silently** — the note mirror is the receipt (prevents double comments).
+- **Success:** internal comment + TSANet Status updated + Action field cleared. **Add Note** writes an internal receipt comment carrying a `tsanet-note-id:<id>` marker instead of updating Status (see *Partner-only notes* below).
 - **Failure** (wrong case state, missing text, no token): internal comment explaining, Action cleared, Status untouched. Details land in the Integration Log.
 - **Guards:** the flow no-ops unless the changed field is TSANet Action with a non-empty action value — so the flow's own clears, status syncs, and any ZAF field writes never re-trigger it. Safe to run alongside the ZAF app (the two action paths are independent; see issue #22 for the coexistence analysis).
+
+### Partner-only notes (native path, issue #69)
+
+**Partner-only** means a note that reaches your TSANet partner but stays hidden from the end customer. On the native path (no ZAF app) it is driven by the **TSANet Action** field.
+
+#### How a support agent sends a partner-only note
+
+1. Open the TSANet ticket.
+2. Type the note in the **TSANet Action Text** field.
+3. Set **TSANet Action** to **Add Note** — or, in one click, apply the **`TSANet: Send partner-only note`** macro (it sets the dropdown for you; see admin setup below).
+4. Submit the ticket.
+
+The note is delivered to the partner **only** — the end customer never sees it. An **internal** receipt comment is added to the ticket (prefixed `[TSANet note sent to partner (partner-only)]`) so you have a record of exactly what was sent.
+
+> **Important — partner-only is NOT in Zendesk's native reply menu.** Zendesk's built-in composer toggle offers only **Public reply** and **Internal note**, and that control is owned by Zendesk: an app or admin **cannot** add a third option to it. Agents will not find a "partner only" choice there, and a normal **public reply** reaches the end customer too. Partner-only is reached **only** through the **TSANet Action = Add Note** flow above (or the **`TSANet: Send partner-only note`** macro), or — if the ZAF app is installed — the app's own Add Note dialog (`tsanetgit/Zendesk_App#56`). Train agents to use the TSANet Action field / macro, not the native composer.
+
+#### Under the hood
+
+`flow_field_action` posts the Action Text to the partner (`POST /notes`) **without** writing a public Zendesk comment, then `FinishNote` records the **internal** receipt comment with a `tsanet-note-id:<id>` marker (the id comes from the `POST /notes` response, `$.ts.id`). The marker is what the ZAF note-mirror dedups on, so when the ZAF app is also installed the mirrored copy of the same note is suppressed — exactly one internal record either way, ZAF or no-ZAF.
+
+#### Admin setup — the `TSANet: Send partner-only note` macro (optional)
+
+Zendesk macros are per-instance Support config and **cannot ship in the ZIS bundle**, so each instance creates this macro once. Partner-only still works without it (set the **TSANet Action** dropdown to **Add Note** by hand); the macro is purely a one-click convenience. Substitute your **TSANet Action** field id for `FIELD_ID`:
+
+```bash
+curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/v2/macros.json" \
+  -u "YOUR_EMAIL/token:YOUR_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"macro":{"title":"TSANet: Send partner-only note","actions":[{"field":"custom_fields_FIELD_ID","value":"tsanet_action_add_note"}]}}'
+```
+
+The agent still types the note body into **TSANet Action Text** first (a macro can set the dropdown but cannot capture free-form text), then applies the macro and submits.
 
 ## Inbound comment forwarding — public reply → partner note (issue #34)
 
@@ -170,7 +201,7 @@ Bundle `tsanet_connect` · template `2019-10-14` · 12 actions, 3 flows, 3 job s
 | `action_ts_reject` | `tsanet_oauth` | POST | `https://connect2.tsanet.org/v1/collaboration-requests/{token}/rejection` |
 | `action_update_ticket` | `zendesk` | PUT | `/api/v2/tickets/{ticket_id}.json` |
 | `action_zd_finish_fail` | `zendesk` | PUT | `/api/v2/tickets/{ticket_id}.json` |
-| `action_zd_finish_silent` | `zendesk` | PUT | `/api/v2/tickets/{ticket_id}.json` |
+| `action_zd_finish_note_receipt` | `zendesk` | PUT | `/api/v2/tickets/{ticket_id}.json` |
 | `action_zd_finish_status` | `zendesk` | PUT | `/api/v2/tickets/{ticket_id}.json` |
 | `action_zd_get_ticket` | `zendesk` | GET | `/api/v2/tickets/{ticket_id}.json` |
 
@@ -178,13 +209,14 @@ Bundle `tsanet_connect` · template `2019-10-14` · 12 actions, 3 flows, 3 job s
 
 - **`flow_field_action`** — StartAt `GuardField`
   - `AcceptCase` (Action) → `action_ts_accept`
+  - `BuildNoteReceipt` (Action) → `Jq`
   - `CheckToken` (Choice)
   - `Dispatch` (Choice)
   - `Extract` (Action) → `Jq`
   - `FailComment` (Action) → `action_zd_finish_fail`
   - `FinishAccept` (Action) → `action_zd_finish_status`
   - `FinishInfo` (Action) → `action_zd_finish_status`
-  - `FinishNote` (Action) → `action_zd_finish_silent`
+  - `FinishNote` (Action) → `action_zd_finish_note_receipt`
   - `FinishReject` (Action) → `action_zd_finish_status`
   - `GetTicket` (Action) → `action_zd_get_ticket`
   - `GuardField` (Choice)
