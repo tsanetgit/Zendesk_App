@@ -13,7 +13,7 @@ The integration is complete at the end of Step 5. If you also want an optional, 
 
 | Requirement | Notes |
 |---|---|
-| Zendesk Admin access | Needs API token + ZIS integration management |
+| Zendesk Admin access | Needs an API token for setup bootstrap (transient — see Step 1) + ZIS integration management |
 | TSANet-issued Entra client | Client ID + secret from TSANet, plus service principal onboarding (contact TSANet with your SP object ID) |
 | ZIS OAuth client | Created in Zendesk Admin Center (see Step 2) |
 
@@ -32,12 +32,23 @@ ZIS ↔ TSANet connection
 
 ---
 
-## Step 1 — Create a Zendesk API Token
+## Step 1 — Create a Zendesk API Token (setup bootstrap only)
 
 1. Go to **Admin Center → Apps and integrations → APIs → Zendesk API**
 2. Click **Add API token**
 3. Give it a description: `TSANet ZIS`
 4. Copy the token — you won't see it again
+
+> **This token is for setup-time bootstrap only** (the admin curl calls in Steps 3–5).
+> Do **not** store it in the `zendesk` connection — that connection uses an
+> auto-renewing OAuth credential instead (see the README's prerequisites, linked from
+> Step 5). Zendesk is retiring API tokens for the Ticketing API: creation is blocked
+> for new Zendesk accounts on **2026-07-28** and for all accounts on **2026-10-27**,
+> and all existing tokens stop working on **2027-04-30**. You can delete this token
+> once setup is complete. If your account can no longer create API tokens, contact
+> TSANet — the bootstrap alternative (an OAuth token via the authorization_code flow)
+> is account-specific. Background:
+> [Zendesk_API_Credential_Decision.md](Zendesk_API_Credential_Decision.md).
 
 ---
 
@@ -138,7 +149,7 @@ The connection from Step 4 does nothing by itself — the flows that create and 
 2. **Create the inbound webhook** (`source_system: tsanet`, `event_type: collaboration_event`) and keep the returned ingest URL + Basic credentials
 3. **Install the job spec** — and re-run this after *every* bundle upload, uploads orphan installs
 
-Also create the **basic-auth `zendesk` connection** the bundle's Zendesk-side actions require (see the README's prerequisites).
+Also create the **OAuth `zendesk` connection** the bundle's Zendesk-side actions require (see the README's prerequisites, steps 2a–2c — a confidential OAuth client + a ZIS client_credentials connection against your own instance's `/oauth/tokens`; the old basic-auth/API-token form is deprecated with Zendesk's API-token retirement).
 
 > **Inbound push is live.** TSANet → ZIS webhook delivery uses the `callbackAuth` capability ([issue #2](https://github.com/tsanetgit/Zendesk_App/issues/2)), delivered in API **v3.1.0** and validated on Beta (authenticated deliveries return 200 and create tickets). Register the member's webhook subscription with `callbackUrl` = the ingest URL and a `callbackAuth` of type `BASIC` carrying the ingest credentials. You can still exercise the pipeline manually by POSTing a `WebhookPayload`-shaped body to the ingest URL with its Basic credentials.
 
