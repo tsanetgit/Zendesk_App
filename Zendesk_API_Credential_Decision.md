@@ -141,12 +141,20 @@ outline (replacing Quick Start Step 1 and the README's basic-auth prerequisite):
 Migration on an existing install: connection names are unique **across** types, so
 the `basic_auth` connection named `zendesk` must be deleted before the `oauth` one
 can take its name — the seven bundle actions then keep working with **zero** bundle
-changes. Two details still need proving on a live instance before the guides are
-rewritten: that ZIS's renewal loop drives Zendesk's token endpoint end to end, and
-the minimal scope string that satisfies all seven actions. (Note: ZIS-auto-generated
-OAuth clients — identifier `zis_<integration>` — are rejected by the
-client_credentials grant with `invalid_client`; a real Admin Center client is
-required.)
+changes.
+
+**Validated live, 2026-07-07.** Every step of the recipe was proven on a test
+instance: the client_credentials grant returns a 30-minute token that authenticates
+`/api/v2`; ZIS drives Zendesk's token endpoint end to end, **including automatic
+re-mint of an expired token**; and the minimal scope is **`read tickets:write`**
+(`/api/v2/search.json` returns 403 under `tickets:read` alone, so `SearchTicket`
+needs the general `read` scope). The validated install steps live in
+[ZIS_Quick_Start.md](ZIS_Quick_Start.md) and [`zis/README.md`](zis/README.md).
+Gotchas: the OAuth client must be **confidential at creation** — the grant rejects
+public clients (`unauthorized_client`), and changing `kind` later regenerates the
+secret while only displaying it truncated. ZIS-auto-generated OAuth clients
+(identifier `zis_<integration>`) are rejected with `invalid_client`; create a real
+client.
 
 ---
 
