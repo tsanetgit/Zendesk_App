@@ -29,14 +29,43 @@ TSANet webhook ping (eventType + requestToken)
 ## Prerequisites
 
 1. The ZIS integration `tsanet_connect` exists and the **OAuth client-credentials connection** `tsanet_oauth` is configured — see [ZIS_Quick_Start.md](../ZIS_Quick_Start.md) Steps 1–4.
-2. A **basic-auth connection named `zendesk`** for the Zendesk-side actions (path-only actions do **not** auto-authenticate):
+2. An **OAuth connection named `zendesk`** for the Zendesk-side actions (path-only actions do **not** auto-authenticate). Earlier revisions used a basic-auth connection holding an API token; Zendesk is retiring API tokens for the Ticketing API (creation blocked for new accounts **2026-07-28** and for all accounts **2026-10-27**; all existing tokens stop working **2027-04-30**), so the connection now stores an auto-renewing OAuth credential. Full background: [Zendesk_API_Credential_Decision.md](../Zendesk_API_Credential_Decision.md). Three steps (validated 2026-07-07):
+
+   **2a. Create a confidential OAuth client** for the integration. Run this as the dedicated service user the integration should act as — client_credentials tokens act as the user associated with the client:
    ```bash
-   curl -X POST \
-     "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/integrations/tsanet_connect/connections/basic_auth" \
+   curl -s -X POST "https://YOURSUBDOMAIN.zendesk.com/api/v2/oauth/clients.json" \
+     -u "YOUR_EMAIL/token:YOUR_API_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"client":{"name":"TSANet Connect Integration","identifier":"tsanet_zendesk","kind":"confidential"}}'
+   ```
+   Copy `client.secret` from the response — the full secret (64 chars) is shown **only** at creation. `"kind":"confidential"` must be set **at creation**: the client_credentials grant rejects public clients (`unauthorized_client`), and changing `kind` on an existing client regenerates the secret while only ever displaying it truncated to 10 chars — if that happens, delete the client and recreate it.
+
+   **2b. Register a ZIS OAuth client** pointing at your **own** instance's token endpoint (uses the ZIS bearer from Quick Start Step 4):
+   ```bash
+   curl -s -X POST "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/connections/oauth/clients/tsanet_connect" \
      -H "Authorization: Bearer ZIS_OAUTH_TOKEN" \
      -H "Content-Type: application/json" \
-     -d '{"name":"zendesk","username":"YOUR_EMAIL/token","password":"YOUR_API_TOKEN","allowed_domain":"YOURSUBDOMAIN.zendesk.com"}'
+     -d '{
+       "name": "zendesk_self",
+       "grant_type": "client_credentials",
+       "client_id": "tsanet_zendesk",
+       "client_secret": "YOUR_CLIENT_SECRET",
+       "token_url": "https://YOURSUBDOMAIN.zendesk.com/oauth/tokens",
+       "default_scopes": "read tickets:write"
+     }'
    ```
+   `read tickets:write` is the **minimal scope** for the bundle's seven Zendesk-side calls: `tickets:read` alone is not enough — `/api/v2/search.json` returns 403 under it (`SearchTicket` breaks), and there is no `search:read` scope. Ticket create/update need `tickets:write`.
+
+   **2c. Create the connection named `zendesk`** (same start + verification dance as Quick Start Step 4b):
+   ```bash
+   curl -s -X POST "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/connections/oauth/start/tsanet_connect" \
+     -H "Authorization: Bearer ZIS_OAUTH_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"oauth_client_name": "zendesk_self", "name": "zendesk"}'
+   ```
+   GET the returned `redirect_url` (with the same ZIS bearer) to complete creation, then verify the connection holds an `access_token` with `token_expiry` about 30 minutes out (Zendesk applies a 30-minute expiry to tokens from clients created on or after 2026-04-30). ZIS mints and renews the short-lived tokens itself — nothing scheduled, exactly like the `tsanet_oauth` connection. Renewal verified live: an expired token was re-minted automatically on next access, with `token_expiry` advancing a fresh 30 minutes.
+
+   **Migrating an existing install:** connection names are unique **across** types, so delete the old basic-auth connection named `zendesk` first, then run 2c to create the OAuth one under the same name. The bundle's seven Zendesk-side actions reference the connection by name only — **zero bundle changes**. There is a brief gap between delete and create; do it in a quiet window.
 
 ## Per-instance substitutions (edit the JSON before upload)
 
@@ -48,7 +77,7 @@ TSANet webhook ping (eventType + requestToken)
 | `engineerEmail` | `action_ts_accept` | Replace `YOUR_TSANET_API_EMAIL` with your TSANet API user email. It **must** be on your member-registered domain — TSANet's Accept endpoint rejects emails from any other domain. See *Field-driven case actions* below |
 | OAuth connection name | **all five** TSANet API actions (the same five as API host) | File ships with `tsanet_oauth`. If your instance named its OAuth connection differently (e.g. `tsanet_beta_oauth`), substitute it in **all five** actions, or every TSANet call fails auth against a nonexistent connection. Symptom: ingest accepts (HTTP 200) but the flow's `action_ts_*` silently no-op via their `Catch`. Verify the live name with `GET /api/services/zis/connections/{integration}?name=<name>` |
 
-Connection name `zendesk` (basic-auth, Zendesk-side actions) matches the Quick Start. The OAuth connection name is per-instance — see the row above.
+Connection name `zendesk` (Zendesk-side actions) matches the Quick Start. The TSANet OAuth connection name is per-instance — see the row above.
 
 > Validated end-to-end on Beta (`connect2.tsanet.net`): authenticated webhook deliveries return 200 and the flow creates Zendesk tickets. The per-instance set is field IDs, host, `engineerEmail`, **and the OAuth connection name** — nothing else is environment-specific.
 
@@ -165,7 +194,7 @@ Then, in **Zendesk Admin** (or via `/api/v2/webhooks` + `/api/v2/triggers`):
 
 - **Reinstall job specs after every bundle upload.** Uploads orphan existing installs; the flow silently stops firing.
 - **Stale installed job specs keep running.** Job specs from older bundle generations stay installed even when no longer defined in the bundle, and will intercept events. List with `GET /api/services/zis/registry/tsanet_connect/job_specs`; uninstall with `DELETE .../job_specs/install?job_spec_name=...`.
-- **Zendesk-side actions need the `zendesk` connection.** Path-only actions return `401 Couldn't authenticate you`. Use a basic-auth connection (API token) rather than a bearer connection — bearer tokens go stale.
+- **Zendesk-side actions need the `zendesk` connection.** Path-only actions return `401 Couldn't authenticate you`. Use the auto-renewing **OAuth connection** (Prerequisites 2a–2c) — a static `bearer_token` connection goes stale (Zendesk OAuth tokens under new clients expire within 30 minutes), and `basic_auth` + API token dies with Zendesk's API-token retirement (2027-04-30).
 - **Connection names are unique across types**, and `GET /api/services/zis/connections/{integration}?name=` only returns OAuth connections. If a create returns 409 but the typed GET 404s, check the other legacy types (`bearer_token`, `basic_auth`).
 - **Request bodies are mustache-templated** (`{{$.x}}`). JSONPath-style keys (`"value.$": "$.x"`) inside `requestBody` fail with `Error Resolving JSON Params`.
 - **Zendesk date fields reject ISO datetimes** (422 `InvalidValue`). The flow's Jq transform truncates `respondBy` to `YYYY-MM-DD`; keep that state if you modify the flow.
