@@ -31,14 +31,16 @@ TSANet webhook ping (eventType + requestToken)
 1. The ZIS integration `tsanet_connect` exists and the **OAuth client-credentials connection** `tsanet_oauth` is configured — see [ZIS_Quick_Start.md](../ZIS_Quick_Start.md) Steps 1–4.
 2. An **OAuth connection named `zendesk`** for the Zendesk-side actions (path-only actions do **not** auto-authenticate). Earlier revisions used a basic-auth connection holding an API token; Zendesk is retiring API tokens for the Ticketing API (creation blocked for new accounts **2026-07-28** and for all accounts **2026-10-27**; all existing tokens stop working **2027-04-30**), so the connection now stores an auto-renewing OAuth credential. Full background: [Zendesk_API_Credential_Decision.md](../Zendesk_API_Credential_Decision.md). Three steps (validated 2026-07-07):
 
-   **2a. Create a confidential OAuth client** for the integration. Run this as the dedicated service user the integration should act as — client_credentials tokens act as the user associated with the client:
-   ```bash
-   curl -s -X POST "https://YOURSUBDOMAIN.zendesk.com/api/v2/oauth/clients.json" \
-     -u "YOUR_EMAIL/token:YOUR_API_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"client":{"name":"TSANet Connect Integration","identifier":"tsanet_zendesk","kind":"confidential"}}'
-   ```
-   Copy `client.secret` from the response — the full secret (64 chars) is shown **only** at creation. `"kind":"confidential"` must be set **at creation**: the client_credentials grant rejects public clients (`unauthorized_client`), and changing `kind` on an existing client regenerates the secret while only ever displaying it truncated to 10 chars — if that happens, delete the client and recreate it.
+   **2a. Use the integration's confidential OAuth client** created in
+   [ZIS_Quick_Start.md](../ZIS_Quick_Start.md) **Step 1** (Admin Center → OAuth
+   clients, **Client kind: Confidential**, created as the dedicated service user —
+   client_credentials tokens act as the user associated with the client). The same
+   client that mints your setup tokens backs this connection; you need its
+   identifier (`tsanet_zendesk`) and secret. Reminder: the full secret is shown
+   **only once** at creation, and the client must be confidential **at creation** —
+   the grant rejects public clients (`unauthorized_client`), and changing `kind`
+   later regenerates the secret while only ever displaying it truncated (delete and
+   recreate the client if that happens).
 
    **2b. Register a ZIS OAuth client** pointing at your **own** instance's token endpoint (uses the ZIS bearer from Quick Start Step 4):
    ```bash
@@ -84,9 +86,12 @@ Connection name `zendesk` (Zendesk-side actions) matches the Quick Start. The TS
 ## Deploy
 
 ```bash
-# 1. Upload the bundle (basic auth / API token — the ZIS OAuth bearer is NOT accepted here)
+# 1. Upload the bundle — the ONE basic-auth exception: this endpoint rejects ALL OAuth
+#    (401 "Authorization failed due to OAuth being disabled for this API request",
+#    verified 2026-07-07). Temporarily enable password access (Admin Center → Zendesk
+#    API → Settings), upload with email:password, then disable it again.
 curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/registry/tsanet_connect/bundles" \
-  -u "YOUR_EMAIL/token:YOUR_API_TOKEN" -H "Content-Type: application/json" \
+  -u "YOUR_EMAIL:YOUR_PASSWORD" -H "Content-Type: application/json" \
   -d @tsanet_connect_bundle.json
 
 # 2. Create the inbound webhook (returns ingest path + Basic credentials — keep them)

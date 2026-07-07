@@ -1,7 +1,7 @@
 ---
 name: tsanet-connect
-description: Expert implementation guide for TSANet Connect integrations with Zendesk. Covers the ZAF sidebar app, ZIS OAuth client-credentials (Microsoft Entra) auth, inbound push delivery via callbackAuth, the optional GitHub Actions SLA monitor, Zendesk custom fields, and all known API quirks and gotchas discovered through production implementation. (The legacy ZIS bearer-token connection and its GitHub Actions refresh job are retired and retained only for reference.)
-trigger: Use when the user is implementing TSANet Connect with Zendesk, building a ZAF (Zendesk Apps Framework) sidebar app for TSANet, setting up ZIS (Zendesk Integration Services) for TSANet, working with the TSANet REST API, configuring GitHub Actions for TSANet token refresh or SLA monitoring, creating Zendesk custom fields for TSANet data, debugging TSANet collaboration case flows, or asks about TSANet Connect, TSANet API, ZAF app, ZIS bearer token, SLA breach detection, or collaboration case lifecycle. Also trigger on "tsanet", "collaboration case", "TSANet token", "respondBy", "ZIS bearer", or "ZAF sidebar" in any implementation context.
+description: Expert implementation guide for TSANet Connect integrations with Zendesk. Covers the ZAF sidebar app, ZIS OAuth client-credentials (Microsoft Entra) auth, inbound push delivery via callbackAuth, Zendesk custom fields, and all known API quirks and gotchas discovered through production implementation. (The legacy ZIS bearer-token connection and its GitHub Actions refresh job are retired and retained only for reference.)
+trigger: Use when the user is implementing TSANet Connect with Zendesk, building a ZAF (Zendesk Apps Framework) sidebar app for TSANet, setting up ZIS (Zendesk Integration Services) for TSANet, working with the TSANet REST API, creating Zendesk custom fields for TSANet data, debugging TSANet collaboration case flows, or asks about TSANet Connect, TSANet API, ZAF app, ZIS bearer token, SLA breach detection, or collaboration case lifecycle. Also trigger on "tsanet", "collaboration case", "TSANet token", "respondBy", "ZIS bearer", or "ZAF sidebar" in any implementation context.
 ---
 
 # TSANet Connect — Zendesk Integration Expert
@@ -34,8 +34,6 @@ A complete TSANet Connect + Zendesk integration has two layers:
 │  • no static token to refresh (retires bearer job)      │
 └─────────────────────────────────────────────────────────┘
 ```
-
-An optional, externally-hosted GitHub Actions workflow can add SLA breach alerting on top of this — it is not part of the core integration, needs its own GitHub repository/Actions/secrets, and is documented separately in `GitHub_Actions_SLA_Monitor.md`.
 
 **What ZIS flows are NOT used for:**
 ZIS scheduled polling (`flow_poll_tsanet`) is architecturally broken — ZIS flows cannot call ZIS management endpoints (circular OAuth scope). What is retired is ZIS-based token *refresh*, replaced by the OAuth client-credentials connection (see ZIS section). ZIS now CAN receive an inbound TSANet push via a generic inbound webhook secured by the `callbackAuth` capability (API v3.1.0); previously this was blocked because TSANet sent no `Authorization` header on webhooks. Do not attempt to rebuild ZIS-based polling or ZIS-based token refresh flows.
@@ -583,7 +581,7 @@ ZIS custom integrations **do not appear in Admin Center UI**. Verify via API:
 curl -s -u "EMAIL/token:API_TOKEN" \
   "https://SUBDOMAIN.zendesk.com/api/services/zis/integrations/tsanet_connect/connections"
 ```
-Note: most ZIS management endpoints reject a standard API token (401/403/404 depending on the endpoint — e.g. `connections/all` returns 403 "API token is not supported"). They require a ZIS OAuth token minted under your ZIS OAuth client. Exceptions that accept admin basic auth (API token): registry create and bundle upload. This is by design — it's not an error.
+Note: most ZIS management endpoints reject a standard API token (401/403/404 depending on the endpoint — e.g. `connections/all` returns 403 "API token is not supported"). They require a ZIS OAuth token minted under your ZIS OAuth client. Registry create additionally accepts admin basic auth and admin OAuth bearers (client_credentials); bundle upload accepts ONLY basic auth — it rejects all OAuth. This is by design — it's not an error.
 
 ---
 
@@ -635,15 +633,7 @@ Key facts (full recipe in `zis/README.md` Prerequisites 2a–2c):
 - **Minimal scope is `read tickets:write`.** `tickets:read` alone breaks `SearchTicket` — `/api/v2/search.json` returns 403 under it, and there is no `search:read` scope.
 - Tokens from clients created on or after 2026-04-30 **expire in 30 minutes**, so a static `bearer_token` connection is not viable; only the auto-renewing `oauth` connection type works.
 - **Migration on an existing install:** connection names are unique across types — delete the old `basic_auth` connection named `zendesk`, then create the `oauth` one under the same name. Zero bundle changes. Deleting a ZIS OAuth client registration cascade-deletes its connections.
-- An admin API token is still used **transiently** for setup bootstrap (registry create, ZIS-token minting, bundle upload) — general-scope client_credentials bearers get 401 on those endpoints. It is no longer *stored* anywhere and can be deleted after setup.
-
----
-
-## GitHub Actions SLA Monitor (Optional, External)
-
-An optional, externally-hosted GitHub Actions workflow (`sla-monitor`) can tag a Zendesk ticket when its TSANet acknowledgment SLA has passed. It is **not** part of the core integration — it needs its own GitHub repository, GitHub Actions, and stored secrets — so the full setup, the workflow YAML, required secrets, and troubleshooting live in the standalone `GitHub_Actions_SLA_Monitor.md` document, not here. Point a member there if they ask for SLA breach alerting inside Zendesk.
-
-The legacy `refresh-token` job (which kept a static bearer connection alive) is retired along with that connection; do not build it for a new installation — see **ZIS OAuth Client-Credentials Connection** above.
+- **Setup bootstrap is tokenless too** (validated 2026-07-07): the same confidential client's client_credentials bearer is accepted on ZIS registry create and on `POST /api/v2/oauth/tokens` (minting the ZIS management token). **One exception: bundle upload** — `POST /registry/{integration}/bundles` rejects ALL OAuth (401 "Authorization failed due to OAuth being disabled for this API request"); use email:password basic auth with the password-access toggle enabled temporarily.
 
 ---
 
@@ -745,7 +735,6 @@ Create in Admin Center → Objects and rules → Business rules → Triggers:
 - [ ] Deploy via Admin Center manual upload (API upload is broken)
 - [ ] Create `TSANet SLA Breach — Notify Assignee` Zendesk trigger
 - [ ] Create TSANet Active Collaborations view; add custom field columns manually
-- [ ] Optional: set up the externally-hosted GitHub Actions SLA monitor (`GitHub_Actions_SLA_Monitor.md`) — not required for the integration to work
 
 ---
 
