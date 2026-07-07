@@ -174,6 +174,6 @@ jobs:
         env: { GH_TOKEN: ${{ github.token }} }
 ```
 
-This means every version tag automatically produces the official ZIP and attaches it to a GitHub Release for members to download. No developer needs to manually run the build on their local machine. This is a **separate** GitHub Actions workflow from the optional [GitHub Actions SLA Monitor](GitHub_Actions_SLA_Monitor.md) — this one builds and ships the app itself; that one is an optional member-side alerting add-on.
+This means every version tag automatically produces the official ZIP and attaches it to a GitHub Release for members to download. No developer needs to manually run the build on their local machine.
 
 If you maintain a customized fork, you can set up the same pattern in your own repository so your own updates auto-package on tag push.
