@@ -109,16 +109,44 @@ lands before the kill date: a member installing after their creation cutoff cann
 mint an API token in the first place, so setup instructions must be OAuth-based from
 the start.
 
-**Migration mechanics (to be validated before the guides change).** Today the guides
-register `zendesk` as a `basic_auth` connection holding `email/token` + API token.
-The OAuth replacement needs one design decision resolved first: ZIS auto-renews only
-`oauth`-type connections (those registered with an OAuth client + token URL), while a
-`bearer_token` connection stores a **static** token (see *Gotchas* in
-[`zis/README.md`](zis/README.md) — static bearer credentials going stale is exactly
-why the basic-auth token was chosen originally). A Zendesk OAuth access token created
-under an OAuth client is long-lived unless the account enables token expiry, which
-makes a bearer-style registration plausible, but the winning recipe must be proven
-against a live instance before the Quick Start and README prerequisites are rewritten.
+**Migration mechanics.** Today the guides register `zendesk` as a `basic_auth`
+connection holding `email/token` + API token. Two facts pin down the replacement
+shape:
+
+- **Static tokens are out.** Zendesk OAuth tokens minted under a client created on or
+  after **April 30, 2026** expire automatically (default 30 minutes, maximum
+  `expires_in` 48 hours). A `bearer_token` connection stores a **static** token, so it
+  would go stale within two days — the *Gotchas* warning in
+  [`zis/README.md`](zis/README.md) about stale bearer credentials becomes literally
+  true for every new install.
+- **Zendesk now supports the `client_credentials` grant**
+  (`POST https://YOURSUBDOMAIN.zendesk.com/oauth/tokens` with `grant_type`,
+  `client_id` = the OAuth client's unique identifier, `client_secret`, `scope`; no
+  refresh token needed; the token acts as the user associated with the client).
+
+Together these point at one durable recipe: a ZIS **`oauth`-type connection** running
+the client_credentials grant against the instance's **own** `/oauth/tokens` endpoint,
+so ZIS mints and renews short-lived tokens itself — exactly the pattern the
+`tsanet_oauth` connection already uses with Entra, pointed at Zendesk instead. In
+outline (replacing Quick Start Step 1 and the README's basic-auth prerequisite):
+
+1. Create an OAuth client in Admin Center with a client secret (created by, or
+   associated with, the dedicated service user — the minted tokens act as that user).
+2. Register a ZIS OAuth client for it: `grant_type` `client_credentials`, `token_url`
+   `https://YOURSUBDOMAIN.zendesk.com/oauth/tokens`, and the ticket scopes in
+   `default_scopes`.
+3. Create the ZIS connection named `zendesk` from that client (same
+   `oauth/start` + verification-code dance as Quick Start Step 4b).
+
+Migration on an existing install: connection names are unique **across** types, so
+the `basic_auth` connection named `zendesk` must be deleted before the `oauth` one
+can take its name — the seven bundle actions then keep working with **zero** bundle
+changes. Two details still need proving on a live instance before the guides are
+rewritten: that ZIS's renewal loop drives Zendesk's token endpoint end to end, and
+the minimal scope string that satisfies all seven actions. (Note: ZIS-auto-generated
+OAuth clients — identifier `zis_<integration>` — are rejected by the
+client_credentials grant with `invalid_client`; a real Admin Center client is
+required.)
 
 ---
 
