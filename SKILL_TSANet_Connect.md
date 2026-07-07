@@ -583,7 +583,7 @@ ZIS custom integrations **do not appear in Admin Center UI**. Verify via API:
 curl -s -u "EMAIL/token:API_TOKEN" \
   "https://SUBDOMAIN.zendesk.com/api/services/zis/integrations/tsanet_connect/connections"
 ```
-Note: ZIS management endpoints (`/api/services/zis/`) **always return 404 with a standard API token**. They require a ZIS OAuth token (obtained via the OAuth2 flow with your ZIS OAuth client). This is by design — it's not an error.
+Note: most ZIS management endpoints reject a standard API token (401/403/404 depending on the endpoint — e.g. `connections/all` returns 403 "API token is not supported"). They require a ZIS OAuth token minted under your ZIS OAuth client. Exceptions that accept admin basic auth (API token): registry create and bundle upload. This is by design — it's not an error.
 
 ---
 
@@ -623,6 +623,19 @@ The response contains a `redirect_url` with a `verification_code`. **GET that `a
 - **`AADSTS7000215` (invalid client secret) through ZIS while the same secret works directly** means the stored value is corrupted — re-PATCH the client with the verbatim secret. Watch for editor/paste artifacts (merged lines, trimmed leading punctuation).
 - Show the connection with `GET /api/services/zis/connections/{integration}?name=...` to inspect `token_expiry` and confirm minting worked.
 - **The connection NAME is per-instance.** Substitute your instance's connection name in **all five** TSANet API actions (`action_ts_*`) when deploying the bundle. An incomplete substitution makes ingest still return 200 while the `action_ts_*` calls silently no-op — nothing reaches TSANet.
+
+---
+
+## Zendesk-side `zendesk` Connection (OAuth — replaces the API-token basic-auth form)
+
+The bundle's seven Zendesk-side actions (ticket create/search/update/read + the three finish actions) authenticate through a ZIS connection named `zendesk`. This was historically a `basic_auth` connection storing `email/token` + a Zendesk API token. **Zendesk is retiring API tokens for the Ticketing API** (creation blocked for new accounts 2026-07-28 and all accounts 2026-10-27; all tokens stop working 2027-04-30), so the connection is now an **`oauth`-type connection running the client_credentials grant against the member's own instance** — the same pattern as the Entra connection above, with `token_url` pointed at `https://SUBDOMAIN.zendesk.com/oauth/tokens`. Validated live 2026-07-07, including automatic re-mint of an expired token.
+
+Key facts (full recipe in `zis/README.md` Prerequisites 2a–2c):
+- The backing Zendesk OAuth client **must be `kind: "confidential"` at creation** — the grant rejects public clients with `unauthorized_client`, and changing `kind` later regenerates the secret while only ever displaying it truncated. Create the client as the dedicated service user; client_credentials tokens act as the client's associated user.
+- **Minimal scope is `read tickets:write`.** `tickets:read` alone breaks `SearchTicket` — `/api/v2/search.json` returns 403 under it, and there is no `search:read` scope.
+- Tokens from clients created on or after 2026-04-30 **expire in 30 minutes**, so a static `bearer_token` connection is not viable; only the auto-renewing `oauth` connection type works.
+- **Migration on an existing install:** connection names are unique across types — delete the old `basic_auth` connection named `zendesk`, then create the `oauth` one under the same name. Zero bundle changes. Deleting a ZIS OAuth client registration cascade-deletes its connections.
+- An admin API token is still used **transiently** for setup bootstrap (registry create, ZIS-token minting, bundle upload) — general-scope client_credentials bearers get 401 on those endpoints. It is no longer *stored* anywhere and can be deleted after setup.
 
 ---
 
@@ -697,7 +710,7 @@ Create in Admin Center → Objects and rules → Business rules → Triggers:
 - **Tag POST is additive:** `POST /api/v2/tickets/{id}/tags.json` adds to existing tags. Use this — don't PUT (which replaces).
 - **Ticket comments via PUT:** to post an internal comment programmatically: `PUT /api/v2/tickets/{id}.json` with `ticket.comment.public: false`. Do not use the Comments endpoint — it doesn't support the internal flag the same way.
 - **Views API custom columns:** silently ignored for custom fields. Manual configuration required.
-- **ZIS management endpoints:** always return 404 with standard API tokens. Require ZIS OAuth scope. This is expected behavior, not a bug.
+- **ZIS management endpoints:** reject standard API tokens (401/403/404 by endpoint); require a ZIS OAuth token. Registry create + bundle upload are the exceptions that accept admin basic auth. Expected behavior, not a bug.
 
 ---
 

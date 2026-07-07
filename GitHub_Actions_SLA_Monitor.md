@@ -36,7 +36,7 @@ OPEN cases list          ←── GitHub Actions sla-monitor job
 | Requirement | Notes |
 |---|---|
 | TSANet API credentials | Same API user as the ZAF app (`api@yourcompany.com`) |
-| Zendesk API token | Admin email + API token |
+| Zendesk OAuth client | A **confidential** OAuth client (identifier + secret) — the same one backing the `zendesk` ZIS connection works, or create a dedicated one the same way (see `zis/README.md` Prerequisites 2a). Zendesk is retiring API tokens (all tokens stop working 2027-04-30), so the monitor authenticates with short-lived client_credentials tokens instead |
 | GitHub repository + `gh` CLI | [gh install](https://cli.github.com/) |
 | TSANet Token field ID | The Zendesk custom field ID for the **TSANet Token** field (same value used in the ZAF app settings) |
 
@@ -50,8 +50,8 @@ In your GitHub repository, add the following secrets via the CLI or the GitHub U
 gh secret set TSANET_USERNAME      --body "api@yourcompany.com"
 gh secret set TSANET_PASSWORD      --body "your-tsanet-api-password"
 gh secret set ZENDESK_SUBDOMAIN    --body "yoursubdomain"
-gh secret set ZENDESK_EMAIL        --body "admin@yourcompany.com"
-gh secret set ZENDESK_API_TOKEN    --body "your-zendesk-api-token"
+gh secret set ZENDESK_OAUTH_CLIENT_ID     --body "your-oauth-client-identifier"
+gh secret set ZENDESK_OAUTH_CLIENT_SECRET --body "your-oauth-client-secret"
 gh secret set ZENDESK_FIELD_ID_TOKEN --body "your-tsanet-token-field-id"
 ```
 
@@ -91,10 +91,24 @@ jobs:
           echo "::add-mask::$JWT"
           echo "jwt=$JWT" >> $GITHUB_OUTPUT
 
+      - name: Get fresh Zendesk OAuth token
+        id: zendesk
+        run: |
+          RESPONSE=$(curl -s -X POST "https://${{ secrets.ZENDESK_SUBDOMAIN }}.zendesk.com/oauth/tokens" \
+            -H "Content-Type: application/json" \
+            -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"${{ secrets.ZENDESK_OAUTH_CLIENT_ID }}\",\"client_secret\":\"${{ secrets.ZENDESK_OAUTH_CLIENT_SECRET }}\",\"scope\":\"read tickets:write\"}")
+          ZD_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+          if [ -z "$ZD_TOKEN" ] || [ "$ZD_TOKEN" = "null" ]; then
+            echo "Zendesk OAuth token mint failed: $(echo "$RESPONSE" | jq -r '.error // "unknown"')"
+            exit 1
+          fi
+          echo "::add-mask::$ZD_TOKEN"
+          echo "token=$ZD_TOKEN" >> $GITHUB_OUTPUT
+
       - name: Check for SLA breaches and tag Zendesk tickets
         env:
           TSANET_JWT: ${{ steps.tsanet.outputs.jwt }}
-          ZENDESK_AUTH: ${{ secrets.ZENDESK_EMAIL }}/token:${{ secrets.ZENDESK_API_TOKEN }}
+          ZENDESK_TOKEN: ${{ steps.zendesk.outputs.token }}
           ZENDESK_SUBDOMAIN: ${{ secrets.ZENDESK_SUBDOMAIN }}
           FIELD_ID_TOKEN: ${{ secrets.ZENDESK_FIELD_ID_TOKEN }}
         run: |
@@ -115,7 +129,7 @@ jobs:
             [ "$DEADLINE" -gt "$NOW" ] && continue
 
             # Find the matching Zendesk ticket
-            SEARCH=$(curl -s -u "$ZENDESK_AUTH" \
+            SEARCH=$(curl -s -H "Authorization: Bearer $ZENDESK_TOKEN" \
               "https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json?query=custom_field_${FIELD_ID_TOKEN}:${TOKEN}%20type:ticket")
             TICKET_ID=$(echo "$SEARCH" | jq -r '.results[0].id // empty')
             [ -z "$TICKET_ID" ] && echo "No ticket for token ${TOKEN:0:8}..." && continue
@@ -129,7 +143,7 @@ jobs:
 
             # Tag the ticket — fires the Zendesk SLA breach trigger
             TAG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-              -X POST -u "$ZENDESK_AUTH" \
+              -X POST -H "Authorization: Bearer $ZENDESK_TOKEN" \
               -H "Content-Type: application/json" \
               "https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/${TICKET_ID}/tags.json" \
               -d '{"tags":["tsanet_sla_breached"]}')
