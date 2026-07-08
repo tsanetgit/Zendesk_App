@@ -22,8 +22,8 @@ TSANet webhook ping (eventType + requestToken)
       ├─ exists   → TransformForUpdate → UpdateTicket
       │              jq: status → lowercase option value, respondBy → YYYY-MM-DD
       └─ no match → GuardCreate                                   (idempotency guard, issue #42)
-                     ├─ eventType note.created → NoOp        skip; a note can't be the first event
-                     └─ else                   → CreateTicket  new ticket w/ token/status/partner
+                     ├─ eventType collaboration-request.created → CreateTicket  new ticket w/ token/status/partner
+                     └─ else (note.created, any V2 type)        → NoOp   only the creation event may create
 ```
 
 ## Prerequisites
@@ -204,7 +204,7 @@ Then, in **Zendesk Admin** (or via `/api/v2/webhooks` + `/api/v2/triggers`):
 - **Request bodies are mustache-templated** (`{{$.x}}`). JSONPath-style keys (`"value.$": "$.x"`) inside `requestBody` fail with `Error Resolving JSON Params`.
 - **Zendesk date fields reject ISO datetimes** (422 `InvalidValue`). The flow's Jq transform truncates `respondBy` to `YYYY-MM-DD`; keep that state if you modify the flow.
 - **The Integration Log is the only debugging surface** (Admin Center → Apps and integrations → Integrations → Integration logs; there is no API). Each entry's `execution_states` + `details` pinpoints the failing state.
-- **Zendesk search is eventually consistent.** `SearchTicket` can miss a ticket created seconds earlier. The common redelivery race (a `note.created` arriving before the just-created ticket is searchable) is handled by `GuardCreate`, which no-ops `note.created` events that find no ticket instead of creating a second one (issue #42). Other rapid-fire test pings can still in theory duplicate; real usage is safe because events for one case arrive minutes apart.
+- **Zendesk search is eventually consistent.** `SearchTicket` can miss a ticket created seconds earlier. `GuardCreate` therefore allows only the creation event (`collaboration-request.created`) to create a ticket; any other event type that finds no ticket no-ops instead of creating a duplicate (issue #42, tightened for the Connect API's concurrent webhook delivery workers — deliveries are near-instant, unordered, and at-least-once, so a `note.created` racing ahead of the creation event is normal, not exceptional). The residual duplicate window is a *redelivered* creation event landing inside the search-consistency lag; TSANet redelivers only on failed deliveries, so this stays a theoretical test-only case.
 
 ## Reference (generated)
 

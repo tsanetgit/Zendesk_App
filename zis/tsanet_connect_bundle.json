@@ -136,11 +136,11 @@
               "Choices": [
                 {
                   "Variable": "$.input.eventType",
-                  "StringEquals": "note.created",
-                  "Next": "NoOp"
+                  "StringEquals": "collaboration-request.created",
+                  "Next": "BuildSubmitter"
                 }
               ],
-              "Default": "BuildSubmitter"
+              "Default": "NoOp"
             },
             "NoOp": {
               "Type": "Succeed"
