@@ -93,26 +93,28 @@ function getJwt() {
   }, function(err) {
     var status = (err && err.status) || '?';
     var body = (err && err.responseJSON) || {};
-    var detail = body.detail || body.message || (err && err.responseText) || '';
+    var detail = body.detail || body.title || body.message || (err && err.responseText) || '';
     throw new Error('TSANet login failed (HTTP ' + status + '). Check credentials. Server: ' + String(detail).substring(0, 80));
   });
 }
 
-function tsanetGet(path) {
+function tsanetGet(path, retried) {
   return getJwt().then(function(jwt) {
     return fetch(baseUrl() + path, { headers: { Authorization: 'Bearer ' + jwt, Accept: 'application/problem+json' } });
   }).then(function(res) {
-    if (res.status === 401) { _jwt = null; return tsanetGet(path); }
+    // Re-login and retry a 401 once; a second 401 falls through to error
+    // parsing (a fresh token that still 401s won't be fixed by another login).
+    if (res.status === 401 && !retried) { _jwt = null; return tsanetGet(path, true); }
     if (!res.ok) return res.json().catch(function() { return {}; }).then(function(errBody) {
-      // Surface TSANet's actual error message (RFC 7807 detail, or legacy message)
-      var msg = errBody.detail || errBody.message || errBody.error || ('TSANet GET failed: ' + res.status);
+      // Surface TSANet's actual error message (RFC 7807 detail/title, or legacy message)
+      var msg = errBody.detail || errBody.title || errBody.message || errBody.error || ('TSANet GET failed: ' + res.status);
       throw new Error(msg);
     });
     return res.json();
   });
 }
 
-function tsanetPost(path, body) {
+function tsanetPost(path, body, retried) {
   return getJwt().then(function(jwt) {
     return fetch(baseUrl() + path, {
       method: 'POST',
@@ -120,10 +122,12 @@ function tsanetPost(path, body) {
       body: JSON.stringify(body)
     });
   }).then(function(res) {
-    if (res.status === 401) { _jwt = null; return tsanetPost(path, body); }
+    // Re-login and retry a 401 once; a second 401 falls through to error
+    // parsing (a fresh token that still 401s won't be fixed by another login).
+    if (res.status === 401 && !retried) { _jwt = null; return tsanetPost(path, body, true); }
     if (!res.ok) return res.json().catch(function() { return {}; }).then(function(errBody) {
-      // Surface TSANet's actual error message (RFC 7807 detail, or legacy message)
-      var msg = errBody.detail || errBody.message || errBody.error || ('HTTP ' + res.status);
+      // Surface TSANet's actual error message (RFC 7807 detail/title, or legacy message)
+      var msg = errBody.detail || errBody.title || errBody.message || errBody.error || ('HTTP ' + res.status);
       throw new Error(msg);
     });
     return res.json();
