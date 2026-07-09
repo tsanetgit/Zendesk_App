@@ -56,7 +56,13 @@
         "definition": {
           "connectionName": "tsanet_oauth",
           "method": "GET",
-          "url": "https://connect2.tsanet.org/v1/collaboration-requests/{{$.requestToken}}"
+          "url": "https://connect2.tsanet.org/v1/collaboration-requests/{{$.requestToken}}",
+          "headers": [
+            {
+              "key": "Accept",
+              "value": "application/json, application/problem+json"
+            }
+          ]
         },
         "name": "action_get_collaboration"
       }
@@ -344,6 +350,10 @@
             {
               "key": "Content-Type",
               "value": "application/json"
+            },
+            {
+              "key": "Accept",
+              "value": "application/json, application/problem+json"
             }
           ],
           "requestBody": {
@@ -367,6 +377,10 @@
             {
               "key": "Content-Type",
               "value": "application/json"
+            },
+            {
+              "key": "Accept",
+              "value": "application/json, application/problem+json"
             }
           ],
           "requestBody": {
@@ -387,6 +401,10 @@
             {
               "key": "Content-Type",
               "value": "application/json"
+            },
+            {
+              "key": "Accept",
+              "value": "application/json, application/problem+json"
             }
           ],
           "requestBody": {
@@ -407,6 +425,10 @@
             {
               "key": "Content-Type",
               "value": "application/json"
+            },
+            {
+              "key": "Accept",
+              "value": "application/json, application/problem+json"
             }
           ],
           "requestBody": {

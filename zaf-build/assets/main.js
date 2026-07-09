@@ -74,11 +74,17 @@ function getJwt() {
   // {{setting.tsanet_password}} placeholder server-side — the password is never
   // present in front-end JS. Requires proxy mode (no cors:true) to a
   // domainWhitelist host. The token-based calls below carry only the JWT.
+  // Accepting application/problem+json opts into the API's documented 4xx codes +
+  // RFC 7807 error bodies (without it, legacy mode returns 500 {"message"} for
+  // expected rejections — tsanetgit/Connect-API-Code#122). application/json is
+  // listed first so SUCCESS responses keep their normal content type; the error
+  // resolver only needs problem+json present in the Accept list (verified on BETA).
   return client.request({
     url: baseUrl() + '/login',
     type: 'POST',
     contentType: 'application/json',
     dataType: 'json',
+    headers: { Accept: 'application/json, application/problem+json' },
     secure: true,
     data: JSON.stringify({ username: settings.tsanet_username, password: '{{setting.tsanet_password}}' })
   }).then(function(d) {
@@ -88,33 +94,42 @@ function getJwt() {
     return _jwt;
   }, function(err) {
     var status = (err && err.status) || '?';
-    var detail = (err && (err.responseText || (err.responseJSON && JSON.stringify(err.responseJSON)))) || '';
+    var body = (err && err.responseJSON) || {};
+    var detail = body.detail || body.title || body.message || (err && err.responseText) || '';
     throw new Error('TSANet login failed (HTTP ' + status + '). Check credentials. Server: ' + String(detail).substring(0, 80));
   });
 }
 
-function tsanetGet(path) {
+function tsanetGet(path, retried) {
   return getJwt().then(function(jwt) {
-    return fetch(baseUrl() + path, { headers: { Authorization: 'Bearer ' + jwt } });
+    return fetch(baseUrl() + path, { headers: { Authorization: 'Bearer ' + jwt, Accept: 'application/json, application/problem+json' } });
   }).then(function(res) {
-    if (res.status === 401) { _jwt = null; return tsanetGet(path); }
-    if (!res.ok) throw new Error('TSANet GET failed: ' + res.status);
+    // Re-login and retry a 401 once; a second 401 falls through to error
+    // parsing (a fresh token that still 401s won't be fixed by another login).
+    if (res.status === 401 && !retried) { _jwt = null; return tsanetGet(path, true); }
+    if (!res.ok) return res.json().catch(function() { return {}; }).then(function(errBody) {
+      // Surface TSANet's actual error message (RFC 7807 detail/title, or legacy message)
+      var msg = errBody.detail || errBody.title || errBody.message || errBody.error || ('TSANet GET failed: ' + res.status);
+      throw new Error(msg);
+    });
     return res.json();
   });
 }
 
-function tsanetPost(path, body) {
+function tsanetPost(path, body, retried) {
   return getJwt().then(function(jwt) {
     return fetch(baseUrl() + path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwt },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwt, Accept: 'application/json, application/problem+json' },
       body: JSON.stringify(body)
     });
   }).then(function(res) {
-    if (res.status === 401) { _jwt = null; return tsanetPost(path, body); }
+    // Re-login and retry a 401 once; a second 401 falls through to error
+    // parsing (a fresh token that still 401s won't be fixed by another login).
+    if (res.status === 401 && !retried) { _jwt = null; return tsanetPost(path, body, true); }
     if (!res.ok) return res.json().catch(function() { return {}; }).then(function(errBody) {
-      // Surface TSANet's actual error message if present, not just the HTTP status
-      var msg = errBody.message || errBody.error || errBody.detail || ('HTTP ' + res.status);
+      // Surface TSANet's actual error message (RFC 7807 detail/title, or legacy message)
+      var msg = errBody.detail || errBody.title || errBody.message || errBody.error || ('HTTP ' + res.status);
       throw new Error(msg);
     });
     return res.json();
