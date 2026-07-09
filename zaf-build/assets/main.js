@@ -74,15 +74,17 @@ function getJwt() {
   // {{setting.tsanet_password}} placeholder server-side — the password is never
   // present in front-end JS. Requires proxy mode (no cors:true) to a
   // domainWhitelist host. The token-based calls below carry only the JWT.
-  // Accept: application/problem+json opts into the API's documented 4xx codes +
-  // RFC 7807 error bodies. Without it the legacy mode returns 500 {"message"} for
-  // expected rejections (locked-in backward compat — tsanetgit/Connect-API-Code#122).
+  // Accepting application/problem+json opts into the API's documented 4xx codes +
+  // RFC 7807 error bodies (without it, legacy mode returns 500 {"message"} for
+  // expected rejections — tsanetgit/Connect-API-Code#122). application/json is
+  // listed first so SUCCESS responses keep their normal content type; the error
+  // resolver only needs problem+json present in the Accept list (verified on BETA).
   return client.request({
     url: baseUrl() + '/login',
     type: 'POST',
     contentType: 'application/json',
     dataType: 'json',
-    headers: { Accept: 'application/problem+json' },
+    headers: { Accept: 'application/json, application/problem+json' },
     secure: true,
     data: JSON.stringify({ username: settings.tsanet_username, password: '{{setting.tsanet_password}}' })
   }).then(function(d) {
@@ -100,7 +102,7 @@ function getJwt() {
 
 function tsanetGet(path, retried) {
   return getJwt().then(function(jwt) {
-    return fetch(baseUrl() + path, { headers: { Authorization: 'Bearer ' + jwt, Accept: 'application/problem+json' } });
+    return fetch(baseUrl() + path, { headers: { Authorization: 'Bearer ' + jwt, Accept: 'application/json, application/problem+json' } });
   }).then(function(res) {
     // Re-login and retry a 401 once; a second 401 falls through to error
     // parsing (a fresh token that still 401s won't be fixed by another login).
@@ -118,7 +120,7 @@ function tsanetPost(path, body, retried) {
   return getJwt().then(function(jwt) {
     return fetch(baseUrl() + path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwt, Accept: 'application/problem+json' },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + jwt, Accept: 'application/json, application/problem+json' },
       body: JSON.stringify(body)
     });
   }).then(function(res) {

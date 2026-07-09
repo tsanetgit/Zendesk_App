@@ -60,7 +60,7 @@
           "headers": [
             {
               "key": "Accept",
-              "value": "application/problem+json"
+              "value": "application/json, application/problem+json"
             }
           ]
         },
@@ -353,7 +353,7 @@
             },
             {
               "key": "Accept",
-              "value": "application/problem+json"
+              "value": "application/json, application/problem+json"
             }
           ],
           "requestBody": {
@@ -380,7 +380,7 @@
             },
             {
               "key": "Accept",
-              "value": "application/problem+json"
+              "value": "application/json, application/problem+json"
             }
           ],
           "requestBody": {
@@ -404,7 +404,7 @@
             },
             {
               "key": "Accept",
-              "value": "application/problem+json"
+              "value": "application/json, application/problem+json"
             }
           ],
           "requestBody": {
@@ -428,7 +428,7 @@
             },
             {
               "key": "Accept",
-              "value": "application/problem+json"
+              "value": "application/json, application/problem+json"
             }
           ],
           "requestBody": {
