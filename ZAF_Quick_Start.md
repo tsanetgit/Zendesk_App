@@ -179,7 +179,7 @@ Zendesk does not support API-based app binary updates. To update:
 | Symptom | Fix |
 |---|---|
 | Sidebar shows "Credentials not configured" | Re-check TSANet username and password in app settings |
-| Accept button returns "Error processing request" | Verify `tsanet_username` matches the domain registered with TSANet (e.g. `api@yourcompany.com`, not an agent's personal email) |
+| Accept button (or any other action) returns an error | Read the exact message — as of v1.0.44 the app surfaces TSANet's specific reason (e.g. a domain mismatch or a missing field) instead of a generic failure. The most common cause is still a domain mismatch: verify `tsanet_username` matches the domain registered with TSANet (e.g. `api@yourcompany.com`, not an agent's personal email) |
 | New Collaboration search returns no results | Partner may not be in TSANet; check connect.tsanet.org for their membership |
 | SLA countdown missing on OPEN case | `respondBy` field may be null — TSANet sets it based on your group SLA configuration |
 | Background poller not creating tickets | Check browser console (`[TSANet BG]` log prefix); ensure credentials are set and TSANet has INBOUND cases |

@@ -190,6 +190,7 @@ The bundle can also forward an agent's **public reply** to the partner as a TSAN
 | ZIS reports `AADSTS7000215` (invalid client secret) but the same secret works elsewhere | The stored value is corrupted (paste artifact, trimmed leading punctuation) — re-send it verbatim via `PATCH /api/services/zis/connections/oauth/clients/tsanet_connect/{uuid}` |
 | Updating the OAuth client returns 405 | Use `PATCH`, not `PUT`, on the client endpoint |
 | Connection created but no `access_token` | The `verification_code` exchange step was skipped — GET the `redirect_url` from the start response with the ZIS bearer |
+| A TSANet action fails with a generic 500 in the flow execution log | As of the v1.0.44 bundle, all TSANet actions send `Accept: application/json, application/problem+json` — check the actual response body in the log; it carries `title`/`detail` describing the real rejection reason. TSANet's `/v1` API returns 500 by default for business-rule/authz rejections unless that header is present; this is permanent, documented behavior, not a TSANet bug (`tsanetgit/Connect-API-Code#122`) |
 
 ---
 
