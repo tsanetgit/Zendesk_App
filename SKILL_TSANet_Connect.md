@@ -95,6 +95,24 @@ This is now the **live, default** auth scheme for server-to-server integrations,
 | `POST` | `/v1/collaboration-requests/{token}/notes` | Post a note |
 | `GET` | `/v1/collaboration-requests/{token}/notes` | Get all notes |
 
+### Error Handling — Two Response Modes
+The `/v1` API has two error-response modes, selected by the request's `Accept` header. This is permanent, documented behavior (`tsanetgit/Connect-API-Code#122`, confirmed by TSANet 2026-07-09) — not a bug to work around.
+
+- **Legacy (default).** No `Accept` header, or `Accept: application/json` only → most business-rule, validation, and authorization rejections return **HTTP 500** with a `{"message": "..."}` body. This is locked in for backward compatibility with existing clients and will not change.
+- **RFC 7807 (opt-in).** Send `Accept: application/json, application/problem+json` → the same rejections return their documented status code (400/401/403/404/409/422) with an RFC 7807 body: `{type, title, status, detail, instance}`.
+
+**Recommended for all new integrations:**
+```
+Accept: application/json, application/problem+json
+```
+List `application/json` first — with `application/problem+json` alone, successful 200 responses also come back labeled `Content-Type: application/problem+json` (verified live on Beta), which can confuse content-type-keyed consumers. Branch on status code and read the error message from `detail`, falling back to `title`.
+
+Example — `GET /v1/collaboration-requests/{unknownToken}`:
+- Without the header → `500 {"message": "Case with token ... not found."}`
+- With the header → `404 {"type": "...", "title": "Not Found", "status": 404, "detail": "Case with token ... not found.", "instance": "/v1/collaboration-requests/..."}`
+
+The ZAF app and ZIS bundle both send the dual header as of v1.0.44.
+
 ### Case Lifecycle
 ```
 OPEN → INFORMATION → ACCEPTED → CLOSED
@@ -713,6 +731,7 @@ Create in Admin Center → Objects and rules → Business rules → Triggers:
 - **Incremental poll pattern:** store `updatedAt` of the last synced record; pass as `updatedAfter` on next poll. This matches the Salesforce connector's 15-minute sync pattern.
 - **SELECT field `options` are newline-delimited** — the process-form `customFields[].options` string separates choices with `\r\n`, not commas, and `selections[]` is often empty. Split on newlines. See *Process Form Rendering*.
 - **`adminNote` is HTML to render, not strip** — the form's admin note ("Partner instructions") is authored HTML (links); sanitize and render it. Only note `summary`/`description` should be stripped to plain text.
+- **All `/v1` error responses default to HTTP 500** for business-rule/authz/validation rejections (`{"message"}` body) — permanent, by design, not a bug. Send `Accept: application/json, application/problem+json` for the documented 4xx status + RFC 7807 body. See *Error Handling* above.
 
 ---
 

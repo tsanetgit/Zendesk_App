@@ -7,7 +7,7 @@ Use Issues https://github.com/tsanetgit/Zendesk_App/issues to log bugs and enhan
 
 - [ZAF Quick Start](ZAF_Quick_Start.md)
 - [ZIS Quick Start](ZIS_Quick_Start.md)
-- [Full Implementation Guide (.docx)](Zendesk_PlainLanguage_Implementation_Guide_v2.17.docx)
+- [Full Implementation Guide (.docx)](Zendesk_PlainLanguage_Implementation_Guide_v2.18.docx)
 - [ZAF Custom Build Guide (Not Recommended)](ZAF_Custom_Build_Guide.md) — only for members who cannot, or will not, install the pre-built ZIP
 
 <b>CURRENT PACKAGE VERSION:</b>
