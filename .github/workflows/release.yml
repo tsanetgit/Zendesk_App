@@ -5,32 +5,70 @@ name: Package ZAF app
 # files — no transpile step — so a release can never diverge from the repo.
 #
 #   git tag vX.Y.Z && git push origin vX.Y.Z
+#
+# Supply-chain hardening (security #93 — EDB "CI release pipeline tampering"):
+#   - Least-privilege GITHUB_TOKEN: nothing is granted at workflow scope; the
+#     publish job requests only the write scopes it actually needs.
+#   - Third-party actions are pinned to a full commit SHA (human-readable tag
+#     in the trailing comment) so a moved tag can't swap the action out.
+#   - Publishing is gated on the protected `release` environment (required
+#     reviewer), so an unreviewed or tampered tag cannot publish an artifact
+#     to every member install without a human approving it.
+#   - The artifact ships with a SLSA build-provenance attestation and a
+#     SHA-256 checksum, both verifiable at install time.
 
 on:
   push:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
+# Least privilege by default: grant no token scopes at the workflow level.
+# The job below opts into exactly the scopes it needs.
+permissions: {}
 
 jobs:
   package:
     runs-on: ubuntu-latest
+    # Human approval gate. The `release` environment is configured with a
+    # required reviewer, so a tag push pauses here until the release is
+    # approved — an unreviewed/tampered tag can't publish on its own.
+    environment: release
+    permissions:
+      contents: write      # create the release and upload assets
+      id-token: write      # OIDC token used to sign the provenance attestation
+      attestations: write  # write the attestation to the GitHub attestation store
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Build package
         run: bash scripts/package.sh
 
-      - name: Attach zip to release
+      - name: Generate SHA-256 checksum
+        run: |
+          cd dist
+          sha256sum *.zip > checksums.txt
+          cat checksums.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: dist/*.zip
+
+      - name: Attach zip + checksum to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
-            gh release upload "${{ github.ref_name }}" dist/*.zip --clobber
+            gh release upload "${{ github.ref_name }}" dist/*.zip dist/checksums.txt --clobber
           else
-            gh release create "${{ github.ref_name }}" dist/*.zip \
+            gh release create "${{ github.ref_name }}" dist/*.zip dist/checksums.txt \
               --title "${{ github.ref_name }}" \
-              --notes "Automated ZAF app package for ${{ github.ref_name }}. Install via Zendesk Admin Center → Apps and integrations → Zendesk Support apps → Upload/Update private app."
+              --notes "Automated ZAF app package for ${{ github.ref_name }}.
+
+          Verify provenance before install:
+            gh attestation verify tsanet-connect-v<version>.zip --repo tsanetgit/Zendesk_App
+          Or verify the checksum against checksums.txt:
+            sha256sum -c checksums.txt
+
+          Install via Zendesk Admin Center → Apps and integrations → Zendesk Support apps → Upload/Update private app."
           fi
