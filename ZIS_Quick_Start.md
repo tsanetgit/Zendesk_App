@@ -181,6 +181,26 @@ The bundle can also forward an agent's **public reply** to the partner as a TSAN
 
 **You are finished here.** The core integration (ZIS connection + flow bundle, Steps 1–5) is complete.
 
+### Audit your connection auth (recommended, repeat before 2027-04-30)
+
+Zendesk retires all API tokens on **2027-04-30** (no new tokens for new
+accounts after 2026-07-28). An install whose Zendesk-side ZIS connection
+still uses a token loses inbound ticket creation that day with no warning.
+[`scripts/audit-connection-auth.py`](scripts/audit-connection-auth.py)
+checks every connection under the integration and fails loudly if the
+`zendesk` connection is not OAuth:
+
+```bash
+export ZENDESK_SUBDOMAIN=yoursubdomain
+export ZIS_TOKEN=...   # from Step 4
+python3 scripts/audit-connection-auth.py
+```
+
+Exit codes are cron/CI-friendly (0 pass, 1 retirement risk, 2 hygiene
+warning), so you can schedule it and alert on non-zero. Run it after
+initial setup, after any credential change, and periodically until the
+retirement date has passed.
+
 ---
 
 ## Troubleshooting
