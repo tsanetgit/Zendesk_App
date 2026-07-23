@@ -18,7 +18,11 @@ Required environment:
   TSANET_HOST         TSANet API host, e.g. connect2.tsanet.org
   TSANET_TOKEN        TSANet API bearer token (Entra client-credentials)
   OLD_WEBHOOK_UUID    uuid of the current ZIS inbound webhook (the `uuid`
-                      field from its create response, NOT the `id` ULID)
+                      field from its create response, NOT the `id` ULID).
+                      Optional for legacy installs that never recorded it:
+                      pass --old-ingest-path instead, and accept that the
+                      old webhook cannot be deleted (its credential stays
+                      valid; ZIS has no list API to recover the uuid).
 
 Usage:
   rotate-inbound-webhook.py [--dry-run] [--subscription-id N]
@@ -48,6 +52,9 @@ def die(msg):
 
 def request(method, url, bearer=None, basic=None, body=None):
     req = urllib.request.Request(url, method=method)
+    # TSANet sits behind Cloudflare, which rejects python-urllib's default
+    # User-Agent (error 1010). Any recognizable client string passes.
+    req.add_header("User-Agent", "tsanet-zendesk-rotate/1.0")
     if bearer:
         req.add_header("Authorization", f"Bearer {bearer}")
     elif basic:
@@ -77,31 +84,44 @@ def main():
                     help="TSANet subscription id to rotate (required if "
                          "callbackUrl matching is ambiguous)")
     ap.add_argument("--integration", default=INTEGRATION_DEFAULT)
+    ap.add_argument("--old-ingest-path",
+                    help="ingest path of the current webhook; use when "
+                         "OLD_WEBHOOK_UUID was never recorded (legacy "
+                         "install). The old webhook then CANNOT be deleted "
+                         "and its credential stays valid as an orphan.")
     ap.add_argument("--out", default="zis-webhook-credentials.json",
                     help="file to write the new ingest credentials to (chmod 600)")
     args = ap.parse_args()
 
     env = {}
-    for var in ("ZENDESK_SUBDOMAIN", "ZIS_TOKEN", "TSANET_HOST",
-                "TSANET_TOKEN", "OLD_WEBHOOK_UUID"):
+    for var in ("ZENDESK_SUBDOMAIN", "ZIS_TOKEN", "TSANET_HOST", "TSANET_TOKEN"):
         val = os.environ.get(var)
         if not val:
             die(f"missing required environment variable {var} (see --help)")
         env[var] = val
+    old_uuid = os.environ.get("OLD_WEBHOOK_UUID")
+    if not old_uuid and not args.old_ingest_path:
+        die("set OLD_WEBHOOK_UUID, or pass --old-ingest-path for a legacy "
+            "install that never recorded the uuid (see --help)")
 
     zd = f"https://{env['ZENDESK_SUBDOMAIN']}.zendesk.com"
     ts = f"https://{env['TSANET_HOST']}"
     zis_webhooks = f"{zd}/api/services/zis/inbound_webhooks/generic/{args.integration}"
 
-    # ── 1. Resolve the old webhook: uuid -> ingest path ─────────────────────
-    status, old = request("GET", f"{zis_webhooks}/{env['OLD_WEBHOOK_UUID']}",
-                          bearer=env["ZIS_TOKEN"])
-    if status != 200:
-        die(f"cannot show old webhook {env['OLD_WEBHOOK_UUID']} (HTTP {status}). "
-            "Check OLD_WEBHOOK_UUID is the `uuid` field, not the `id` ULID.")
-    old_path = old["path"]
-    old_url = zd + old_path if old_path.startswith("/") else old_path
-    print(f"old webhook: uuid={env['OLD_WEBHOOK_UUID']}")
+    # ── 1. Resolve the old webhook's ingest path ────────────────────────────
+    if old_uuid:
+        status, old = request("GET", f"{zis_webhooks}/{old_uuid}",
+                              bearer=env["ZIS_TOKEN"])
+        if status != 200:
+            die(f"cannot show old webhook {old_uuid} (HTTP {status}). "
+                "Check OLD_WEBHOOK_UUID is the `uuid` field, not the `id` ULID.")
+        old_path = old["path"]
+        print(f"old webhook: uuid={old_uuid}")
+    else:
+        old_path = args.old_ingest_path
+        print("old webhook: uuid UNKNOWN (legacy install). The old webhook "
+              "will NOT be deleted; its credential remains valid as an "
+              "orphan. Treat the new webhook's uuid as a must-keep record.")
 
     # ── 2. Find the TSANet subscription pointing at it ──────────────────────
     status, subs = request("GET", f"{ts}/v1/webhooks", bearer=env["TSANET_TOKEN"])
@@ -120,8 +140,10 @@ def main():
           f"auth={sub.get('callbackAuthType')}")
 
     if args.dry_run:
+        tail = ("delete the old subscription and old webhook" if old_uuid
+                else "delete the old subscription (old webhook stays: uuid unknown)")
         print("\n--dry-run: no changes made. Would: create new ZIS webhook, "
-              f"re-point subscription {sub['id']}, verify, then delete both old halves.")
+              f"re-point subscription {sub['id']}, verify, then {tail}.")
         return
 
     # ── 3. Create the replacement ZIS webhook (old one stays live) ──────────
@@ -179,10 +201,15 @@ def main():
                         bearer=env["TSANET_TOKEN"])
     print(f"old subscription {sub['id']} delete: HTTP {status}"
           + ("" if status in (200, 204) else "  <-- FOLLOW UP MANUALLY"))
-    status, _ = request("DELETE", f"{zis_webhooks}/{env['OLD_WEBHOOK_UUID']}",
-                        bearer=env["ZIS_TOKEN"])
-    print(f"old webhook delete: HTTP {status}"
-          + ("" if status in (200, 204) else "  <-- FOLLOW UP MANUALLY: old credential still live"))
+    if old_uuid:
+        status, _ = request("DELETE", f"{zis_webhooks}/{old_uuid}",
+                            bearer=env["ZIS_TOKEN"])
+        print(f"old webhook delete: HTTP {status}"
+              + ("" if status in (200, 204) else "  <-- FOLLOW UP MANUALLY: old credential still live"))
+    else:
+        print("old webhook delete: SKIPPED (uuid unknown). The old credential "
+              "is orphaned, not revoked; nothing routes to it, but treat it "
+              "as live if it may have been exposed.")
 
     print("\nrotation complete. Store the credentials from "
           f"{args.out} in your secret manager, record uuid={new['uuid']}, "

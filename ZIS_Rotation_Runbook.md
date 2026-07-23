@@ -81,6 +81,20 @@ halves it created) and leaves the old pipe untouched.
 **Afterwards:** store the contents of `zis-webhook-credentials.json` in your
 secret manager, record the new `uuid` next to it, and delete the file.
 
+## Legacy installs (webhook `uuid` never recorded)
+
+Installs set up before this runbook existed typically never recorded the
+webhook's `uuid`, and ZIS has no list API to recover it. Rotation still
+works, with one degradation: pass `--old-ingest-path` (the current ingest
+path) instead of `OLD_WEBHOOK_UUID`, and the script skips deleting the old
+webhook. The old credential is then **orphaned, not revoked**: nothing
+routes to it after the TSANet subscription is deleted, but a party holding
+the old credential could still post to the old ingest URL and trigger the
+flow. If the old credential may have been exposed, contact Zendesk support
+to remove the orphaned webhook. Either way, the rotation converts a legacy
+install into a tracked one: from this point on the `uuid` is on record and
+every future rotation gets full revocation.
+
 ## Overlap window
 
 Between steps 4 and 6 both subscriptions are live and TSANet may deliver each
