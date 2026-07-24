@@ -1,11 +1,12 @@
-# ZIS Inbound Webhook Credential Rotation Runbook
+# ZIS Credential Rotation Runbook
 
-How to rotate the Basic credential that secures the TSANet -> ZIS inbound
-webhook (the `callbackAuth` credential from [ZIS_Quick_Start.md](ZIS_Quick_Start.md)
-Step 5). This is one of the three credentials tracked in issue
-[#91](https://github.com/tsanetgit/Zendesk_App/issues/91); the Zendesk OAuth
-client secret and the TSANet-issued Entra client secret have their own
-procedures (tracked in #91, not yet in this runbook).
+How to rotate two of the three credentials tracked in issue
+[#91](https://github.com/tsanetgit/Zendesk_App/issues/91): the **inbound
+webhook Basic credential** (the `callbackAuth` credential from
+[ZIS_Quick_Start.md](ZIS_Quick_Start.md) Step 5) and the **Zendesk OAuth
+client secret** behind the `zendesk` connection. The third, the
+TSANet-issued Entra client secret, is rotated in coordination with TSANet
+and is tracked in #91.
 
 **When to rotate:**
 - On a schedule (quarterly is a reasonable default).
@@ -124,6 +125,51 @@ curl -X DELETE -H "Authorization: Bearer $ZIS_TOKEN" \
 Verify before deleting: send the synthetic delivery from the script's step 5
 (a `note.created` body with a made-up `requestToken`, Basic auth with the new
 credentials, POSTed to the new ingest URL) and confirm HTTP 200.
+
+## Zendesk OAuth client secret rotation
+
+The `zendesk` ZIS connection (the one that creates and updates tickets) is
+backed by a confidential OAuth client on your own Zendesk instance. Rotating
+its secret is a different shape from the webhook rotation, because the
+platform gives no overlap window:
+
+> **Platform behaviors (validated 2026-07-24):**
+> - `PUT /api/v2/oauth/clients/{id}/generate_secret` returns the new secret
+>   **in full** (the Admin UI shows regenerated secrets truncated; the API
+>   is the reliable path) and invalidates the old secret **immediately**.
+> - **Never delete the OAuth client to rotate it.** Deleting a ZIS OAuth
+>   client registration cascade-deletes the connections built on it, which
+>   destroys the integration. Rotation is regenerate plus update, never
+>   delete plus recreate.
+
+```bash
+export ZENDESK_SUBDOMAIN=yoursubdomain
+export SETUP_TOKEN=...   # admin OAuth bearer (Quick Start Step 1b)
+export ZIS_TOKEN=...     # ZIS OAuth bearer
+
+# Preview (read-only):
+python3 scripts/rotate-zendesk-oauth-secret.py --dry-run
+
+# Rotate:
+python3 scripts/rotate-zendesk-oauth-secret.py
+```
+
+The script resolves both sides (the ZIS registration by name, default
+`zendesk_self`, and the Zendesk client by its identifier), regenerates the
+secret, writes it to a chmod-600 file **before** touching ZIS, PATCHes the
+ZIS registration, and verifies the new secret mints tokens.
+
+**The exposure window.** Between the regenerate and the PATCH (fractions of
+a second when scripted) ZIS holds a dead secret. This does not interrupt the
+integration: the connection's current access token keeps working until its
+normal expiry, and by the next renewal ZIS already has the new secret. If
+the script dies between the two steps, the saved file has the only copy of
+the new secret; recover by re-running just the PATCH (the exact command is
+printed on failure). Do not re-run the whole script in that state, as that
+would burn another secret.
+
+**Afterwards:** store the new secret wherever your setup-token workflow
+keeps it (the same client mints your `SETUP_TOKEN`), then delete the file.
 
 ## Versioning note
 
