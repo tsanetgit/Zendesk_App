@@ -17,7 +17,7 @@
       "background": "assets/background.html"
     }
   },
-  "version": "1.0.45",
+  "version": "1.0.46",
   "icon": "assets/logo.png",
   "frameworkVersion": "2.0",
   "parameters": [
@@ -84,6 +84,14 @@
       "required": true,
       "default": "",
       "description": "Zendesk numeric Field ID for TSANet Respond By (Admin Center > Tickets > Fields)"
+    },
+    {
+      "name": "allowed_action_roles",
+      "type": "text",
+      "secure": false,
+      "required": false,
+      "default": "",
+      "description": "Optional comma-separated list of Zendesk role names allowed to invoke TSANet actions (e.g. admin or a custom role name). Empty = all agents. Defense-in-depth only; the TSANet API is the real authorization boundary."
     }
   ],
   "domainWhitelist": [
