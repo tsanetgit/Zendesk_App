@@ -66,7 +66,7 @@ Authorization: Bearer <accessToken>
 ### Authentication — OAuth 2.0 client credentials (Microsoft Entra, live / default)
 This is now the **live, default** auth scheme for server-to-server integrations, validated end to end on TSANet's Beta environment (issue #1 closed). Inbound webhook delivery (TSANet -> ZIS) uses the `callbackAuth` capability, delivered in API v3.1.0 and validated on Beta (issue #2 closed).
 
-- Obtain a token from Microsoft Entra via the **client credentials** grant: `POST https://login.microsoftonline.com/{tenant-id}/oauth2/v2.0/token` with `grant_type=client_credentials`, your TSANet-issued `client_id`/`client_secret`, and `scope=api://{audience}/.default` (TSANet provides the audience value). Pass the result as a Bearer token.
+- Obtain a token from Microsoft Entra via the **client credentials** grant: `POST https://login.microsoftonline.com/{tenant-id}/oauth2/v2.0/token` with `grant_type=client_credentials`, your TSANet-issued `client_id`/`client_secret`, and `scope={audience}/.default` — the **bare** audience GUID (TSANet provides the audience value). Do **not** use `api://{audience}/.default`: it fails with `AADSTS500011` (resource principal not found) because the Connect app registration does not publish an Application ID URI. Pass the result as a Bearer token.
 - **Service principal provisioning is required.** The API accepts an app-only token only if your service principal's object ID has been provisioned by TSANet; provisioning is also what maps your tokens to your member company. Contact TSANet with your service principal OID to be onboarded.
 - The API accepts the default v1-format Entra token (bare-GUID `aud` claim) — no `requestedAccessTokenVersion` change is needed on the client app registration.
 - Tokens live ~60 minutes, but unlike the legacy `/v1/login` JWT, the **caller re-mints automatically from the long-lived client credential** — there is no static token to refresh. This is what retires the ZIS bearer-token refresh workaround (see ZIS section).
@@ -619,9 +619,10 @@ curl -X POST \
     "client_id": "YOUR_ENTRA_CLIENT_ID",
     "client_secret": "YOUR_ENTRA_CLIENT_SECRET",
     "token_url": "https://login.microsoftonline.com/TENANT_ID/oauth2/v2.0/token",
-    "default_scopes": "api://AUDIENCE/.default"
+    "default_scopes": "AUDIENCE/.default"
   }'
 ```
+`default_scopes` is the **bare** audience GUID plus `/.default` — the `api://` prefix fails with `AADSTS500011` (see the Entra authentication section).
 
 ### Step 2 — Create the connection (no browser / admin-consent step)
 ```bash
