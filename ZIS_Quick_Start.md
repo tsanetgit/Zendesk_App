@@ -1,6 +1,6 @@
 # TSANet Connect — ZIS Quick Start Guide
 
-**Last updated:** June 2026  
+**Last updated:** July 2026  
 **Time to complete:** ~30 minutes
 
 This guide covers **connecting ZIS to the TSANet API and deploying the flow bundle** (Steps 1–5) — so ZIS flows can call TSANet without handling auth themselves. The method is **OAuth client credentials (Microsoft Entra)**: ZIS stores a long-lived client credential issued by TSANet and mints/renews short-lived tokens itself. Nothing scheduled, no server, no token-refresh automation ([issue #1](https://github.com/tsanetgit/Zendesk_App/issues/1)).
@@ -17,6 +17,19 @@ The integration is complete at the end of Step 5.
 | TSANet-issued Entra client | Client ID + secret from TSANet, plus service principal onboarding (contact TSANet with your SP object ID) |
 | ZIS OAuth client | Created in Zendesk Admin Center (see Step 2) |
 
+### Before you start — credentials checklist
+
+**TSANet sends you (per environment):**
+- [ ] Entra `client_id` + `client_secret` **Value** (the secret arrives via a secure channel, not email)
+- [ ] `TENANT_ID` and `AUDIENCE` (both non-secret GUIDs — defined in Step 4a)
+- [ ] A dedicated TSANet **API user** (username + password) — used by the sidebar app (see the [ZAF Quick Start](ZAF_Quick_Start.md)), not by ZIS
+
+**You create yourself:**
+- [ ] `$ZIS_TOKEN` — a ZIS OAuth bearer token on your own Zendesk instance (Step 4)
+- [ ] The `zendesk` ZIS connection (your Zendesk-side credential — Step 5)
+
+**You do NOT need:** a TSANet admin account (the API user covers the integration), or any Entra admin-consent / app-role grant on your side.
+
 ---
 
 ## Architecture Overview
@@ -29,6 +42,15 @@ ZIS ↔ TSANet connection
       ZIS mints/renews short-lived tokens itself
       → nothing scheduled, no refresh automation
 ```
+
+### Two credentials, two jobs — don't mix them
+
+| Path | Component | Authenticates with |
+|---|---|---|
+| Server-side | ZIS flows → TSANet API | Entra OAuth **client credentials** (`client_id` + `client_secret`, registered via the curl in Step 4a) |
+| Browser | ZAF sidebar app → TSANet API | Dedicated TSANet **API user** (username + password, entered in the app's settings — the password is a secure setting and never reaches the front end) |
+
+The OAuth client cannot be used by the sidebar app, and the API user is not used by ZIS. You need both.
 
 ---
 
@@ -126,10 +148,52 @@ curl -s -X POST \
     "client_id": "YOUR_ENTRA_CLIENT_ID",
     "client_secret": "YOUR_ENTRA_CLIENT_SECRET",
     "token_url": "https://login.microsoftonline.com/TENANT_ID/oauth2/v2.0/token",
-    "default_scopes": "api://AUDIENCE/.default"
+    "default_scopes": "AUDIENCE/.default"
   }'
 ```
-TSANet provides the `TENANT_ID`, `AUDIENCE`, and your client credentials. Paste the secret **verbatim** — Entra secrets can begin with punctuation, and trimming it breaks auth with `AADSTS7000215`.
+
+> **Important — scope format.** Use the bare Connect-app client ID GUID in
+> `default_scopes` (i.e. `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/.default`, using the
+> `AUDIENCE` value TSANet gives you).
+> Do **not** prefix it with `api://` — that form fails with
+> `AADSTS500011: resource principal not found`, because the Connect app's
+> Application ID URI is not published. The same applies when testing the token
+> request in Postman or curl.
+
+**Where each value comes from:**
+
+| Value | What it is | Who provides it |
+|---|---|---|
+| `TENANT_ID` | TSANet's Microsoft Entra tenant ID (a GUID). Goes in the token URL: `https://login.microsoftonline.com/TENANT_ID/oauth2/v2.0/token` | TSANet |
+| `AUDIENCE` | The **client ID of the TSANet Connect app registration** for your environment. The scope is `AUDIENCE/.default` (bare GUID — see the callout above) | TSANet |
+| `client_id` / `client_secret` | Your member-specific app registration in TSANet's Entra tenant, created by TSANet. The secret is the opaque **Value** (looks like `xxx~xxxx...`), **not** a GUID — if you received a GUID, that's the Secret ID; ask TSANet for the secret Value | TSANet |
+| `$ZIS_TOKEN` | A Zendesk ZIS OAuth bearer token for **your own** Zendesk instance (minted at the top of this step) | **You** (the member) |
+
+**Per-environment values:**
+
+| Environment | API host | TENANT_ID | AUDIENCE |
+|---|---|---|---|
+| BETA | `connect2.tsanet.net` | *(provided by TSANet at onboarding)* | *(provided by TSANet at onboarding)* |
+| PRODUCTION | `connect2.tsanet.org` | *(provided by TSANet at onboarding)* | *(provided by TSANet at onboarding)* |
+
+`TENANT_ID` and `AUDIENCE` differ between BETA and PRODUCTION — don't reuse BETA
+values against PRODUCTION.
+
+Paste the secret **verbatim** — Entra secrets can begin with punctuation, and trimming it breaks auth with `AADSTS7000215`.
+
+**Pre-flight check (optional but recommended)** — verify the OAuth values before registering the client:
+
+```bash
+curl -s -X POST "https://login.microsoftonline.com/TENANT_ID/oauth2/v2.0/token" \
+  -d grant_type=client_credentials \
+  -d client_id=YOUR_ENTRA_CLIENT_ID \
+  --data-urlencode "client_secret=YOUR_ENTRA_CLIENT_SECRET" \
+  -d scope=AUDIENCE/.default
+```
+
+A JSON response containing `access_token` means the values are correct. Common errors:
+`AADSTS7000215` = wrong secret (check you have the **Value**, not the Secret ID);
+`AADSTS500011` = wrong scope format (drop the `api://` prefix) or wrong `AUDIENCE`.
 
 **4b. Create the connection** (no browser or admin-consent step):
 ```bash
