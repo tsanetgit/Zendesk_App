@@ -15,7 +15,7 @@ A Zendesk Apps Framework (ZAF) sidebar app that embeds TSANet Connect collaborat
 Most members should not build from source. Install the pre-built ZIP that TSANet publishes on each release:
 
 > Admin Center → Apps and integrations → Zendesk Support apps → Upload private app
-> Filename: `tsanet-connect-v<version>.zip` — always grab the most recent from the [latest release](https://github.com/tsanetgit/Zendesk_App/releases/latest) (the version matches [`manifest.json`](manifest.json), currently **1.0.44**).
+> Filename: `tsanet-connect-v<version>.zip` — always grab the most recent from the [latest release](https://github.com/tsanetgit/Zendesk_App/releases/latest) (the version matches [`manifest.json`](manifest.json), currently **1.0.45**).
 
 Configure the eight settings (TSANet credentials + your five Zendesk custom field IDs) and you're done. No build tools, no Node, no command line. Five minutes total.
 
@@ -64,6 +64,29 @@ bash scripts/package.sh          # → dist/tsanet-connect-v<version>.zip
 
 # 4. Upload via Admin Center → Apps and integrations → Zendesk Support apps → Update
 ```
+
+### ZAF SDK version pin (SRI)
+
+`assets/index.html` and `assets/background.html` load the ZAF SDK from an
+exact-version URL with a Subresource Integrity hash, so a tampered or
+unexpectedly-changed SDK is blocked by the browser (issue #94). The
+tradeoff: SDK patches no longer arrive automatically. To bump the SDK:
+
+```bash
+# 1. Pick the new version from https://github.com/zendesk/zendesk_app_framework_sdk/tags
+V=2.0.XX
+curl -s "https://static.zdassets.com/zendesk_app_framework_sdk/$V/zaf_sdk.min.js" -o /tmp/zaf_sdk.js
+
+# 2. Compute the SRI hash
+echo "sha384-$(openssl dgst -sha384 -binary /tmp/zaf_sdk.js | base64)"
+
+# 3. Update BOTH script tags (index.html and background.html): the URL's
+#    version segment AND the integrity attribute. Bump the app version and
+#    release as usual.
+```
+
+Check for new SDK releases periodically (or when Zendesk announces ZAF
+changes); a stale pin keeps working but forgoes upstream fixes.
 
 ### Releasing
 
