@@ -1,12 +1,12 @@
 # ZIS Credential Rotation Runbook
 
-How to rotate two of the three credentials tracked in issue
+How to rotate the three credentials tracked in issue
 [#91](https://github.com/tsanetgit/Zendesk_App/issues/91): the **inbound
 webhook Basic credential** (the `callbackAuth` credential from
-[ZIS_Quick_Start.md](ZIS_Quick_Start.md) Step 5) and the **Zendesk OAuth
-client secret** behind the `zendesk` connection. The third, the
-TSANet-issued Entra client secret, is rotated in coordination with TSANet
-and is tracked in #91.
+[ZIS_Quick_Start.md](ZIS_Quick_Start.md) Step 5), the **Zendesk OAuth
+client secret** behind the `zendesk` connection, and the **TSANet-issued
+Entra client secret** behind the TSANet connection (rotated in coordination
+with TSANet). A closing section covers scheduling and monitoring.
 
 **When to rotate:**
 - On a schedule (quarterly is a reasonable default).
@@ -170,6 +170,81 @@ would burn another secret.
 
 **Afterwards:** store the new secret wherever your setup-token workflow
 keeps it (the same client mints your `SETUP_TOKEN`), then delete the file.
+
+## Entra client secret rotation (coordinated with TSANet)
+
+The TSANet-side connection (`tsanet_oauth` or your named equivalent) is
+backed by an Entra client credential that TSANet issues. You cannot
+regenerate it yourself, but rotation is still clean because Microsoft Entra
+app registrations support **multiple concurrent secrets**: TSANet can add
+the new secret while the old one stays valid, which makes this the one
+rotation with a true no-pressure overlap window.
+
+1. **Request rotation** from TSANet (membership@tsanet.org). Ask them to
+   **add a second secret** to your client rather than replacing the
+   existing one, and to deliver it through a secure channel (never email).
+2. **Update the ZIS registration.** Find the registration's uuid, then
+   PATCH it (PATCH, not PUT, which returns 405). Paste the secret
+   **verbatim**: Entra secrets can begin with punctuation, and a trimmed
+   paste fails later with `AADSTS7000215`.
+
+   ```bash
+   # find the uuid of your Entra registration (name: tsanet_entra by default)
+   curl -s -H "Authorization: Bearer $ZIS_TOKEN" \
+     "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/connections/oauth/clients/tsanet_connect"
+
+   curl -X PATCH -H "Authorization: Bearer $ZIS_TOKEN" \
+     -H "Content-Type: application/json" \
+     "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/connections/oauth/clients/tsanet_connect/REGISTRATION_UUID" \
+     -d '{"client_secret": "NEW_SECRET_VERBATIM"}'
+   ```
+3. **Verify** with a direct token mint against Entra (the same check from
+   the Quick Start prerequisites, using your `TENANT_ID` and `AUDIENCE`
+   with the new secret), and confirm the connection still holds a live
+   token on its next renewal.
+4. **Confirm to TSANet**, who then deletes the old secret. Rotation is not
+   complete until the old secret is removed on the Entra side.
+
+**Expiry is the silent killer.** Entra secrets have a hard expiry (24
+months maximum, often shorter). An expired secret stops the ZIS-to-TSANet
+leg with `AADSTS7000222` and no earlier warning. Record the expiry date
+TSANet gives you and calendar the rotation well before it.
+
+## Scheduling the rotations
+
+All three rotations are safe to run during business hours (each is
+designed for zero or near-zero delivery downtime). A reasonable baseline:
+
+| Credential | Cadence | How |
+|---|---|---|
+| Webhook Basic | Quarterly | cron: `rotate-inbound-webhook.py` |
+| Zendesk OAuth secret | Quarterly | cron: `rotate-zendesk-oauth-secret.py` |
+| Entra secret | Before expiry, at least annually | Calendar + the coordinated procedure above |
+| Connection auth audit | Weekly | cron: `audit-connection-auth.py` (exit non-zero alerts) |
+
+## Monitoring for credential abuse
+
+Rotation bounds a credential's lifetime; monitoring catches misuse inside
+it. Two tiers, depending on your Zendesk plan:
+
+**With the Advanced Data Privacy and Protection (ADPP) add-on:** the
+Access Log API records per-request activity. Filter it for the
+integration's service user and alert on volume spikes, unexpected
+endpoints (anything outside ticket read/write), or activity at unusual
+hours. This is the control that directly satisfies per-request anomaly
+detection; it is plan-gated, and the recipe here is documentation only
+(the reference instance does not carry the add-on).
+
+**Without ADPP (baseline for every Enterprise install):** the Audit Log
+API records configuration and credential lifecycle events. Poll it on a
+schedule for events touching the integration's surface: OAuth client
+changes, ZIS connection changes, token grants, and role or password
+changes on the service user. Any such event outside a planned rotation
+window warrants investigation. As a volume proxy, the integration's
+service user should author ticket events at roughly the rate your TSANet
+case traffic implies; a scheduled count of its recent ticket updates
+(Search API) that deviates sharply from baseline is a cheap, plan-agnostic
+tripwire.
 
 ## Versioning note
 
