@@ -70,6 +70,14 @@ Fill in the settings on the installation screen:
 | **Zendesk Field ID for TSANet Status** | Field ID from Step 1 | ✅ |
 | **Zendesk Field ID for TSANet Partner** | Field ID from Step 1 | ✅ |
 | **Zendesk Field ID for TSANet Respond By** | Field ID from Step 1 | ✅ |
+| **Allowed action roles** | Comma-separated Zendesk role names permitted to invoke TSANet actions (e.g. `admin, Support Lead`). Empty = all agents | ❌ |
+
+> **Allowed action roles** is defense-in-depth for the UI only: it controls which
+> roles see and can click the TSANet action buttons (Accept / Reject / Request
+> Info / Add Note / Close / New Collaboration). It is not a security boundary —
+> the TSANet Connect API and its credential remain the real authorization
+> control. Role matching is case-insensitive against the agent's Zendesk role
+> name.
 
 > Set **TSANet environment** (`tsanet_env`) to match where your account is provisioned:
 > `BETA` → `connect2.tsanet.net`, `PRODUCTION` → `connect2.tsanet.org`.

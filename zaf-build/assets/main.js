@@ -14,6 +14,7 @@
 // ── State ─────────────────────────────────────────────────────────────────────
 var client          = null;
 var settings        = {};
+var agentRole       = null;  // cached at boot; see agentMayAct() (issue #97)
 var collaborations  = [];
 var _jwt            = null;
 var _jwtExpiry      = 0;
@@ -40,7 +41,18 @@ if (typeof ZAFClient === 'undefined') {
         return;
       }
 
-      loadCollaborations();
+      client.get('currentUser').then(function(d) {
+        agentRole = (d.currentUser && d.currentUser.role) || '';
+      }).catch(function() { agentRole = ''; }).then(function() {
+        if (!agentMayAct()) {
+          // Hide the collaboration-creation entry points for unauthorized roles.
+          var b1 = document.getElementById('btn-new-collab');
+          var b2 = document.getElementById('btn-compact-new');
+          if (b1) b1.style.display = 'none';
+          if (b2) b2.style.display = 'none';
+        }
+        loadCollaborations();
+      });
       client.on('ticket.tags.changed', loadCollaborations);
 
       // Partner-side updates (accept/reject, notes) reach Zendesk with no inbound
@@ -470,7 +482,30 @@ function syncNotesToZendesk(notes, ourCompany) {
   }).catch(function() {});
 }
 
+// ── Action RBAC (issue #97) ──────────────────────────────────────────────────
+// Defense-in-depth / UX only, NOT a security boundary: this app runs in the
+// agent's browser, so a determined agent can call the TSANet API directly no
+// matter which buttons render. The real authorization boundary is the TSANet
+// Connect API and its credential. This gate keeps unauthorized roles from
+// invoking actions through the UI.
+function agentMayAct() {
+  var conf = (settings.allowed_action_roles || '').trim();
+  if (!conf) return true;              // unset (default): all agents may act
+  if (agentRole === null) return false; // role not loaded yet: deny until known
+  var allowed = conf.split(',').map(function(r) { return r.trim().toLowerCase(); })
+                    .filter(function(r) { return r.length > 0; });
+  return allowed.indexOf(String(agentRole).toLowerCase()) !== -1;
+}
+
 function addActionButtons(el, collab) {
+  if (!agentMayAct()) {
+    var note = document.createElement('div');
+    note.className = 'rbac-note';
+    note.style.cssText = 'font-size:11px;color:#68737d;padding:2px 0;';
+    note.textContent = 'TSANet actions are limited to authorized roles.';
+    el.appendChild(note);
+    return;
+  }
   var s = collab.status, d = collab.direction, t = collab.token;
   function btn(label, cls, fn) {
     var b = document.createElement('button');
@@ -621,6 +656,7 @@ document.getElementById('btn-new-collab').addEventListener('click', function() {
 // Called from compact-bar "+ New" button on non-TSANet tickets.
 // Expands the panel to full height and opens the New Collaboration dialog.
 function enterNewCollaboration() {
+  if (!agentMayAct()) { showError('Your Zendesk role is not authorized for TSANet actions.'); return; }
   show('compact-bar', false);
   show('btn-new-collab', true);
   show('btn-sync-inbound', true);
@@ -866,6 +902,7 @@ function showConfirm(msg, callback) {
 
 // ── Action Handlers ───────────────────────────────────────────────────────────
 function handleAccept(token) {
+  if (!agentMayAct()) { showError('Your Zendesk role is not authorized for TSANet actions.'); return; }
   showPrompt('Internal case number (optional):', function(cn) {
     // TSANet requires engineerEmail to match the company's registered domain.
     // settings.tsanet_username is always domain-valid; use it as the email.
@@ -883,6 +920,7 @@ function handleAccept(token) {
   });
 }
 function handleReject(token) {
+  if (!agentMayAct()) { showError('Your Zendesk role is not authorized for TSANet actions.'); return; }
   showPrompt('Reason for rejection:', function(reason) {
     if (!reason) return;
     tsanetPost('/collaboration-requests/' + token + '/rejection', { reason: reason })
@@ -891,6 +929,7 @@ function handleReject(token) {
   });
 }
 function handleRequestInfo(token) {
+  if (!agentMayAct()) { showError('Your Zendesk role is not authorized for TSANet actions.'); return; }
   showPrompt('What information do you need?', function(info) {
     if (!info) return;
     tsanetPost('/collaboration-requests/' + token + '/information-request', { requestedInformation: info })
@@ -899,6 +938,7 @@ function handleRequestInfo(token) {
   });
 }
 function handleRespondInfo(token) {
+  if (!agentMayAct()) { showError('Your Zendesk role is not authorized for TSANet actions.'); return; }
   showPrompt('Provide the requested information:', function(r) {
     if (!r) return;
     tsanetPost('/collaboration-requests/' + token + '/information-response', { requestedInformation: r })
@@ -907,6 +947,7 @@ function handleRespondInfo(token) {
   });
 }
 function handleClose(token) {
+  if (!agentMayAct()) { showError('Your Zendesk role is not authorized for TSANet actions.'); return; }
   showConfirm('Close this collaboration? This cannot be undone.', function(confirmed) {
     if (!confirmed) return;
     tsanetPost('/collaboration-requests/' + token + '/closure', {})
@@ -915,6 +956,7 @@ function handleClose(token) {
   });
 }
 function handleAddNote(token) {
+  if (!agentMayAct()) { showError('Your Zendesk role is not authorized for TSANet actions.'); return; }
   showPrompt2('Add a note:', 'Subject', 'Details', function(subject, details, visibility) {
     if (!subject) return;
     if (visibility === 'public') {
@@ -986,6 +1028,7 @@ function showInfoBanner(msg, onRespond) {
   var newBtn = oldBtn.cloneNode(true);
   oldBtn.parentNode.replaceChild(newBtn, oldBtn);
   newBtn.onclick = onRespond;
+  newBtn.style.display = agentMayAct() ? '' : 'none';
   show('info-banner', true);
 }
 function hideInfoBanner() { show('info-banner', false); }
