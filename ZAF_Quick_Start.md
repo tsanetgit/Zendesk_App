@@ -186,6 +186,12 @@ Zendesk does not support API-based app binary updates. To update:
 
 ---
 
+## Data Handling
+
+Tickets the integration creates or touches (tagged `tsanet_inbound` / `tsanet_outbound`) carry cross-org case content: partner company names, submitter and engineer contact details, and case narratives in subjects, descriptions, and comments. This content persists until you remove it, and removal applies to your Zendesk copy only. See [PII_Retention_and_Data_Handling.md](PII_Retention_and_Data_Handling.md) for the full data map and the two supported retention recipes (whole-ticket deletion or selective redaction).
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |

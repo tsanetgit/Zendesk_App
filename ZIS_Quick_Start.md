@@ -299,6 +299,10 @@ The created ticket carries the TSANet token, status, and partner company, plus �
 
 ## Important Limitations
 
+**Mirrored case content persists until you remove it**  
+Cross-org case content (submitter and engineer names/emails, problem narratives, partner company names) lands in ticket subjects, descriptions, comments, and custom fields, and stays for the life of the ticket. Retention is your responsibility as data controller, and anything you scrub is removed from your copy only (the TSANet platform case and the partner's CRM copy are separate). Data map and two supported removal recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_and_Data_Handling.md).
+
+
 **ZIS scheduled polling is retired**  
 An earlier design included a ZIS flow (`flow_poll_tsanet`) intended to poll TSANet for inbound cases on a schedule. This never functioned due to three layered failures (clock ticket required `new` status, no `requestToken` in automation payload, JWT expiry during execution). The flow remains installed but is permanently dormant — both Zendesk automations that triggered it have been disabled. Inbound case sync is now handled by:
 - **ZIS push delivery (primary)** — TSANet POSTs each event to the ZIS ingest webhook, secured by `callbackAuth` (see below)

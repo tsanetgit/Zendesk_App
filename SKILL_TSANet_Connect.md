@@ -690,6 +690,19 @@ Create in Admin Center → Objects and rules → Business rules → Triggers:
 
 ---
 
+## PII Retention and Data Handling
+
+Cross-org case content (submitter names/emails, engineer names, problem narratives, partner company names) mirrors into ticket subjects, descriptions, comments, and custom fields, and persists until the member removes it. Key facts:
+
+- **Three-copy model:** every collaboration exists in the member's ticket, the TSANet platform case, and the partner's CRM. Member-side scrubbing is local only; Connect API notes are append-only, so no erasure propagates cross-org.
+- **Selectors:** `tsanet_inbound` / `tsanet_outbound` tags mark every ticket the integration touches; all retention tooling keys on them.
+- **Two removal modes:** whole-ticket deletion (native deletion schedules act on archived tickets only, i.e. closed 120+ days; tag-scoped schedules need the ADPP add-on, otherwise use an API sweep) or selective scrub (redaction API permanently removes comment/attachment content; field clears leave old values in audit history, which only ticket deletion removes).
+- **Person-level PII lives in comments** (redactable); custom fields carry the partner company name at most.
+
+Full data map and recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_and_Data_Handling.md).
+
+---
+
 ## Known Bugs and Proven Fixes
 
 | Symptom | Root Cause | Fix |
