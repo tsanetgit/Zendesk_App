@@ -19,6 +19,12 @@ Before starting, make sure you have:
 | TSANet environment | BETA (`connect2.tsanet.net`) or PRODUCTION (`connect2.tsanet.org`) |
 | App ZIP file | Downloaded from the [latest release](https://github.com/tsanetgit/Zendesk_App/releases/latest) — filename is `tsanet-connect-v<version>.zip`; always grab the current one, not a version pinned in this guide |
 
+> **Don't mix credentials.** The dedicated TSANet **API user** (username + password)
+> is what the sidebar app authenticates with. It is separate from the Entra OAuth
+> client used by ZIS (see the [ZIS Quick Start](ZIS_Quick_Start.md)) — the OAuth
+> client cannot be used by the sidebar app, and the API user is not used by ZIS.
+> You need both.
+
 ---
 
 ## Step 1 — Create the Zendesk Custom Fields
@@ -64,6 +70,12 @@ Fill in the settings on the installation screen:
 | **Zendesk Field ID for TSANet Status** | Field ID from Step 1 | ✅ |
 | **Zendesk Field ID for TSANet Partner** | Field ID from Step 1 | ✅ |
 | **Zendesk Field ID for TSANet Respond By** | Field ID from Step 1 | ✅ |
+
+> Set **TSANet environment** (`tsanet_env`) to match where your account is provisioned:
+> `BETA` → `connect2.tsanet.net`, `PRODUCTION` → `connect2.tsanet.org`.
+> The **TSANet API password** field is a Zendesk **secure setting** — it is stored
+> encrypted and never reaches the front end; requests that use it are proxied
+> server-side by Zendesk.
 
 Click **Install**.
 
