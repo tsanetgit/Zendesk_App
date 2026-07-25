@@ -94,7 +94,9 @@ curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/registry/tsanet
   -u "YOUR_EMAIL:YOUR_PASSWORD" -H "Content-Type: application/json" \
   -d @tsanet_connect_bundle.json
 
-# 2. Create the inbound webhook (returns ingest path + Basic credentials — keep them)
+# 2. Create the inbound webhook (returns ingest path + Basic credentials + uuid —
+#    keep all three; the uuid is REQUIRED for credential rotation and there is no
+#    list API to recover a lost one — see ZIS_Rotation_Runbook.md)
 curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/inbound_webhooks/generic/tsanet_connect" \
   -H "Authorization: Bearer ZIS_OAUTH_TOKEN" -H "Content-Type: application/json" \
   -d '{"source_system":"tsanet","event_type":"collaboration_event"}'
@@ -179,7 +181,8 @@ The flow **reuses `action_ts_note`** (no new action). Loop-safe: the note mirror
 ### Setup (in addition to the inbound `collaboration_event` webhook in Deploy above)
 
 ```bash
-# 1. Create the comment-forwarding inbound webhook (returns its own ingest path + Basic creds — keep them)
+# 1. Create the comment-forwarding inbound webhook (returns its own ingest path +
+#    Basic creds + uuid — keep all three; same rotation/no-list-API rule as the main webhook)
 curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/inbound_webhooks/generic/tsanet_connect" \
   -H "Authorization: Bearer ZIS_OAUTH_TOKEN" -H "Content-Type: application/json" \
   -d '{"source_system":"zendesk","event_type":"public_comment"}'
