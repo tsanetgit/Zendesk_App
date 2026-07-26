@@ -1,7 +1,7 @@
 {
   "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit.",
   "schema": 1,
-  "reviewed_commit": "0abd1d637f125da8e63d86825ae512e8b99a8821",
+  "reviewed_commit": "8447bc64ceb6e8d8bf02522306c2e7ea76ae97c1",
   "reviewed_at": "2026-07-26",
   "taxonomy_version": 2,
   "reviewer": "tsanet-ops-security-review",
@@ -19,18 +19,16 @@
     "low": 0
   },
   "open_findings": [
-    "MEDIUM #110: artifact verification (attestation/checksum) appears only in release notes, not in the member-facing install guide",
-    "MEDIUM #96: durable audit trail \u2014 direction set (B+C), documentation deliverable sequenced after #101",
-    "LOW #111: collaboration card interpolates status/priority/token unescaped",
-    "LOW #98: note direction / echo-suppression disambiguation"
+    "MEDIUM #96: durable audit trail \u2014 direction set (B+C), documentation deliverable deliberately sequenced after #101",
+    "LOW #98: note direction / echo-suppression relies on company-name matching"
   ],
   "notes": [
-    "Delta review of 0abd1d6 (the #108/#109 fixes) against the 96815ac full review. Scope was two workflow files; no new findings.",
-    "CAVEAT \u2014 this delta was SELF-REVIEWED: the same session authored the #108/#109 fixes and reviewed them. Recorded so the record does not overstate its own independence. The evidence behind it is mechanical and reproducible rather than judgemental: four gate states exercised against live data (live query, low-only, unprioritised, failed query), edge cases under set -uo pipefail (empty and all-low input both yield 0 without error), and zis-readme-check.yml passing live under the new read-only default.",
-    "Verified this review: zis-readme-check.yml declares contents:read and writes nothing; release.yml keeps permissions:{} at workflow scope with security-status ungated and package gated on the release environment; repo settings now default_workflow_permissions=read and can_approve_pull_request_reviews=false.",
-    "Mechanical improved 10/2 -> 11/1: the SHA-pinning warning cleared when zis-readme-check.yml was pinned (checkout v4.4.0, setup-python v5.6.0, both held at their existing major versions).",
-    "Taxonomy version 2: Category 7 (untrusted content rendering) added after the 96815ac review missed client-side injection. The 96815ac review predates it, so its Category 7 coverage came from an ad-hoc advisor lead rather than the checklist.",
-    "NOT re-probed this session: inbound webhook ingress authentication (still relying on the closed #90 disposition); SRI-vs-CDN and environment-reviewer checks are point-in-time from the 96815ac review.",
-    "Connect_SDK has had mechanical checks only; no design review has been performed on that repo."
+    "Delta review covering #110 (docs: member package verification) and #111 (escape API-sourced values in the collaboration card). Reviewed for release v1.0.47.",
+    "SELF-REVIEWED: the same session authored and reviewed both changes. Evidence is reproducible rather than judgemental \u2014 esc() verified against a quote-breakout and tag-injection payload; notes render path re-checked and already fully escaped; sla.css confirmed locally generated, not API-sourced; node --check and package.sh both clean.",
+    "#111 note: the case token was removed from the DOM rather than escaped. It was interpolated into an id AND into querySelector('#actions-' + token) on the next line, so escaping at the write site would have desynced the read and still placed token text inside a CSS selector. The container is now found by class within its own card.",
+    "Category 7 (untrusted content rendering) applied for the first time as a checklist item rather than an ad-hoc lead; it is what #111 came from.",
+    "Remaining mechanical warning is the known v1-endpoint usage sunsetting 2027-01-01 (#101).",
+    "NOT re-probed this session: inbound webhook ingress authentication (still relying on the closed #90 disposition). SRI-vs-CDN and release-environment reviewer checks are point-in-time from the 96815ac review.",
+    "Connect_SDK deliberately out of scope: its active development is on an unmerged raw_impl branch, so main does not represent shippable code."
   ]
 }
