@@ -54,6 +54,36 @@ The app uses four custom ticket fields to store TSANet data. Create each one in 
 
 Zendesk will validate the package and show the installation settings screen.
 
+### Verify the package before you upload it (recommended)
+
+Every release is published with a build-provenance attestation and a
+SHA-256 checksum, so you can confirm the ZIP you downloaded is the one
+TSANet built rather than something altered in transit or substituted
+elsewhere. Both files are on the same [release
+page](https://github.com/tsanetgit/Zendesk_App/releases/latest).
+
+With the [GitHub CLI](https://cli.github.com) installed:
+
+```bash
+gh attestation verify tsanet-connect-v<version>.zip --repo tsanetgit/Zendesk_App
+```
+
+Expected: a line confirming the attestation was verified against
+`tsanetgit/Zendesk_App`. Or, using only the checksum file:
+
+```bash
+# macOS / Linux — run in the folder holding the ZIP and checksums.txt
+shasum -a 256 -c checksums.txt
+```
+
+Expected: `tsanet-connect-v<version>.zip: OK`.
+
+> **If verification fails, do not install the package.** A failure means
+> the file does not match what TSANet published: re-download it from the
+> release page and try once more, and if it still fails contact
+> membership@tsanet.org before proceeding. A checksum mismatch is worth
+> reporting even if the re-download succeeds.
+
 ---
 
 ## Step 3 — Configure App Settings
