@@ -334,17 +334,20 @@ function renderCard(collab) {
   card.innerHTML =
     '<div class="card-header">' +
       '<span class="card-partner">' + esc(partner) + '</span>' +
-      '<span class="status-badge status-' + collab.status + '">' + collab.status + '</span>' +
+      '<span class="status-badge status-' + esc(collab.status) + '">' + esc(collab.status) + '</span>' +
     '</div>' +
     '<div class="card-body">' +
       '<div class="card-row"><span class="card-label">Direction</span><span class="card-value">' + (isInbound ? '← Inbound' : 'Outbound →') + '</span></div>' +
-      '<div class="card-row"><span class="card-label">Priority</span><span class="card-value">' + (collab.priority || '—') + '</span></div>' +
+      '<div class="card-row"><span class="card-label">Priority</span><span class="card-value">' + esc(collab.priority || '—') + '</span></div>' +
       (showSla ? '<div class="card-row"><span class="card-label">SLA</span><span class="card-value ' + sla.css + '">' + esc(sla.label) + '</span></div>' : '') +
       (collab.summary   ? '<div class="card-row"><span class="card-label">Summary</span><span class="card-value" style="max-width:60%;white-space:normal;text-align:right;">' + esc(collab.summary) + '</span></div>' : '') +
     '</div>' +
-    '<div class="card-actions" id="actions-' + collab.token + '"></div>';
+    '<div class="card-actions"></div>';
 
-  addActionButtons(card.querySelector('#actions-' + collab.token), collab);
+  // Scoped to this card, so a class is enough; building an id out of the
+  // case token would put attacker-influenced text into both markup and a
+  // CSS selector for no benefit (tsanetgit/Zendesk_App#111).
+  addActionButtons(card.querySelector('.card-actions'), collab);
 
   // Load and display TSANet notes for this collaboration
   var notesContainer = document.createElement('div');
