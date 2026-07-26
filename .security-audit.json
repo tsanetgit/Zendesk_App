@@ -1,14 +1,14 @@
 {
   "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit.",
   "schema": 1,
-  "reviewed_commit": "438734f6641e6ce69e674272256c68a34f04fa6b",
+  "reviewed_commit": "875fa152f84d8f1958f44b292b1a100abbb094a4",
   "reviewed_at": "2026-07-26",
   "taxonomy_version": 2,
   "reviewer": "tsanet-ops-security-review",
   "review_scope": "delta",
   "self_reviewed": true,
   "mechanical": {
-    "pass": 11,
+    "pass": 10,
     "fail": 0,
     "warn": 1,
     "skip": 0
@@ -19,15 +19,16 @@
     "low": 0
   },
   "open_findings": [
-    "MEDIUM #96: durable audit trail \u2014 direction set (B+C), documentation deliverable deliberately sequenced after #101",
-    "LOW #98: note direction / echo-suppression relies on company-name matching"
+    "MEDIUM #96: durable audit trail \u2014 direction set (B+C), documentation deliverable sequenced after #101",
+    "LOW #98: note attribution improved to creatorEmail-domain heuristic; remains open pending Connect-API-Code#131 (companyId on CaseNoteDTO)"
   ],
   "notes": [
-    "Delta review covering #115 (release note now states why the gate flagged, rather than asserting 'no audit' for every flag reason).",
-    "SELF-REVIEWED: same session authored and reviewed. Evidence is reproducible \u2014 three note states rendered and exited cleanly under bash -e (including the empty-note case, which a short-circuit bug would have broken); four-way COVERED/FINDINGS matrix classified correctly; the fix reproduces by hand the note v1.0.47 should have carried.",
-    "Third gate defect found and closed (#108, #109, #115). Common shape: the tooling reported a state it had not established. All three were caught by verifying output rather than trusting that a step succeeded.",
+    "Delta review of #117 (note attribution by creator domain + SYSTEM-note recognition) for release v1.0.48.",
+    "SELF-REVIEWED. Category 7 (untrusted content rendering) applied to the changed render path: the new author label can carry an API-sourced companyName and is escaped at the render site via esc(lbl.who); icons are fixed literals. No new findings.",
+    "Change was driven by live BETA payload inspection rather than the spec: TSANet posts SYSTEM notes with companyName/creatorEmail null and creatorName 'SYSTEM', which the previous name-equality logic attributed to the partner. Reported upstream as Connect-API-Code#131 along with the companyId request.",
+    "Echo suppression now requires a confident attribution and fails open otherwise, so an unidentifiable note is mirrored rather than silently dropped.",
     "Remaining mechanical warning is the known v1-endpoint usage sunsetting 2027-01-01 (#101).",
     "NOT re-probed this session: inbound webhook ingress authentication (relying on the closed #90 disposition). SRI-vs-CDN and release-environment reviewer checks are point-in-time from the 96815ac review.",
-    "Connect_SDK deliberately out of scope: active development is on an unmerged raw_impl branch, so main does not represent shippable code."
+    "Connect_SDK out of scope: active development is on an unmerged raw_impl branch."
   ]
 }
