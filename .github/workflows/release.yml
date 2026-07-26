@@ -80,11 +80,31 @@ jobs:
             fi
           fi
 
-          # 3. No open high/medium security findings.
-          OPEN_H=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open             --label security --label high-priority --json number --jq 'length' 2>/dev/null || echo 0)
-          OPEN_M=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open             --label security --label medium-priority --json number --jq 'length' 2>/dev/null || echo 0)
-          [ "$OPEN_H" -gt 0 ] && flag "$OPEN_H open HIGH security issue(s)."
-          [ "$OPEN_M" -gt 0 ] && flag "$OPEN_M open MEDIUM security issue(s)."
+          # 3. Open security findings.
+          #
+          # Two failure modes this deliberately avoids (tsanetgit/Zendesk_App#108):
+          #   - Swallowing a query error and reading it as zero. A control that
+          #     reports "clean" when it could not check is worse than one that
+          #     reports nothing: it manufactures assurance exactly when it is
+          #     least able to justify it.
+          #   - Querying `--label security --label high-priority`, an AND, which
+          #     makes any security issue lacking a priority label invisible.
+          # Query once on the `security` label alone, then classify by priority.
+          # Low-priority issues are reported but do not flag. Unprioritised ones
+          # DO flag, because their severity is unknown rather than known-small.
+          if ! SEC_LINES=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label security --limit 200 --json number,labels --jq '.[] | "#\(.number) \([.labels[].name] | map(select(endswith("-priority"))) | first // "unprioritised")"' 2>/tmp/gh-err.txt); then
+            flag "Could NOT query open security issues ($(head -c 200 /tmp/gh-err.txt | tr '\n' ' ')). Security status is INDETERMINATE, not clean."
+          elif [ -z "$SEC_LINES" ]; then
+            echo "open security issues: none"
+          else
+            BLOCKING=$(printf '%s\n' "$SEC_LINES" | grep -v ' low-priority$' | grep -c . || true)
+            SUMMARY=$(printf '%s\n' "$SEC_LINES" | paste -sd';' - | sed 's/;/; /g')
+            if [ "${BLOCKING:-0}" -gt 0 ]; then
+              flag "$BLOCKING open security issue(s) at high/medium/unprioritised severity — $SUMMARY"
+            else
+              echo "open security issues (all low-priority, none blocking): $SUMMARY"
+            fi
+          fi
 
           {
             if [ "$FLAGGED" = true ]; then
