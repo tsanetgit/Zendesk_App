@@ -103,6 +103,11 @@ function getJwt() {
     if (!d || !d.accessToken) throw new Error('TSANet login returned no token');
     _jwt = d.accessToken;
     _jwtExpiry = Date.now() + 50 * 60 * 1000;
+    // Our registered domain, used to attribute notes by creatorEmail rather
+    // than by company-name string equality (tsanetgit/Zendesk_App#98). Fetched
+    // once per login, best-effort: attribution falls back to name matching if
+    // this never lands, so a /me failure must not break login.
+    fetchOurDomain(_jwt);
     return _jwt;
   }, function(err) {
     var status = (err && err.status) || '?';
@@ -360,6 +365,64 @@ function renderCard(collab) {
   return card;
 }
 
+// ── Note attribution (issue #98) ─────────────────────────────────────────────
+// Direction and echo-suppression used to rest on companyName string equality,
+// which is ambiguous when two orgs share a display name. Live BETA payloads
+// showed a second problem the issue did not anticipate: TSANet posts SYSTEM
+// notes (SLA escalations) carrying companyName: null, creatorEmail: null and
+// creatorName "SYSTEM". Name equality classifies those as the partner's, so a
+// platform notice was being shown as if the partner wrote it.
+//
+// creatorEmail is the stronger signal because TSANet enforces the domain: the
+// Accept endpoint rejects an engineerEmail outside the member's registered
+// domain, which is why this app sends settings.tsanet_username. Names are free
+// text; registered domains are controlled.
+var _ourDomain = null;
+
+function emailDomain(addr) {
+  var at = String(addr || '').lastIndexOf('@');
+  return at === -1 ? '' : String(addr).slice(at + 1).trim().toLowerCase();
+}
+
+function fetchOurDomain(jwt) {
+  return fetch(baseUrl() + '/me', {
+    headers: { Authorization: 'Bearer ' + jwt, Accept: 'application/json, application/problem+json' }
+  }).then(function(r) { return r.ok ? r.json() : null; }).then(function(me) {
+    var d = me && me.company && me.company.domain;
+    _ourDomain = d ? String(d).trim().toLowerCase() : null;
+  }).catch(function() { _ourDomain = null; });
+}
+
+// Returns { origin: 'system'|'mine'|'partner'|'unknown', confident: bool }.
+// 'unknown' means identity could not be established — callers must fail open
+// (show the note) rather than guess, because a wrongly suppressed note is
+// invisible while a duplicated one is merely noisy.
+function noteOrigin(note, ourCompany) {
+  var email = note.creatorEmail;
+  var company = note.companyName;
+  if (!email && !company && String(note.creatorName || '').toUpperCase() === 'SYSTEM') {
+    return { origin: 'system', confident: true };
+  }
+  var ourDom = _ourDomain || emailDomain(settings.tsanet_username);
+  var noteDom = emailDomain(email);
+  if (noteDom && ourDom) {
+    return { origin: noteDom === ourDom ? 'mine' : 'partner', confident: true };
+  }
+  if (company && ourCompany) {
+    // Fallback: display-name equality, the pre-#98 behaviour. Marked
+    // unconfident so echo suppression does not act on it alone.
+    return { origin: company === ourCompany ? 'mine' : 'partner', confident: false };
+  }
+  return { origin: 'unknown', confident: false };
+}
+
+function noteAuthorLabel(note, ourCompany) {
+  var o = noteOrigin(note, ourCompany);
+  if (o.origin === 'system') return { icon: '\u2699 ', who: 'TSANet' };
+  if (o.origin === 'mine')   return { icon: '\u2197 ', who: 'You' };
+  return { icon: '\u2199 ', who: note.companyName || 'Partner' };
+}
+
 function loadNotes(token, container, ourCompany) {
   tsanetGet('/collaboration-requests/' + token + '/notes').then(function(notes) {
     if (!notes || !notes.length) {
@@ -371,13 +434,14 @@ function loadNotes(token, container, ourCompany) {
       var d = new Date(note.createdAt);
       var dateStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
       var bodyText = note.description ? stripHtml(note.description) : '';
-      // Direction label (#62 short-term): companyName === our company => we sent it.
-      // Best-effort — companyName is the only signal and is ambiguous when both orgs
-      // share a name (e.g. sandbox "test IBM"); the durable fix is a platform direction field.
-      var mine = ourCompany && note.companyName === ourCompany;
-      var who = mine ? 'You' : esc(note.companyName || 'Partner');
+      // Attribution now runs through noteOrigin (#98): creatorEmail domain
+      // first, company name as an unconfident fallback, SYSTEM notes labelled
+      // as TSANet rather than as the partner.
+      var lbl = noteAuthorLabel(note, ourCompany);
+      var mine = lbl.who === 'You';
+      var who = esc(lbl.who);
       html += '<div class="note-item">' +
-        '<div class="note-meta">' + (mine ? '↗ ' : '↙ ') + who + ' · ' + esc(dateStr) + '</div>' +
+        '<div class="note-meta">' + lbl.icon + who + ' · ' + esc(dateStr) + '</div>' +
         '<div class="note-summary">' + esc(stripHtml(note.summary)) + '</div>' +
         (bodyText && bodyText !== stripHtml(note.summary) ? '<div class="note-body">' + esc(bodyText) + '</div>' : '') +
         '</div>';
@@ -433,7 +497,11 @@ function syncNotesToZendesk(notes, ourCompany) {
         if (existingBodies.some(function(body) { return body.indexOf(marker) !== -1; })) return false;
         // Suppress only OUR OWN forwarded replies (self-authored + matches a public
         // comment). Partner notes are never suppressed, even on a text collision.
-        var selfAuthored = ourCompany && note.companyName === ourCompany;
+        // Suppress an echo only when authorship is established. An unconfident
+        // or unknown attribution fails OPEN (note is mirrored): a wrongly
+        // suppressed note is invisible, a duplicated one is merely noisy (#98).
+        var _o = noteOrigin(note, ourCompany);
+        var selfAuthored = _o.origin === 'mine' && _o.confident;
         if (selfAuthored) {
           // Match the note's full text (summary + any distinct description) against
           // public comments — covers both a forwarded reply (summary only) and a
@@ -456,9 +524,10 @@ function syncNotesToZendesk(notes, ourCompany) {
           var summary = stripHtml(note.summary || '');
           var description = note.description ? stripHtml(note.description) : '';
 
-          // Direction label (#62 short-term) — see loadNotes for the companyName caveat.
-          var mine = ourCompany && note.companyName === ourCompany;
-          var who = mine ? 'You' : (note.companyName || 'Partner');
+          // Same attribution as the sidebar (#98).
+          var _lbl = noteAuthorLabel(note, ourCompany);
+          var mine = _lbl.who === 'You';
+          var who = _lbl.who;
           var body = '[TSANet Note ' + (mine ? '→ sent' : '← received') + '] ' + who + ' — ' + dateStr
             + '\n\n' + summary;
           if (description && description !== summary) {
