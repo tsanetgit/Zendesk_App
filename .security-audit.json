@@ -1,32 +1,36 @@
 {
   "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit.",
   "schema": 1,
-  "reviewed_commit": "96815ac7f895b73433202b558b8c9eb31fd5573d",
+  "reviewed_commit": "0abd1d637f125da8e63d86825ae512e8b99a8821",
   "reviewed_at": "2026-07-26",
-  "taxonomy_version": 1,
+  "taxonomy_version": 2,
   "reviewer": "tsanet-ops-security-review",
+  "review_scope": "delta",
+  "self_reviewed": true,
   "mechanical": {
-    "pass": 10,
+    "pass": 11,
     "fail": 0,
-    "warn": 2,
+    "warn": 1,
     "skip": 0
   },
   "findings": {
     "high": 0,
-    "medium": 3,
-    "low": 1
+    "medium": 0,
+    "low": 0
   },
   "open_findings": [
-    "MEDIUM: pre-tag gate cannot distinguish 'no open findings' from 'could not check' (query failure returns 0; label AND misses security issues lacking a priority label)",
-    "MEDIUM: repo default_workflow_permissions=write and can_approve_pull_request_reviews=true; zis-readme-check.yml has no permissions block",
-    "MEDIUM: artifact verification (attestation/checksum) appears only in release notes, not in the member-facing install guide",
-    "LOW: collaboration card interpolates status/priority/token unescaped while neighbouring values use esc()"
+    "MEDIUM #110: artifact verification (attestation/checksum) appears only in release notes, not in the member-facing install guide",
+    "MEDIUM #96: durable audit trail \u2014 direction set (B+C), documentation deliverable sequenced after #101",
+    "LOW #111: collaboration card interpolates status/priority/token unescaped",
+    "LOW #98: note direction / echo-suppression disambiguation"
   ],
   "notes": [
-    "First full design review under the taxonomy. Delta since the previous record (bebbb15) was one commit: the security tooling itself (#107).",
-    "Verified live this review: release environment still has required reviewer shawn-tsanet; release.yml permissions:{} with per-job opt-in; both release actions SHA-pinned; SDK SRI exact-version pin and declared hash matches the artifact the CDN serves now; no embedded credentials; credential settings secure:true; domainWhitelist present; gate exit-code branching correct for 0/1/2/3.",
-    "Escaping verified present and applied at the two highest-risk render sites (collaboration summary/partner, note bodies) via esc(); adminNote uses an allowlist sanitizeHtml().",
-    "NOT re-probed this session: inbound webhook ingress authentication (relied on the closed #90 disposition rather than a fresh probe). Environment-reviewer and SRI checks are point-in-time.",
-    "Tracked, not re-raised: v1 endpoint usage sunsetting 2027-01-01 (#101); durable audit trail (#96); note direction (#98)."
+    "Delta review of 0abd1d6 (the #108/#109 fixes) against the 96815ac full review. Scope was two workflow files; no new findings.",
+    "CAVEAT \u2014 this delta was SELF-REVIEWED: the same session authored the #108/#109 fixes and reviewed them. Recorded so the record does not overstate its own independence. The evidence behind it is mechanical and reproducible rather than judgemental: four gate states exercised against live data (live query, low-only, unprioritised, failed query), edge cases under set -uo pipefail (empty and all-low input both yield 0 without error), and zis-readme-check.yml passing live under the new read-only default.",
+    "Verified this review: zis-readme-check.yml declares contents:read and writes nothing; release.yml keeps permissions:{} at workflow scope with security-status ungated and package gated on the release environment; repo settings now default_workflow_permissions=read and can_approve_pull_request_reviews=false.",
+    "Mechanical improved 10/2 -> 11/1: the SHA-pinning warning cleared when zis-readme-check.yml was pinned (checkout v4.4.0, setup-python v5.6.0, both held at their existing major versions).",
+    "Taxonomy version 2: Category 7 (untrusted content rendering) added after the 96815ac review missed client-side injection. The 96815ac review predates it, so its Category 7 coverage came from an ad-hoc advisor lead rather than the checklist.",
+    "NOT re-probed this session: inbound webhook ingress authentication (still relying on the closed #90 disposition); SRI-vs-CDN and environment-reviewer checks are point-in-time from the 96815ac review.",
+    "Connect_SDK has had mechanical checks only; no design review has been performed on that repo."
   ]
 }
