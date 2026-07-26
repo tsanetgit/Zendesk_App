@@ -1,0 +1,25 @@
+{
+  "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit.",
+  "schema": 1,
+  "reviewed_commit": "bebbb15146f5e947d0bf80300b6f934351e7c31e",
+  "reviewed_at": "2026-07-25",
+  "taxonomy_version": 1,
+  "reviewer": "tsanet-ops-security-review",
+  "mechanical": {
+    "pass": 10,
+    "fail": 0,
+    "warn": 2,
+    "skip": 0
+  },
+  "findings": {
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "open_findings": [],
+  "notes": [
+    "Baseline audit established after the EDB review follow-up work (issues #90-#98 dispositioned; #90/#91/#92/#93/#94/#95/#97 closed).",
+    "Two mechanical warnings accepted, both tracked: zis-readme-check.yml actions are not SHA-pinned (non-release workflow, no publish rights); deprecated v1 endpoint usage in main.js and rotate-inbound-webhook.py is tracked as #101 with a 2027-01-01 deadline.",
+    "Open medium: #96 (durable audit trail) - direction set, documentation deliverable sequenced after #101. Open low: #98."
+  ]
+}

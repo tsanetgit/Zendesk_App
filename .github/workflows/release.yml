@@ -27,7 +27,99 @@ on:
 permissions: {}
 
 jobs:
+  # Pre-tag security status. Runs UNGATED and first, so its summary is on the
+  # run page before the approver decides. It never blocks: a flagged release
+  # is still releasable, but the human accepting that risk does so knowingly
+  # and the acceptance is on the record. See the connector security review
+  # taxonomy for what a full audit covers.
+  security-status:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      flagged: ${{ steps.status.outputs.flagged }}
+      reason: ${{ steps.status.outputs.reason }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Evaluate security audit coverage
+        id: status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          FLAGGED=false
+          REASONS=""
+          flag() { FLAGGED=true; REASONS="${REASONS}- $1"$'\n'; }
+
+          # 1. Mechanical checks must not FAIL.
+          if python3 scripts/security-audit.py --no-network > /tmp/audit.txt 2>&1; then
+            echo "mechanical checks: clean"
+          elif [ $? -eq 2 ]; then
+            echo "mechanical checks: warnings only"
+          else
+            flag "Mechanical security checks reported failures."
+          fi
+
+          # 2. An audit record must exist and cover this commit.
+          if [ ! -f .security-audit.json ]; then
+            flag "No .security-audit.json — this build has never been security reviewed."
+          else
+            REVIEWED=$(python3 -c "import json;print(json.load(open('.security-audit.json'))['reviewed_commit'])")
+            if ! git merge-base --is-ancestor "$REVIEWED" HEAD 2>/dev/null; then
+              flag "Audit record references commit $REVIEWED, which is not an ancestor of this tag."
+            else
+              # Source changes since the audit invalidate it. Docs do not.
+              CHANGED=$(git diff --name-only "$REVIEWED"..HEAD -- zaf-build/ zis/ scripts/ .github/workflows/ | tr '\n' ' ')
+              if [ -n "$CHANGED" ]; then
+                flag "Source changed since the last audit ($REVIEWED): $CHANGED"
+              fi
+            fi
+          fi
+
+          # 3. No open high/medium security findings.
+          OPEN_H=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open             --label security --label high-priority --json number --jq 'length' 2>/dev/null || echo 0)
+          OPEN_M=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open             --label security --label medium-priority --json number --jq 'length' 2>/dev/null || echo 0)
+          [ "$OPEN_H" -gt 0 ] && flag "$OPEN_H open HIGH security issue(s)."
+          [ "$OPEN_M" -gt 0 ] && flag "$OPEN_M open MEDIUM security issue(s)."
+
+          {
+            if [ "$FLAGGED" = true ]; then
+              echo "## Release flagged as a security risk"
+              echo ""
+              echo "This release has **not** cleared a current security audit. It can still"
+              echo "be approved, but approving it accepts the risk below, and that"
+              echo "acceptance is recorded on this run."
+              echo ""
+              echo "$REASONS"
+              echo "Resolve by running the Security Review persona against this commit,"
+              echo "addressing high and medium findings, and committing an updated"
+              echo "\`.security-audit.json\`."
+            else
+              echo "## Security audit current"
+              echo ""
+              echo "Mechanical checks pass, the audit record covers this commit with no"
+              echo "source drift, and no open high or medium security issues."
+            fi
+            echo ""
+            echo '<details><summary>Mechanical check output</summary>'
+            echo ""
+            echo '```'
+            cat /tmp/audit.txt
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "flagged=$FLAGGED" >> "$GITHUB_OUTPUT"
+          echo "reason<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$REASONS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
   package:
+    needs: security-status
     runs-on: ubuntu-latest
     # Human approval gate. The `release` environment is configured with a
     # required reviewer, so a tag push pauses here until the release is
@@ -57,13 +149,18 @@ jobs:
       - name: Attach zip + checksum to release
         env:
           GH_TOKEN: ${{ github.token }}
+          FLAGGED: ${{ needs.security-status.outputs.flagged }}
         run: |
+          SECURITY_NOTE=""
+          if [ "$FLAGGED" = "true" ]; then
+            SECURITY_NOTE="> **Security note:** published without a current security audit; see the release run summary. "
+          fi
           if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
             gh release upload "${{ github.ref_name }}" dist/*.zip dist/checksums.txt --clobber
           else
             gh release create "${{ github.ref_name }}" dist/*.zip dist/checksums.txt \
               --title "${{ github.ref_name }}" \
-              --notes "Automated ZAF app package for ${{ github.ref_name }}.
+              --notes "${SECURITY_NOTE}Automated ZAF app package for ${{ github.ref_name }}.
 
           Verify provenance before install:
             gh attestation verify tsanet-connect-v<version>.zip --repo tsanetgit/Zendesk_App
