@@ -6,7 +6,8 @@ webhook Basic credential** (the `callbackAuth` credential from
 [ZIS_Quick_Start.md](ZIS_Quick_Start.md) Step 5), the **Zendesk OAuth
 client secret** behind the `zendesk` connection, and the **TSANet-issued
 Entra client secret** behind the TSANet connection (rotated in coordination
-with TSANet). A closing section covers scheduling and monitoring.
+with TSANet). Closing sections cover credential handling and
+transmission, scheduling, and monitoring for credential abuse.
 
 **When to rotate:**
 - On a schedule (quarterly is a reasonable default).
@@ -209,6 +210,53 @@ rotation with a true no-pressure overlap window.
 months maximum, often shorter). An expired secret stops the ZIS-to-TSANet
 leg with `AADSTS7000222` and no earlier warning. Record the expiry date
 TSANet gives you and calendar the rotation well before it.
+
+## Handling and transmitting credentials
+
+Rotation only helps if the new credential does not leak on its way to
+wherever it is used. Two of the three credentials here arrive from
+somewhere else (TSANet issues the Entra secret; the scripts write new
+values to a local file), so handling matters as much as cadence.
+
+**Prefer not transmitting a secret at all.** Where a credential can be
+created directly in the place it is used, do that instead of moving one
+around. For the TSANet connection specifically, ask TSANet whether
+certificate credentials or workload identity federation are available for
+your account: both replace the shared client secret with an identity proof
+that never has to cross an organizational boundary, which removes this
+whole class of risk rather than managing it.
+
+**When a secret must be transmitted**, use a one-time-view link (1Password
+Send, Bitwarden Send, or an equivalent) with:
+
+* single retrieval, so a second fetch is evidence of interception,
+* a short expiry measured in hours, not weeks,
+* the link and any passphrase sent over different channels, and
+* no copy left in a system of record.
+
+Confirm receipt, verify the link is spent, and where the receiving side
+can rotate immediately (the two scripted rotations here), do that on
+arrival so the transmitted value is dead within minutes.
+
+**Do not send credentials by email, Slack or Teams message, ticket
+comment, SMS, screenshot, or an AI assistant session.** The risk is not
+interception in transit, which TLS handles; it is persistence. Those
+channels are backed up, indexed, retained, and forwarded, so a secret
+pasted once stays readable in several systems long after the person who
+sent it has forgotten about it. The same applies to committing a secret to
+a repository even briefly: rewriting history does not un-share it.
+
+**Handling the values these scripts produce.** Both rotation scripts write
+the new credential to a local file with `0600` permissions rather than
+printing it, so it never lands in terminal scrollback or shell history.
+Move the contents into your secret manager and delete the file. If your
+own tooling stores a copy of the same credential elsewhere, update it in
+the same pass; a stale copy is how a rotation ends up half-applied.
+
+**The operating rule.** If a credential is ever handled outside these
+paths, treat it as compromised and rotate it rather than judging how
+likely exposure was. That rule is only practical when rotation is cheap,
+which is what the procedures above are for.
 
 ## Scheduling the rotations
 
