@@ -1,7 +1,7 @@
 {
   "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit.",
   "schema": 1,
-  "reviewed_commit": "8447bc64ceb6e8d8bf02522306c2e7ea76ae97c1",
+  "reviewed_commit": "438734f6641e6ce69e674272256c68a34f04fa6b",
   "reviewed_at": "2026-07-26",
   "taxonomy_version": 2,
   "reviewer": "tsanet-ops-security-review",
@@ -23,12 +23,11 @@
     "LOW #98: note direction / echo-suppression relies on company-name matching"
   ],
   "notes": [
-    "Delta review covering #110 (docs: member package verification) and #111 (escape API-sourced values in the collaboration card). Reviewed for release v1.0.47.",
-    "SELF-REVIEWED: the same session authored and reviewed both changes. Evidence is reproducible rather than judgemental \u2014 esc() verified against a quote-breakout and tag-injection payload; notes render path re-checked and already fully escaped; sla.css confirmed locally generated, not API-sourced; node --check and package.sh both clean.",
-    "#111 note: the case token was removed from the DOM rather than escaped. It was interpolated into an id AND into querySelector('#actions-' + token) on the next line, so escaping at the write site would have desynced the read and still placed token text inside a CSS selector. The container is now found by class within its own card.",
-    "Category 7 (untrusted content rendering) applied for the first time as a checklist item rather than an ad-hoc lead; it is what #111 came from.",
+    "Delta review covering #115 (release note now states why the gate flagged, rather than asserting 'no audit' for every flag reason).",
+    "SELF-REVIEWED: same session authored and reviewed. Evidence is reproducible \u2014 three note states rendered and exited cleanly under bash -e (including the empty-note case, which a short-circuit bug would have broken); four-way COVERED/FINDINGS matrix classified correctly; the fix reproduces by hand the note v1.0.47 should have carried.",
+    "Third gate defect found and closed (#108, #109, #115). Common shape: the tooling reported a state it had not established. All three were caught by verifying output rather than trusting that a step succeeded.",
     "Remaining mechanical warning is the known v1-endpoint usage sunsetting 2027-01-01 (#101).",
-    "NOT re-probed this session: inbound webhook ingress authentication (still relying on the closed #90 disposition). SRI-vs-CDN and release-environment reviewer checks are point-in-time from the 96815ac review.",
-    "Connect_SDK deliberately out of scope: its active development is on an unmerged raw_impl branch, so main does not represent shippable code."
+    "NOT re-probed this session: inbound webhook ingress authentication (relying on the closed #90 disposition). SRI-vs-CDN and release-environment reviewer checks are point-in-time from the 96815ac review.",
+    "Connect_SDK deliberately out of scope: active development is on an unmerged raw_impl branch, so main does not represent shippable code."
   ]
 }
