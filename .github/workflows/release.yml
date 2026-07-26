@@ -110,10 +110,17 @@ jobs:
           elif [ -z "$SEC_LINES" ]; then
             echo "open security issues: none"
           else
+            # BLOCKING counts high/medium/unprioritised; SUMMARY lists every
+            # open security issue. Report both numbers explicitly rather than
+            # pairing one count with the other's list: a note that says "1
+            # finding" and then names two contradicts itself, and a member
+            # reading a self-inconsistent security statement has no reason to
+            # trust the rest of it.
             BLOCKING=$(printf '%s\n' "$SEC_LINES" | grep -v ' low-priority$' | grep -c . || true)
+            TOTAL=$(printf '%s\n' "$SEC_LINES" | grep -c . || true)
             SUMMARY=$(printf '%s\n' "$SEC_LINES" | paste -sd';' - | sed 's/;/; /g')
             if [ "${BLOCKING:-0}" -gt 0 ]; then
-              FINDINGS_REASON="$BLOCKING known open finding(s) accepted — $SUMMARY"
+              FINDINGS_REASON="$BLOCKING of $TOTAL open security finding(s) at high/medium/unprioritised severity, knowingly accepted — $SUMMARY"
               flag "$BLOCKING open security issue(s) at high/medium/unprioritised severity — $SUMMARY"
             else
               echo "open security issues (all low-priority, none blocking): $SUMMARY"
