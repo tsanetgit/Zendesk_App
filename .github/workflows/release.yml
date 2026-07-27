@@ -95,22 +95,7 @@ jobs:
             flag_coverage "No .security-audit.json — this build has never been security reviewed."
           else
             AUDIT_FIELDS=""
-            if ! AUDIT_FIELDS=$(python3 - <<'PY' 2>/tmp/audit-parse.txt
-import json, re, sys
-try:
-    d = json.load(open('.security-audit.json'))
-except Exception as e:
-    sys.exit('unreadable: %s' % e)
-rc = str(d.get('reviewed_commit', ''))
-if not re.fullmatch(r'[0-9a-f]{7,40}', rc):
-    sys.exit('reviewed_commit is not a hex sha: %r' % rc)
-acc = d.get('accepted_issues', [])
-if not isinstance(acc, list) or not all(isinstance(x, int) for x in acc):
-    sys.exit('accepted_issues must be a list of integers')
-print(rc)
-print(' '.join(str(x) for x in acc))
-PY
-            ); then
+            if ! AUDIT_FIELDS=$(python3 scripts/audit-record-fields.py 2>/tmp/audit-parse.txt); then
               flag_coverage "Audit record is unreadable or invalid ($(head -c 200 /tmp/audit-parse.txt | tr '\n' ' ')). Security status is INDETERMINATE, not clean."
             else
               REVIEWED=$(printf '%s\n' "$AUDIT_FIELDS" | sed -n 1p)
