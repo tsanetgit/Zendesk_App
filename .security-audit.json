@@ -1,34 +1,38 @@
 {
   "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit.",
   "schema": 1,
-  "reviewed_commit": "875fa152f84d8f1958f44b292b1a100abbb094a4",
-  "reviewed_at": "2026-07-26",
+  "reviewed_commit": "1ec74d4",
+  "reviewed_at": "2026-07-27",
   "taxonomy_version": 2,
   "reviewer": "tsanet-ops-security-review",
   "review_scope": "delta",
   "self_reviewed": true,
   "mechanical": {
-    "pass": 10,
+    "pass": 11,
     "fail": 0,
     "warn": 1,
     "skip": 0
   },
   "findings": {
-    "high": 0,
-    "medium": 0,
+    "high": 1,
+    "medium": 3,
     "low": 0
   },
   "open_findings": [
+    "HIGH #122: deploy.html loads the ZAF SDK from the mutable 2.0 channel with no SRI, regressing closed #94; present in the PUBLISHED v1.0.49 artifact",
+    "MEDIUM #123: scripts/security-audit.py:111 hardcodes a two-file page list, so new HTML entry points escape the SDK-integrity check (demonstrated by #122 passing 11/11)",
+    "MEDIUM #124: deploy.js splices tsanet_engineer_email / tsanet_connection_name into the bundle JSON unescaped; a double quote injects structure and still parses",
+    "MEDIUM #125: shipped docs assert 'ZIS rejects non-admins' as the real boundary behind the client-side admin gate; untested",
     "MEDIUM #96: durable audit trail \u2014 direction set (B+C), documentation deliverable sequenced after #101",
-    "LOW #98: note attribution improved to creatorEmail-domain heuristic; remains open pending Connect-API-Code#131 (companyId on CaseNoteDTO)"
+    "LOW #98: note attribution heuristic remains open pending Connect-API-Code#131"
   ],
   "notes": [
-    "Delta review of #117 (note attribution by creator domain + SYSTEM-note recognition) for release v1.0.48.",
-    "SELF-REVIEWED. Category 7 (untrusted content rendering) applied to the changed render path: the new author label can carry an API-sourced companyName and is escaped at the render site via esc(lbl.who); icons are fixed literals. No new findings.",
-    "Change was driven by live BETA payload inspection rather than the spec: TSANet posts SYSTEM notes with companyName/creatorEmail null and creatorName 'SYSTEM', which the previous name-equality logic attributed to the partner. Reported upstream as Connect-API-Code#131 along with the companyId request.",
-    "Echo suppression now requires a confident attribution and fails open otherwise, so an unidentifiable note is mirrored rather than silently dropped.",
-    "Remaining mechanical warning is the known v1-endpoint usage sunsetting 2027-01-01 (#101).",
-    "NOT re-probed this session: inbound webhook ingress authentication (relying on the closed #90 disposition). SRI-vs-CDN and release-environment reviewer checks are point-in-time from the 96815ac review.",
-    "Connect_SDK out of scope: active development is on an unmerged raw_impl branch."
+    "Delta review of v1.0.49 (nav_bar ZIS bundle deploy screen) against 875fa15. FIRST FULL RUN of the Security Review persona.",
+    "Review ran AFTER tag and publish. The pre-tag gate behaved correctly: it compared reviewed_commit to HEAD, detected source changes since the 1.0.48 audit, set COVERED=false, and the published release notes carry the 'NOT covered by a current security review' note. The gate is advisory by design and did not block.",
+    "Cat 7 clean on deploy.js: its single innerHTML sink escapes both interpolated values; class/mark are fixed literals.",
+    "Cat 2 clean: the shipped bundle carries only placeholders (verified against the published zip) \u2014 no real field ids, emails, or hosts. New params are not credentials; tsanet_password remains secure:true. The change REMOVES the API-token requirement.",
+    "Cat 1 partial: the new zaf-bundle-sync.yml declares contents:read and pins actions/checkout to a full SHA. The embedded-bundle drift gate does verify the shipped copy equals zis/ source.",
+    "Numeric field-id injection was tested and FAILS to parse (the placeholder also appears inside jq strings), so that vector is not exploitable; the quote-break via engineerEmail does parse and is the live one.",
+    "NOT verified this session: ZIS rejecting non-admins (no non-admin session); whether ZAF has any admin-only location (Zendesk's locations reference is silent); whether Zendesk audit-logs ZIS registry writes; that private apps do not auto-update (the basis for the 'exposure is currently zero' assessment)."
   ]
 }
