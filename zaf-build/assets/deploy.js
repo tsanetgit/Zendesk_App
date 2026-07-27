@@ -146,6 +146,15 @@
     var missing = [];
     var invalid = [];
 
+    // Validate every field id BEFORE substituting anything, then replace all six
+    // in a SINGLE pass. Replacing them one at a time re-scans text already
+    // written: a value equal to another placeholder's token was expanded again by
+    // the next iteration, so field_id_token=1234567891 silently emitted
+    // field_id_action's value instead (#127). It passed digits-only validation,
+    // left no placeholder behind, and parsed — all three #124 layers missed it.
+    // One alternation with a callback replaces each token exactly once and never
+    // rescans inserted text.
+    var fieldValues = {};
     Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) {
       var key = FIELD_PLACEHOLDERS[ph];
       var val = (s[key] || '').toString().trim();
@@ -156,16 +165,36 @@
         invalid.push(key + ' must be digits only (Zendesk field id)');
         return;
       }
-      // \b so a placeholder can never match inside a longer numeric id.
-      out = out.replace(new RegExp('\\b' + ph + '\\b', 'g'), val);
+      fieldValues[ph] = val;
     });
+    if (!missing.length && !invalid.length) {
+      // \b so a placeholder can never match inside a longer numeric id.
+      out = out.replace(
+        new RegExp('\\b(' + Object.keys(FIELD_PLACEHOLDERS).join('|') + ')\\b', 'g'),
+        function (whole, token) { return fieldValues[token]; }
+      );
+    }
 
     var host = (s.tsanet_env === 'PRODUCTION') ? 'connect2.tsanet.org' : 'connect2.tsanet.net';
     out = out.split(HOST_PLACEHOLDER).join(host);
 
+    var email = (s.tsanet_engineer_email || '').trim();
+    if (!email) {
+      missing.push('tsanet_engineer_email');
+    } else if (/["\\\u0000-\u001f]/.test(email)) {
+      invalid.push('tsanet_engineer_email contains a quote, backslash or control character');
+    } else {
+      out = out.split(EMAIL_PLACEHOLDER).join(jsonStr(email));
+    }
+
     // Only the TSANet connection is per-instance. The Zendesk-side connection is
     // named "zendesk" and is fixed, so match the key/value pair rather than the
     // bare string to avoid collateral edits.
+    //
+    // This runs LAST on purpose. It used to run before the email pass, so a
+    // connection name of "YOUR_TSANET_API_EMAIL" was overwritten by the email
+    // that followed it (#127). Nothing substitutes after this point, so the
+    // value written here is the value that ships.
     var conn = connName(s);
     if (/["\\\u0000-\u001f]/.test(conn)) {
       invalid.push('tsanet_connection_name contains a quote, backslash or control character');
@@ -178,15 +207,6 @@
         new RegExp('("connectionName"\\s*:\\s*)"' + CONN_PLACEHOLDER + '"', 'g'),
         function (whole, prefix) { return prefix + '"' + jsonStr(conn) + '"'; }
       );
-    }
-
-    var email = (s.tsanet_engineer_email || '').trim();
-    if (!email) {
-      missing.push('tsanet_engineer_email');
-    } else if (/["\\\u0000-\u001f]/.test(email)) {
-      invalid.push('tsanet_engineer_email contains a quote, backslash or control character');
-    } else {
-      out = out.split(EMAIL_PLACEHOLDER).join(jsonStr(email));
     }
 
     var leftovers = [];
