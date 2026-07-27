@@ -1,0 +1,85 @@
+name: ZAF embedded bundle sync
+
+# The ZAF app embeds a copy of the ZIS flow bundle at
+# zaf-build/assets/tsanet_connect_bundle.json so the admin deploy screen
+# (zaf-build/assets/deploy.js, tsanetgit/Zendesk_App#120) can upload it on the
+# admin's own session without an API token.
+#
+# The app's substitution table IS code: deploy.js knows every placeholder in the
+# bundle by name. Shipping the two together is what makes a bundle-vs-code
+# mismatch impossible — but only if the embedded copy never drifts from the
+# source of truth in zis/. This gate enforces that.
+#
+# If this fails, refresh the embedded copy and commit it:
+#
+#   cp zis/tsanet_connect_bundle.json zaf-build/assets/tsanet_connect_bundle.json
+#
+# and check whether the change introduced or removed any placeholder that
+# deploy.js substitutes. A new placeholder that deploy.js does not know about
+# uploads a half-substituted bundle that fails later at runtime, at the member.
+
+# Reads the repo and compares two files; writes nothing. Declared explicitly so
+# it does not inherit the repository default (tsanetgit/Zendesk_App#109).
+permissions:
+  contents: read
+
+on:
+  push:
+    paths:
+      - 'zis/tsanet_connect_bundle.json'
+      - 'zaf-build/assets/tsanet_connect_bundle.json'
+      - 'zaf-build/assets/deploy.js'
+      - '.github/workflows/zaf-bundle-sync.yml'
+  pull_request:
+    paths:
+      - 'zis/tsanet_connect_bundle.json'
+      - 'zaf-build/assets/tsanet_connect_bundle.json'
+      - 'zaf-build/assets/deploy.js'
+      - '.github/workflows/zaf-bundle-sync.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Embedded bundle matches the source of truth
+        run: |
+          if ! cmp -s zis/tsanet_connect_bundle.json zaf-build/assets/tsanet_connect_bundle.json; then
+            echo "::error::zaf-build/assets/tsanet_connect_bundle.json has drifted from zis/tsanet_connect_bundle.json"
+            diff -u zis/tsanet_connect_bundle.json zaf-build/assets/tsanet_connect_bundle.json | head -40 || true
+            echo "Fix: cp zis/tsanet_connect_bundle.json zaf-build/assets/tsanet_connect_bundle.json"
+            exit 1
+          fi
+          echo "embedded bundle is identical to zis/tsanet_connect_bundle.json"
+
+      - name: Every bundle placeholder is known to deploy.js
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+
+          raw = open('zis/tsanet_connect_bundle.json').read()
+          js = open('zaf-build/assets/deploy.js').read()
+
+          # Placeholders present in the bundle.
+          field_ph = set(re.findall(r'\b123456789\d\b', raw))
+          other_ph = {p for p in ('connect2.tsanet.org', 'YOUR_TSANET_API_EMAIL') if p in raw}
+          if re.search(r'"connectionName"\s*:\s*"tsanet_oauth"', raw):
+              other_ph.add('tsanet_oauth')
+
+          unknown = sorted(p for p in (field_ph | other_ph) if p not in js)
+          if unknown:
+              print("::error::bundle placeholders deploy.js does not substitute: " + ", ".join(unknown))
+              print("A half-substituted bundle uploads cleanly and fails later at runtime.")
+              sys.exit(1)
+
+          # And the reverse: deploy.js must not carry a substitution for a
+          # placeholder the bundle no longer has, which would be dead code
+          # silently masking a rename.
+          stale = sorted(p for p in re.findall(r"'(123456789\d)'", js) if p not in field_ph)
+          if stale:
+              print("::error::deploy.js substitutes placeholders absent from the bundle: " + ", ".join(stale))
+              sys.exit(1)
+
+          print(f"all {len(field_ph | other_ph)} bundle placeholders are handled by deploy.js")
+          PY

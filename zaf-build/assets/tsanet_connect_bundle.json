@@ -1,0 +1,800 @@
+{
+  "name": "tsanet_connect",
+  "description": "TSANet Connect \u2014 event-driven inbound (ping-then-pull) + field-driven case actions (Accept/Reject/Request Info/Add Note via the TSANet Action field).",
+  "zis_template_version": "2019-10-14",
+  "resources": {
+    "action_create_ticket": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "definition": {
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "method": "POST",
+          "path": "/api/v2/tickets.json",
+          "requestBody": {
+            "ticket": {
+              "comment": {
+                "body": "\u2b05\ufe0f New inbound TSANet Collaboration Request from {{$.partner_name}}.{{$.submitter_line}}\n\nPriority: {{$.priority}}\nToken: {{$.requestToken}}\n\n{{$.problem_description}}\n\nTo respond, set the TSANet Action field (Accept / Request Info / Reject) and submit the ticket, or use the TSANet Connect app if installed.",
+                "public": false
+              },
+              "custom_fields": [
+                {
+                  "id": 1234567890,
+                  "value": "{{$.requestToken}}"
+                },
+                {
+                  "id": 1234567892,
+                  "value": "tsanet_status_open"
+                },
+                {
+                  "id": 1234567893,
+                  "value": "{{$.partner_name}}"
+                }
+              ],
+              "description": "Inbound TSANet Collaboration Request received.\n\nFrom: {{$.partner_name}}{{$.submitter_line}}\nPriority: {{$.priority}}\nToken: {{$.requestToken}}\n\n{{$.problem_description}}",
+              "external_id": "{{$.requestToken}}",
+              "priority": "normal",
+              "subject": "TSANet Inbound from {{$.partner_name}}: {{$.summary}}",
+              "tags": [
+                "tsanet_inbound",
+                "tsanet_status_open"
+              ]
+            }
+          },
+          "connectionName": "zendesk"
+        },
+        "name": "action_create_ticket"
+      }
+    },
+    "action_get_collaboration": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "definition": {
+          "connectionName": "tsanet_oauth",
+          "method": "GET",
+          "url": "https://connect2.tsanet.org/v1/collaboration-requests/{{$.requestToken}}",
+          "headers": [
+            {
+              "key": "Accept",
+              "value": "application/json, application/problem+json"
+            }
+          ]
+        },
+        "name": "action_get_collaboration"
+      }
+    },
+    "action_search_ticket": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "definition": {
+          "method": "GET",
+          "path": "/api/v2/tickets.json?external_id={{$.requestToken}}",
+          "connectionName": "zendesk"
+        },
+        "name": "action_search_ticket"
+      }
+    },
+    "action_update_ticket": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "definition": {
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "method": "PUT",
+          "path": "/api/v2/tickets/{{$.ticket_id}}.json",
+          "requestBody": {
+            "ticket": {
+              "additional_tags": [
+                "tsanet_updated"
+              ],
+              "comment": {
+                "body": "TSANet update \u2014 status: {{$.collab_status}} \u2014 token: {{$.requestToken}}",
+                "public": false
+              },
+              "custom_fields": [
+                {
+                  "id": 1234567892,
+                  "value": "{{$.collab_status}}"
+                },
+                {
+                  "id": 1234567893,
+                  "value": "{{$.partner_name}}"
+                },
+                {
+                  "id": 1234567894,
+                  "value": "{{$.respond_by}}"
+                }
+              ]
+            }
+          },
+          "connectionName": "zendesk"
+        },
+        "name": "action_update_ticket"
+      }
+    },
+    "flow_handle_ping": {
+      "type": "ZIS::Flow",
+      "properties": {
+        "definition": {
+          "StartAt": "GetCollaboration",
+          "States": {
+            "CheckTicketExists": {
+              "Choices": [
+                {
+                  "Next": "TransformForUpdate",
+                  "NumericGreaterThan": 0,
+                  "Variable": "$.search.count"
+                }
+              ],
+              "Default": "GuardCreate",
+              "Type": "Choice"
+            },
+            "GuardCreate": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.input.eventType",
+                  "StringEquals": "collaboration-request.created",
+                  "Next": "BuildSubmitter"
+                }
+              ],
+              "Default": "NoOp"
+            },
+            "NoOp": {
+              "Type": "Succeed"
+            },
+            "BuildSubmitter": {
+              "Type": "Action",
+              "ActionName": "zis:common:transform:Jq",
+              "Parameters": {
+                "expr": "{n: (.collab.submitterContactDetails.name // \"\"), e: (.collab.submitterContactDetails.email // \"\")} | {submitter_line: (if .n == \"\" and .e == \"\" then \"\" else (\"\\nSubmitter: \" + .n + (if .e == \"\" then \"\" else \" <\" + .e + \">\" end)) end)}",
+                "data.$": "$"
+              },
+              "ResultPath": "$.submitter",
+              "Next": "CreateTicket"
+            },
+            "CreateTicket": {
+              "ActionName": "zis:tsanet_connect:action:action_create_ticket",
+              "End": true,
+              "Parameters": {
+                "partner_name.$": "$.collab.submitCompanyName",
+                "priority.$": "$.collab.priority",
+                "problem_description.$": "$.collab.description",
+                "requestToken.$": "$.collab.token",
+                "submitter_line.$": "$.submitter.submitter_line",
+                "summary.$": "$.collab.summary"
+              },
+              "ResultPath": "$.created",
+              "Type": "Action"
+            },
+            "GetCollaboration": {
+              "ActionName": "zis:tsanet_connect:action:action_get_collaboration",
+              "Next": "SearchTicket",
+              "Parameters": {
+                "requestToken.$": "$.input.requestToken"
+              },
+              "ResultPath": "$.collab",
+              "Type": "Action"
+            },
+            "SearchTicket": {
+              "ActionName": "zis:tsanet_connect:action:action_search_ticket",
+              "Next": "CheckTicketExists",
+              "Parameters": {
+                "requestToken.$": "$.collab.token"
+              },
+              "ResultPath": "$.search",
+              "Type": "Action"
+            },
+            "UpdateTicket": {
+              "ActionName": "zis:tsanet_connect:action:action_update_ticket",
+              "End": true,
+              "Parameters": {
+                "collab_status.$": "$.xform.status",
+                "partner_name.$": "$.collab.receiveCompanyName",
+                "requestToken.$": "$.collab.token",
+                "respond_by.$": "$.xform.respond_by",
+                "ticket_id.$": "$.search.tickets[0].id"
+              },
+              "ResultPath": "$.update",
+              "Type": "Action"
+            },
+            "TransformForUpdate": {
+              "Type": "Action",
+              "ActionName": "zis:common:transform:Jq",
+              "Parameters": {
+                "expr": "{status: (\"tsanet_status_\" + (.collab.status // \"\" | ascii_downcase)), respond_by: ((.collab.respondBy // \"\")[0:10])}",
+                "data.$": "$"
+              },
+              "ResultPath": "$.xform",
+              "Next": "UpdateTicket"
+            }
+          }
+        },
+        "name": "flow_handle_ping"
+      }
+    },
+    "jobspec_handle_ping": {
+      "type": "ZIS::JobSpec",
+      "properties": {
+        "event_source": "tsanet",
+        "event_type": "collaboration_event",
+        "flow_name": "zis:tsanet_connect:flow:flow_handle_ping",
+        "name": "jobspec_handle_ping"
+      }
+    },
+    "action_zd_get_ticket": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "name": "action_zd_get_ticket",
+        "definition": {
+          "connectionName": "zendesk",
+          "method": "GET",
+          "path": "/api/v2/tickets/{{$.ticket_id}}.json"
+        }
+      }
+    },
+    "action_zd_finish_status": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "name": "action_zd_finish_status",
+        "definition": {
+          "connectionName": "zendesk",
+          "method": "PUT",
+          "path": "/api/v2/tickets/{{$.ticket_id}}.json",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "requestBody": {
+            "ticket": {
+              "comment": {
+                "body": "{{$.message}}",
+                "public": false
+              },
+              "custom_fields": [
+                {
+                  "id": 1234567891,
+                  "value": ""
+                },
+                {
+                  "id": 1234567892,
+                  "value": "{{$.new_status}}"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "action_zd_finish_note_receipt": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "name": "action_zd_finish_note_receipt",
+        "definition": {
+          "connectionName": "zendesk",
+          "method": "PUT",
+          "path": "/api/v2/tickets/{{$.ticket_id}}.json",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "requestBody": {
+            "ticket": {
+              "comment": {
+                "body": "{{$.message}}",
+                "public": false
+              },
+              "custom_fields": [
+                {
+                  "id": 1234567891,
+                  "value": ""
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "action_zd_finish_fail": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "name": "action_zd_finish_fail",
+        "definition": {
+          "connectionName": "zendesk",
+          "method": "PUT",
+          "path": "/api/v2/tickets/{{$.ticket_id}}.json",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "requestBody": {
+            "ticket": {
+              "comment": {
+                "body": "{{$.message}}",
+                "public": false
+              },
+              "custom_fields": [
+                {
+                  "id": 1234567891,
+                  "value": ""
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "action_ts_accept": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "name": "action_ts_accept",
+        "definition": {
+          "connectionName": "tsanet_oauth",
+          "method": "POST",
+          "url": "https://connect2.tsanet.org/v1/collaboration-requests/{{$.token}}/approval",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "Accept",
+              "value": "application/json, application/problem+json"
+            }
+          ],
+          "requestBody": {
+            "engineerEmail": "YOUR_TSANET_API_EMAIL",
+            "engineerName": "Zendesk Agent",
+            "caseNumber": "ZD-{{$.ticket_id}}",
+            "nextSteps": "Accepted via Zendesk."
+          }
+        }
+      }
+    },
+    "action_ts_reject": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "name": "action_ts_reject",
+        "definition": {
+          "connectionName": "tsanet_oauth",
+          "method": "POST",
+          "url": "https://connect2.tsanet.org/v1/collaboration-requests/{{$.token}}/rejection",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "Accept",
+              "value": "application/json, application/problem+json"
+            }
+          ],
+          "requestBody": {
+            "reason": "{{$.text}}"
+          }
+        }
+      }
+    },
+    "action_ts_info": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "name": "action_ts_info",
+        "definition": {
+          "connectionName": "tsanet_oauth",
+          "method": "POST",
+          "url": "https://connect2.tsanet.org/v1/collaboration-requests/{{$.token}}/information-request",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "Accept",
+              "value": "application/json, application/problem+json"
+            }
+          ],
+          "requestBody": {
+            "requestedInformation": "{{$.text}}"
+          }
+        }
+      }
+    },
+    "action_ts_note": {
+      "type": "ZIS::Action::Http",
+      "properties": {
+        "name": "action_ts_note",
+        "definition": {
+          "connectionName": "tsanet_oauth",
+          "method": "POST",
+          "url": "https://connect2.tsanet.org/v1/collaboration-requests/{{$.token}}/notes",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "key": "Accept",
+              "value": "application/json, application/problem+json"
+            }
+          ],
+          "requestBody": {
+            "summary": "{{$.text}}"
+          }
+        }
+      }
+    },
+    "flow_field_action": {
+      "type": "ZIS::Flow",
+      "properties": {
+        "name": "flow_field_action",
+        "definition": {
+          "StartAt": "GuardField",
+          "States": {
+            "GuardField": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.input.ticket_event.custom_field.id",
+                  "NumericEquals": 1234567891,
+                  "Next": "GuardValue"
+                }
+              ],
+              "Default": "NoOp"
+            },
+            "GuardValue": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.input.ticket_event.current",
+                  "StringEquals": "tsanet_action_accept",
+                  "Next": "GetTicket"
+                },
+                {
+                  "Variable": "$.input.ticket_event.current",
+                  "StringEquals": "tsanet_action_reject",
+                  "Next": "GetTicket"
+                },
+                {
+                  "Variable": "$.input.ticket_event.current",
+                  "StringEquals": "tsanet_action_request_info",
+                  "Next": "GetTicket"
+                },
+                {
+                  "Variable": "$.input.ticket_event.current",
+                  "StringEquals": "tsanet_action_add_note",
+                  "Next": "GetTicket"
+                }
+              ],
+              "Default": "NoOp"
+            },
+            "NoOp": {
+              "Type": "Succeed"
+            },
+            "GetTicket": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_zd_get_ticket",
+              "Parameters": {
+                "ticket_id.$": "$.input.ticket_event.ticket.id"
+              },
+              "ResultPath": "$.zd",
+              "Next": "Extract",
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.err",
+                  "Next": "FailComment"
+                }
+              ]
+            },
+            "Extract": {
+              "Type": "Action",
+              "ActionName": "zis:common:transform:Jq",
+              "Parameters": {
+                "expr": "{ticket_id: .zd.ticket.id, token: (([.zd.ticket.custom_fields[]|select(.id==1234567890)|.value][0]) // \"\"), text: ((([.zd.ticket.custom_fields[]|select(.id==1234567895)|.value][0]) // \"\") | tostring | .[0:500])}",
+                "data.$": "$"
+              },
+              "ResultPath": "$.ctx",
+              "Next": "CheckToken"
+            },
+            "CheckToken": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.ctx.token",
+                  "StringEquals": "",
+                  "Next": "FailComment"
+                }
+              ],
+              "Default": "Dispatch"
+            },
+            "Dispatch": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.input.ticket_event.current",
+                  "StringEquals": "tsanet_action_accept",
+                  "Next": "AcceptCase"
+                },
+                {
+                  "Variable": "$.input.ticket_event.current",
+                  "StringEquals": "tsanet_action_reject",
+                  "Next": "RejectCase"
+                },
+                {
+                  "Variable": "$.input.ticket_event.current",
+                  "StringEquals": "tsanet_action_request_info",
+                  "Next": "InfoCase"
+                },
+                {
+                  "Variable": "$.input.ticket_event.current",
+                  "StringEquals": "tsanet_action_add_note",
+                  "Next": "NoteCase"
+                }
+              ],
+              "Default": "NoOp"
+            },
+            "AcceptCase": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_ts_accept",
+              "Parameters": {
+                "token.$": "$.ctx.token",
+                "ticket_id.$": "$.ctx.ticket_id"
+              },
+              "ResultPath": "$.ts",
+              "Next": "FinishAccept",
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.err",
+                  "Next": "FailComment"
+                }
+              ]
+            },
+            "FinishAccept": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_zd_finish_status",
+              "Parameters": {
+                "ticket_id.$": "$.ctx.ticket_id",
+                "message": "TSANet: case accepted (via Action field).",
+                "new_status": "tsanet_status_accepted"
+              },
+              "ResultPath": "$.done",
+              "End": true
+            },
+            "RejectCase": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_ts_reject",
+              "Parameters": {
+                "token.$": "$.ctx.token",
+                "text.$": "$.ctx.text"
+              },
+              "ResultPath": "$.ts",
+              "Next": "FinishReject",
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.err",
+                  "Next": "FailComment"
+                }
+              ]
+            },
+            "FinishReject": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_zd_finish_status",
+              "Parameters": {
+                "ticket_id.$": "$.ctx.ticket_id",
+                "message": "TSANet: case rejected (via Action field).",
+                "new_status": "tsanet_status_rejected"
+              },
+              "ResultPath": "$.done",
+              "End": true
+            },
+            "InfoCase": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_ts_info",
+              "Parameters": {
+                "token.$": "$.ctx.token",
+                "text.$": "$.ctx.text"
+              },
+              "ResultPath": "$.ts",
+              "Next": "FinishInfo",
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.err",
+                  "Next": "FailComment"
+                }
+              ]
+            },
+            "FinishInfo": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_zd_finish_status",
+              "Parameters": {
+                "ticket_id.$": "$.ctx.ticket_id",
+                "message": "TSANet: information requested from partner (via Action field).",
+                "new_status": "tsanet_status_information"
+              },
+              "ResultPath": "$.done",
+              "End": true
+            },
+            "NoteCase": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_ts_note",
+              "Parameters": {
+                "token.$": "$.ctx.token",
+                "text.$": "$.ctx.text"
+              },
+              "ResultPath": "$.ts",
+              "Next": "BuildNoteReceipt",
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.err",
+                  "Next": "FailComment"
+                }
+              ]
+            },
+            "BuildNoteReceipt": {
+              "Type": "Action",
+              "ActionName": "zis:common:transform:Jq",
+              "Parameters": {
+                "expr": "{message: (\"[TSANet note sent to partner (partner-only)]\\n\\n\" + (.ctx.text // \"\") + \"\\n\\ntsanet-note-id:\" + (.ts.id | tostring))}",
+                "data.$": "$"
+              },
+              "ResultPath": "$.receipt",
+              "Next": "FinishNote"
+            },
+            "FinishNote": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_zd_finish_note_receipt",
+              "Parameters": {
+                "ticket_id.$": "$.ctx.ticket_id",
+                "message.$": "$.receipt.message"
+              },
+              "ResultPath": "$.done",
+              "End": true
+            },
+            "FailComment": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_zd_finish_fail",
+              "Parameters": {
+                "ticket_id.$": "$.input.ticket_event.ticket.id",
+                "message": "TSANet Action failed \u2014 the API rejected the request (wrong case state, missing text, or no TSANet token). The Action field has been cleared; fix and retry. Details: Admin Center \u2192 Integration logs."
+              },
+              "ResultPath": "$.faildone",
+              "End": true
+            }
+          }
+        }
+      }
+    },
+    "jobspec_field_action": {
+      "type": "ZIS::JobSpec",
+      "properties": {
+        "name": "jobspec_field_action",
+        "event_source": "support",
+        "event_type": "ticket.CustomFieldChanged",
+        "flow_name": "zis:tsanet_connect:flow:flow_field_action"
+      }
+    },
+    "flow_forward_comment": {
+      "type": "ZIS::Flow",
+      "properties": {
+        "name": "flow_forward_comment",
+        "definition": {
+          "StartAt": "GuardToken",
+          "States": {
+            "GuardToken": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.input.token",
+                  "StringEquals": "",
+                  "Next": "NoOp"
+                }
+              ],
+              "Default": "GuardComment"
+            },
+            "GuardComment": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.input.comment",
+                  "StringEquals": "",
+                  "Next": "NoOp"
+                }
+              ],
+              "Default": "GuardAuthor"
+            },
+            "GuardAuthor": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.input.author_role",
+                  "StringEquals": "Agent",
+                  "Next": "ForwardNote"
+                },
+                {
+                  "Variable": "$.input.author_role",
+                  "StringEquals": "Admin",
+                  "Next": "ForwardNote"
+                },
+                {
+                  "Variable": "$.input.author_role",
+                  "StringEquals": "Administrator",
+                  "Next": "ForwardNote"
+                },
+                {
+                  "Variable": "$.input.author_role",
+                  "StringEquals": "agent",
+                  "Next": "ForwardNote"
+                },
+                {
+                  "Variable": "$.input.author_role",
+                  "StringEquals": "admin",
+                  "Next": "ForwardNote"
+                }
+              ],
+              "Default": "NoOp"
+            },
+            "NoOp": {
+              "Type": "Succeed"
+            },
+            "ForwardNote": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_ts_note",
+              "Parameters": {
+                "token.$": "$.input.token",
+                "text.$": "$.input.comment"
+              },
+              "ResultPath": "$.ts",
+              "End": true,
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.err",
+                  "Next": "NoOp"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "jobspec_forward_comment": {
+      "type": "ZIS::JobSpec",
+      "properties": {
+        "name": "jobspec_forward_comment",
+        "event_source": "zendesk",
+        "event_type": "public_comment",
+        "flow_name": "zis:tsanet_connect:flow:flow_forward_comment"
+      }
+    }
+  }
+}

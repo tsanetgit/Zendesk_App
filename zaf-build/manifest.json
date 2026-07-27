@@ -14,10 +14,14 @@
         "url": "assets/index.html",
         "flexible_height": true
       },
-      "background": "assets/background.html"
+      "background": "assets/background.html",
+      "nav_bar": {
+        "url": "assets/deploy.html",
+        "flexible_height": true
+      }
     }
   },
-  "version": "1.0.48",
+  "version": "1.0.49",
   "icon": "assets/logo.png",
   "frameworkVersion": "2.0",
   "parameters": [
@@ -92,6 +96,38 @@
       "required": false,
       "default": "",
       "description": "Optional comma-separated list of Zendesk role names allowed to invoke TSANet actions (e.g. admin or a custom role name). Empty = all agents. Defense-in-depth only; the TSANet API is the real authorization boundary."
+    },
+    {
+      "name": "field_id_action",
+      "type": "text",
+      "secure": false,
+      "required": false,
+      "default": "",
+      "description": "Zendesk numeric Field ID for TSANet Action (the dropdown that drives Accept/Reject/Info/Note). Required by the ZIS bundle."
+    },
+    {
+      "name": "field_id_action_text",
+      "type": "text",
+      "secure": false,
+      "required": false,
+      "default": "",
+      "description": "Zendesk numeric Field ID for TSANet Action Text (free-text body for Add Note). Required by the ZIS bundle."
+    },
+    {
+      "name": "tsanet_connection_name",
+      "type": "text",
+      "secure": false,
+      "required": false,
+      "default": "tsanet_oauth",
+      "description": "Name of the ZIS OAuth connection used for TSANet API calls. Leave as tsanet_oauth unless your instance registered it under a different name."
+    },
+    {
+      "name": "tsanet_engineer_email",
+      "type": "text",
+      "secure": false,
+      "required": false,
+      "default": "",
+      "description": "Email used as engineerEmail on TSANet Accept calls. Must be on your member company's registered domain."
     }
   ],
   "domainWhitelist": [
