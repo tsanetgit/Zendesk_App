@@ -220,28 +220,28 @@ ZIS renews the token automatically when it expires. Continue to Step 5 to deploy
 
 ## Step 5 — Deploy the Flow Bundle
 
-The connection from Step 4 does nothing by itself — the flows that create and update Zendesk tickets live in the **flow bundle** under [`zis/`](zis/). Three calls deploy it (full detail, per-instance substitutions, and gotchas in [`zis/README.md`](zis/README.md)):
+The connection from Step 4 does nothing by itself — the flows that create and update Zendesk tickets live in the **flow bundle** under [`zis/`](zis/). Deploying it is two steps (full detail, per-instance substitutions, and gotchas in [`zis/README.md`](zis/README.md)):
 
-1. **Upload** [`zis/tsanet_connect_bundle.json`](zis/tsanet_connect_bundle.json) (after substituting your custom field IDs) to `POST /api/services/zis/registry/tsanet_connect/bundles`
+1. **Upload the bundle and install its job specs — in the TSANet Connect app.** Open **TSANet Connect** from the left nav bar in Zendesk Support, confirm the three pre-flight checks pass, and click **Deploy bundle**. The app substitutes your custom field IDs from its own app settings, uploads the bundle, installs each job spec, then reads the registry back to confirm what is actually installed. **Requires app v1.0.49 or later**; update the app first if the screen is missing.
 2. **Create the inbound webhook** (`source_system: tsanet`, `event_type: collaboration_event`) and keep the returned ingest URL, Basic credentials, **and `uuid`** (required later for credential rotation — see [ZIS_Rotation_Runbook.md](ZIS_Rotation_Runbook.md); there is no list API, so a lost `uuid` is unrecoverable)
-3. **Install the job spec** — and re-run this after *every* bundle upload, uploads orphan installs
 
-> **Bundle upload is the one call that rejects OAuth.** The bundles endpoint returns
-> 401 ("Authorization failed due to OAuth being disabled for this API request",
-> re-verified 2026-07-27), so this single call cannot use `$SETUP_TOKEN`. Authenticate
-> it with an **API token**: `-u "YOUR_EMAIL/token:YOUR_API_TOKEN"`. Password access is
-> no longer an option; Zendesk removed it from remaining accounts starting 2026-01-12.
+> **Why the app and not curl.** The bundles endpoint **rejects OAuth** (401
+> "Authorization failed due to OAuth being disabled for this API request",
+> re-verified 2026-07-27), so it cannot use `$SETUP_TOKEN`. It accepts only an API
+> token or an authenticated admin session. Zendesk blocks API token creation for
+> accounts created on or after **2026-07-28**, blocks new tokens for every account
+> after **2026-10-27**, and deactivates all remaining tokens on **2027-04-30**;
+> password access was removed from remaining accounts starting 2026-01-12. The app
+> runs on your own admin session, so **there is no credential to create or maintain**
+> and nothing here expires.
 >
-> **This is the only method that works today, and it is on a clock.** Zendesk blocks
-> API token creation for accounts created on or after **2026-07-28**, blocks new tokens
-> for every account after **2026-10-27**, and deactivates all remaining tokens on
-> **2027-04-30**. An instance created after 2026-07-28 therefore cannot complete this
-> step at all.
+> **You must be a Zendesk administrator.** ZAF has no admin-only location, so the
+> screen is visible to any agent, but ZIS rejects the calls for non-admins.
 >
-> The replacement is app-side upload: the endpoint also accepts an **admin session**,
-> so the ZAF app can upload the bundle with no token. That is verified at the API level
-> but **not yet built**, so do not plan around it until
-> [Zendesk_App#120](https://github.com/tsanetgit/Zendesk_App/issues/120) ships.
+> **Deploying replaces the installed bundle**, and an upload orphans the installed job
+> specs. The app re-installs them immediately and verifies the result, but the
+> integration is briefly inactive in between — do not close the tab mid-run. If a step
+> fails, the screen reports which one and offers **Retry all**.
 
 Also create the **OAuth `zendesk` connection** the bundle's Zendesk-side actions require (see the README's prerequisites, steps 2b–2c — it reuses the Step 1 client, registering a ZIS client_credentials connection against your own instance's `/oauth/tokens`).
 

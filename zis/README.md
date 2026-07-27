@@ -85,29 +85,51 @@ Connection name `zendesk` (Zendesk-side actions) matches the Quick Start. The TS
 
 ## Deploy
 
-```bash
-# 1. Upload the bundle. This is the one call that REJECTS OAuth (401 "Authorization
-#    failed due to OAuth being disabled for this API request", re-verified 2026-07-27),
-#    so it cannot use $SETUP_TOKEN. It DOES accept an API token, used below, and it
-#    also accepts an admin session, which is how the ZAF app will upload the bundle
-#    with no token at all (verified; tracked in tsanetgit/Zendesk_App#120).
-#    DEADLINE: accounts created on or after 2026-07-28 cannot create API tokens, and
-#    no account can create new ones after 2026-10-27. Until the app path ships, an
-#    instance with no API token cannot complete this step.
-curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/registry/tsanet_connect/bundles" \
-  -u "YOUR_EMAIL/token:YOUR_API_TOKEN" -H "Content-Type: application/json" \
-  -d @tsanet_connect_bundle.json
+Deployment is two steps: the **TSANet Connect app** uploads the bundle and installs
+its job specs, then one curl creates the inbound webhook.
 
-# 2. Create the inbound webhook (returns ingest path + Basic credentials + uuid —
-#    keep all three; the uuid is REQUIRED for credential rotation and there is no
-#    list API to recover a lost one — see ZIS_Rotation_Runbook.md)
+### 1. Upload the bundle and install job specs — in the app
+
+**Requires TSANet Connect app v1.0.49 or later.** Update the app first if the screen
+below is missing.
+
+1. In Zendesk Support, open **TSANet Connect** from the left nav bar.
+2. Check the **Pre-flight** results. All three must pass before the button enables.
+3. Click **Deploy bundle**.
+
+The app substitutes every per-instance value from its own app settings, uploads the
+bundle, installs each job spec, and then **reads the registry back** to confirm what
+is actually installed. It reports per-step results and offers **Retry all** if any
+step fails.
+
+Why the app rather than curl: this endpoint **rejects OAuth** (401 `Authorization
+failed due to OAuth being disabled for this API request`, re-verified 2026-07-27).
+It accepts only an API token or an authenticated admin session. Zendesk blocks API
+token creation for accounts created on or after **2026-07-28**, blocks new tokens for
+everyone after **2026-10-27**, and deactivates all tokens on **2027-04-30**. The app
+runs on the admin's own session, so there is no credential to create or maintain.
+
+Notes:
+
+- **Deploying replaces the installed bundle**, and an upload orphans the currently
+  installed job specs. The app re-installs them immediately, but the integration is
+  briefly inactive in between. Do not close the tab mid-run.
+- **The admin must be a Zendesk administrator.** ZAF has no admin-only location, so
+  the screen is visible to any agent, but ZIS rejects the calls for non-admins.
+- Job specs left installed from an **older bundle generation** still intercept
+  events. The app surfaces these as a warning; uninstall them with
+  `DELETE /api/services/zis/registry/job_specs/install?job_spec_name=...`.
+
+### 2. Create the inbound webhook — curl
+
+Not done by the app. Returns the ingest path, Basic credentials, and **`uuid`** —
+keep all three. The `uuid` is REQUIRED for credential rotation and there is no list
+API to recover a lost one (see `ZIS_Rotation_Runbook.md`).
+
+```bash
 curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/inbound_webhooks/generic/tsanet_connect" \
   -H "Authorization: Bearer ZIS_OAUTH_TOKEN" -H "Content-Type: application/json" \
   -d '{"source_system":"tsanet","event_type":"collaboration_event"}'
-
-# 3. Install the job spec (ALWAYS re-run after every bundle upload — uploads orphan installs)
-curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/registry/job_specs/install?job_spec_name=zis:tsanet_connect:job_spec:jobspec_handle_ping" \
-  -H "Authorization: Bearer ZIS_OAUTH_TOKEN"
 ```
 
 The webhook subscription on the TSANet side uses the `callbackAuth` capability (issue #2), delivered in API **v3.1.0**: register with `callbackUrl` = the ingest URL and `callbackAuth` of type `BASIC` carrying the ingest credentials. TSANet attaches them to every delivery POST alongside the existing `X-Hub-Signature-256` HMAC, and the ZIS ingest accepts the authenticated request (validated on Beta: deliveries return 200 and create tickets). The pipeline can also be exercised without a live subscription by POSTing a `WebhookPayload`-shaped body (`eventType`, `requestToken`, `timestamp`) to the ingest URL with the Basic credentials.
@@ -152,11 +174,17 @@ The note is delivered to the partner **only** — the end customer never sees it
 
 #### Admin setup — the `TSANet: Send partner-only note` macro (optional)
 
-Zendesk macros are per-instance Support config and **cannot ship in the ZIS bundle**, so each instance creates this macro once. Partner-only still works without it (set the **TSANet Action** dropdown to **Add Note** by hand); the macro is purely a one-click convenience. Substitute your **TSANet Action** field id for `FIELD_ID`:
+Zendesk macros are per-instance Support config and **cannot ship in the ZIS bundle**, so each instance creates this macro once. Partner-only still works without it (set the **TSANet Action** dropdown to **Add Note** by hand); the macro is purely a one-click convenience.
+
+Easiest route is the UI: **Admin Center → Workspaces → Macros → Add macro**, with one action setting **TSANet Action** to **Add Note**.
+
+Via the API, substitute your **TSANet Action** field id for `FIELD_ID`. Unlike bundle
+upload, this is a plain Support API endpoint and accepts OAuth, so use the
+`$SETUP_TOKEN` bearer from Step 1 rather than an API token:
 
 ```bash
 curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/v2/macros.json" \
-  -u "YOUR_EMAIL/token:YOUR_API_TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SETUP_TOKEN" -H "Content-Type: application/json" \
   -d '{"macro":{"title":"TSANet: Send partner-only note","actions":[{"field":"custom_fields_FIELD_ID","value":"tsanet_action_add_note"}]}}'
 ```
 

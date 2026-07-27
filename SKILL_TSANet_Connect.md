@@ -599,7 +599,7 @@ ZIS custom integrations **do not appear in Admin Center UI**. Verify via API:
 curl -s -u "EMAIL/token:API_TOKEN" \
   "https://SUBDOMAIN.zendesk.com/api/services/zis/integrations/tsanet_connect/connections"
 ```
-Note: most ZIS management endpoints reject a standard API token (401/403/404 depending on the endpoint — e.g. `connections/all` returns 403 "API token is not supported"). They require a ZIS OAuth token minted under your ZIS OAuth client. Registry create additionally accepts admin basic auth and admin OAuth bearers (client_credentials); bundle upload accepts ONLY basic auth — it rejects all OAuth. This is by design — it's not an error.
+Note: most ZIS management endpoints reject a standard API token (401/403/404 depending on the endpoint — e.g. `connections/all` returns 403 "API token is not supported"). They require a ZIS OAuth token minted under your ZIS OAuth client. Registry create additionally accepts admin basic auth and admin OAuth bearers (client_credentials); bundle upload rejects ALL OAuth and accepts only admin basic auth **or an authenticated admin session**. This is by design — it's not an error. The session path is why the TSANet Connect app can deploy the bundle without any token (app v1.0.49+, `tsanetgit/Zendesk_App#120`).
 
 ---
 
@@ -652,7 +652,9 @@ Key facts (full recipe in `zis/README.md` Prerequisites 2a–2c):
 - **Minimal scope is `read tickets:write`.** `tickets:read` alone breaks `SearchTicket` — `/api/v2/search.json` returns 403 under it, and there is no `search:read` scope.
 - Tokens from clients created on or after 2026-04-30 **expire in 30 minutes**, so a static `bearer_token` connection is not viable; only the auto-renewing `oauth` connection type works.
 - **Migration on an existing install:** connection names are unique across types — delete the old `basic_auth` connection named `zendesk`, then create the `oauth` one under the same name. Zero bundle changes. Deleting a ZIS OAuth client registration cascade-deletes its connections.
-- **Setup bootstrap is tokenless too** (validated 2026-07-07): the same confidential client's client_credentials bearer is accepted on ZIS registry create and on `POST /api/v2/oauth/tokens` (minting the ZIS management token). **One exception: bundle upload** — `POST /registry/{integration}/bundles` rejects ALL OAuth (401 "Authorization failed due to OAuth being disabled for this API request", re-verified 2026-07-27). It accepts an **API token** (`-u "EMAIL/token:API_TOKEN"`), which is the only working method today. It does **not** need password access, and that option is gone anyway: Zendesk removed password access from remaining accounts starting 2026-01-12. The endpoint also accepts an **admin session**, so a ZAF app can upload with no token; verified at the API level but not yet built, tracked in `tsanetgit/Zendesk_App#120`. API tokens are themselves on a clock: none for accounts created on/after 2026-07-28, none for anyone after 2026-10-27, all deactivated 2027-04-30.
+- **Setup bootstrap is tokenless too** (validated 2026-07-07): the same confidential client's client_credentials bearer is accepted on ZIS registry create and on `POST /api/v2/oauth/tokens` (minting the ZIS management token). **One exception: bundle upload** — `POST /registry/{integration}/bundles` rejects ALL OAuth (401 "Authorization failed due to OAuth being disabled for this API request", re-verified 2026-07-27). It accepts an **API token** (`-u "EMAIL/token:API_TOKEN"`) or an **authenticated admin session**. It does **not** need password access, and that option is gone anyway: Zendesk removed password access from remaining accounts starting 2026-01-12.
+
+  **The documented path is now the app, not curl.** The TSANet Connect app's **nav_bar deploy screen** (v1.0.49+) uploads the bundle and installs its job specs on the admin's own session, then reads the registry back to confirm. Verified end to end on DEV 2026-07-27: 3 of 3 job specs installed, no API token or password involved. Do not tell members to mint an API token for this. API tokens are on a clock anyway: none for accounts created on/after 2026-07-28, none for anyone after 2026-10-27, all deactivated 2027-04-30.
 
 ---
 
@@ -732,7 +734,7 @@ Full data map and recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_an
 - **Tag POST is additive:** `POST /api/v2/tickets/{id}/tags.json` adds to existing tags. Use this — don't PUT (which replaces).
 - **Ticket comments via PUT:** to post an internal comment programmatically: `PUT /api/v2/tickets/{id}.json` with `ticket.comment.public: false`. Do not use the Comments endpoint — it doesn't support the internal flag the same way.
 - **Views API custom columns:** silently ignored for custom fields. Manual configuration required.
-- **ZIS management endpoints:** reject standard API tokens (401/403/404 by endpoint); require a ZIS OAuth token. Registry create + bundle upload are the exceptions that accept admin basic auth. Expected behavior, not a bug.
+- **ZIS management endpoints:** reject standard API tokens (401/403/404 by endpoint); require a ZIS OAuth token. Registry create + bundle upload are the exceptions that accept admin basic auth, and bundle upload additionally accepts an admin session (which is how the app deploys it, v1.0.49+). Bundle upload is the only one that rejects OAuth outright. Expected behavior, not a bug.
 
 ---
 
