@@ -33,6 +33,14 @@
     "Cat 7: the three invalid-value messages name the SETTING KEY and never the offending value, so a hostile value cannot reach the DOM by the error path. The single innerHTML sink still escapes both interpolations.",
     "Verified this session that the SDK check parses the tag out of the shipped HTML (src + integrity from the tag, crossorigin required, exact-version required) rather than comparing against a hardcoded constant, and that the CDN fetch uses the URL taken from that tag.",
     "NOT verified: ZIS rejecting an agent-role session (#125); whether Zendesk audit-logs ZIS registry writes; that private apps do not auto-update, which is what the v1.0.49 'exposure believed nil' assessment rests on.",
-    "Remaining mechanical WARN is the known v1-endpoint sunset 2027-01-01 (#101)."
+    "Remaining mechanical WARN is the known v1-endpoint sunset 2027-01-01 (#101).",
+    "accepted_issues records which open security issues this review knowingly ships with, so the release gate stops flagging on the standing backlog (#128). Accepted here: #96 (durable audit trail, long-horizon architecture), #119 (move off password auth, enhancement), #98 (low-priority, non-blocking anyway), #125 (boundary is vendor-documented but unprobed by TSANet), #128 (a defect in the gate itself, not in the shipped artifact). Acceptance is per-review and expires with it: source drift invalidates coverage, so the next review must re-accept explicitly rather than inheriting this list."
+  ],
+  "accepted_issues": [
+    96,
+    98,
+    119,
+    125,
+    128
   ]
 }

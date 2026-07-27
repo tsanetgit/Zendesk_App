@@ -62,32 +62,69 @@ jobs:
           # which one happened.
           FLAGGED=false
           COVERED=true
+          # A findings check that could not run is neither clean nor a finding.
+          # Without this, an API failure rendered as "ships with unaccepted
+          # findings", which is the #115 defect (heading not matching the reason)
+          # reappearing in the branch added to fix #128.
+          INDETERMINATE=false
           REASONS=""
           FINDINGS_REASON=""
           flag() { FLAGGED=true; REASONS="${REASONS}- $1"$'\n'; }
           flag_coverage() { COVERED=false; flag "$1"; }
 
-          # 1. Mechanical checks must not FAIL.
-          if python3 scripts/security-audit.py --no-network > /tmp/audit.txt 2>&1; then
-            echo "mechanical checks: clean"
-          elif [ $? -eq 2 ]; then
-            echo "mechanical checks: warnings only"
-          else
-            flag_coverage "Mechanical security checks reported failures."
-          fi
+          # 1. Mechanical checks must not FAIL. Capture the exit code explicitly:
+          # reading $? after the `if` works today but breaks the moment any
+          # command is inserted between them.
+          AUDIT_RC=0
+          python3 scripts/security-audit.py --no-network > /tmp/audit.txt 2>&1 || AUDIT_RC=$?
+          case "$AUDIT_RC" in
+            0) echo "mechanical checks: clean" ;;
+            2) echo "mechanical checks: warnings only" ;;
+            *) flag_coverage "Mechanical security checks reported failures (exit $AUDIT_RC)." ;;
+          esac
 
-          # 2. An audit record must exist and cover this commit.
+          # 2. An audit record must exist, parse, and cover this commit.
+          #
+          # Validated in ONE python call that either prints both fields or exits
+          # nonzero. A partial read is the dangerous case: a missing key that
+          # becomes an empty string, compared numerically, errors and reads as
+          # "no findings" — assurance manufactured from a parse failure, which is
+          # the #108 failure mode in a new place.
+          ACCEPTED=""
           if [ ! -f .security-audit.json ]; then
             flag_coverage "No .security-audit.json — this build has never been security reviewed."
           else
-            REVIEWED=$(python3 -c "import json;print(json.load(open('.security-audit.json'))['reviewed_commit'])")
-            if ! git merge-base --is-ancestor "$REVIEWED" HEAD 2>/dev/null; then
-              flag_coverage "Audit record references commit $REVIEWED, which is not an ancestor of this tag."
+            AUDIT_FIELDS=""
+            if ! AUDIT_FIELDS=$(python3 - <<'PY' 2>/tmp/audit-parse.txt
+import json, re, sys
+try:
+    d = json.load(open('.security-audit.json'))
+except Exception as e:
+    sys.exit('unreadable: %s' % e)
+rc = str(d.get('reviewed_commit', ''))
+if not re.fullmatch(r'[0-9a-f]{7,40}', rc):
+    sys.exit('reviewed_commit is not a hex sha: %r' % rc)
+acc = d.get('accepted_issues', [])
+if not isinstance(acc, list) or not all(isinstance(x, int) for x in acc):
+    sys.exit('accepted_issues must be a list of integers')
+print(rc)
+print(' '.join(str(x) for x in acc))
+PY
+            ); then
+              flag_coverage "Audit record is unreadable or invalid ($(head -c 200 /tmp/audit-parse.txt | tr '\n' ' ')). Security status is INDETERMINATE, not clean."
             else
-              # Source changes since the audit invalidate it. Docs do not.
-              CHANGED=$(git diff --name-only "$REVIEWED"..HEAD -- zaf-build/ zis/ scripts/ .github/workflows/ | tr '\n' ' ')
-              if [ -n "$CHANGED" ]; then
-                flag_coverage "Source changed since the last audit ($REVIEWED): $CHANGED"
+              REVIEWED=$(printf '%s\n' "$AUDIT_FIELDS" | sed -n 1p)
+              ACCEPTED=$(printf '%s\n' "$AUDIT_FIELDS" | sed -n 2p)
+              if ! git merge-base --is-ancestor "$REVIEWED" HEAD 2>/dev/null; then
+                flag_coverage "Audit record references commit $REVIEWED, which is not an ancestor of this tag."
+              else
+                # Source changes since the audit invalidate it. Docs do not.
+                # The shipped artifact is a pure package of zaf-build/, so this
+                # allowlist covers everything that can reach a member.
+                CHANGED=$(git diff --name-only "$REVIEWED"..HEAD -- zaf-build/ zis/ scripts/ .github/workflows/ | tr '\n' ' ')
+                if [ -n "$CHANGED" ]; then
+                  flag_coverage "Source changed since the last audit ($REVIEWED): $CHANGED"
+                fi
               fi
             fi
           fi
@@ -105,7 +142,8 @@ jobs:
           # Low-priority issues are reported but do not flag. Unprioritised ones
           # DO flag, because their severity is unknown rather than known-small.
           if ! SEC_LINES=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label security --limit 200 --json number,labels --jq '.[] | "#\(.number) \([.labels[].name] | map(select(endswith("-priority"))) | first // "unprioritised")"' 2>/tmp/gh-err.txt); then
-            FINDINGS_REASON="open security findings could not be determined"
+            INDETERMINATE=true
+            FINDINGS_REASON="an indeterminate findings check — the open-issue query failed, so this is UNKNOWN rather than clean"
             flag "Could NOT query open security issues ($(head -c 200 /tmp/gh-err.txt | tr '\n' ' ')). Security status is INDETERMINATE, not clean."
           elif [ -z "$SEC_LINES" ]; then
             echo "open security issues: none"
@@ -116,34 +154,110 @@ jobs:
             # finding" and then names two contradicts itself, and a member
             # reading a self-inconsistent security statement has no reason to
             # trust the rest of it.
-            BLOCKING=$(printf '%s\n' "$SEC_LINES" | grep -v ' low-priority$' | grep -c . || true)
+            # An issue blocks when it is high/medium/unprioritised AND is not
+            # named in the audit record's accepted_issues.
+            #
+            # Why accepted_issues exists (#128): blocking on the whole backlog
+            # meant the gate flagged EVERY release, because long-horizon items
+            # (#96 durable audit trail, #119 move off password auth) never
+            # close. v1.0.49 — genuinely uncovered, shipped a HIGH regression —
+            # and v1.0.50 — reviewed pre-tag, three defects fixed — produced the
+            # same banner. A control whose output does not change when the thing
+            # it measures changes is not measuring it.
+            #
+            # Acceptance is deliberately NOT a label: labels are mutable by
+            # anyone with triage, unrecorded and unreviewed. It lives in the
+            # audit record, so it goes through review like code, and because
+            # source drift invalidates coverage it expires with the audit rather
+            # than persisting silently. A newly-filed finding is still caught:
+            # it is not on the accepted list, so it blocks.
+            BLOCKING_LINES=""
+            ACCEPTED_LINES=""
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              num=$(printf '%s' "$line" | sed 's/^#\([0-9]*\).*/\1/')
+              case "$line" in
+                *' low-priority') continue ;;
+              esac
+              if printf ' %s ' "$ACCEPTED" | grep -q " $num "; then
+                ACCEPTED_LINES="${ACCEPTED_LINES}${line}"$'\n'
+              else
+                BLOCKING_LINES="${BLOCKING_LINES}${line}"$'\n'
+              fi
+            done <<< "$SEC_LINES"
+
+            BLOCKING=$(printf '%s' "$BLOCKING_LINES" | grep -c . || true)
             TOTAL=$(printf '%s\n' "$SEC_LINES" | grep -c . || true)
-            SUMMARY=$(printf '%s\n' "$SEC_LINES" | paste -sd';' - | sed 's/;/; /g')
+            # Each count is printed with ITS OWN list. #118 fixed this pairing on
+            # FINDINGS_REASON and the flag() beside it kept the old form, which
+            # is how "5 open" came to be printed above six names.
+            BLOCKING_LIST=$(printf '%s' "$BLOCKING_LINES" | paste -sd';' - | sed 's/;/; /g')
+            CONTEXT_LIST=$(printf '%s\n' "$SEC_LINES" | paste -sd';' - | sed 's/;/; /g')
             if [ "${BLOCKING:-0}" -gt 0 ]; then
-              FINDINGS_REASON="$BLOCKING of $TOTAL open security finding(s) at high/medium/unprioritised severity, knowingly accepted — $SUMMARY"
-              flag "$BLOCKING open security issue(s) at high/medium/unprioritised severity — $SUMMARY"
+              FINDINGS_REASON="$BLOCKING open security finding(s) not accepted by the audit record: $BLOCKING_LIST"
+              flag "$BLOCKING blocking security issue(s) — $BLOCKING_LIST"
             else
-              echo "open security issues (all low-priority, none blocking): $SUMMARY"
+              echo "no blocking security issues; $TOTAL open in total: $CONTEXT_LIST"
             fi
           fi
 
           {
-            if [ "$FLAGGED" = true ]; then
-              echo "## Release flagged as a security risk"
+            # Three outcomes, not two (#128). "Never reviewed" and "reviewed,
+            # ships with a finding nobody accepted" need different sentences;
+            # printing the coverage wording for both made every release read as
+            # unreviewed, including ones that had been reviewed that hour.
+            if [ "$COVERED" != true ]; then
+              echo "## Release NOT covered by a current security audit"
               echo ""
-              echo "This release has **not** cleared a current security audit. It can still"
-              echo "be approved, but approving it accepts the risk below, and that"
-              echo "acceptance is recorded on this run."
+              echo "The audit record does not cover this commit, or the checks could not"
+              echo "be completed. It can still be approved, but approving it accepts the"
+              echo "risk below, and that acceptance is recorded on this run."
               echo ""
               echo "$REASONS"
-              echo "Resolve by running the Security Review persona against this commit,"
-              echo "addressing high and medium findings, and committing an updated"
-              echo "\`.security-audit.json\`."
+              echo "Resolve by running the Security Review persona against this commit and"
+              echo "committing an updated \`.security-audit.json\`."
+            elif [ "$INDETERMINATE" = true ]; then
+              echo "## Release reviewed, but the findings check could not run"
+              echo ""
+              echo "The audit record covers this exact commit with no source drift, so the"
+              echo "review is current. The open-issue query failed, so whether this release"
+              echo "ships with unaccepted findings is **UNKNOWN**, not clean. Approving"
+              echo "accepts that uncertainty, and that acceptance is recorded here."
+              echo ""
+              echo "$REASONS"
+              echo "Resolve by re-running this job once the query succeeds."
+            elif [ "$FLAGGED" = true ]; then
+              echo "## Release reviewed, but ships with unaccepted findings"
+              echo ""
+              echo "The audit record covers this exact commit with no source drift, so the"
+              echo "review is current. These findings are open and are **not** named in the"
+              echo "record's \`accepted_issues\`, so nobody has signed off on shipping with"
+              echo "them. Approving accepts them, and that acceptance is recorded here."
+              echo ""
+              echo "$REASONS"
+              echo "Resolve by addressing them, or by accepting them explicitly in"
+              echo "\`.security-audit.json\` under \`accepted_issues\` in the next review."
             else
               echo "## Security audit current"
               echo ""
               echo "Mechanical checks pass, the audit record covers this commit with no"
-              echo "source drift, and no open high or medium security issues."
+              echo "source drift, and every open security issue is either low-priority or"
+              echo "explicitly accepted by the review."
+            fi
+
+            # Standing backlog, always shown, never a flag on its own. It is
+            # context for the approver, not a property of this release.
+            if [ -n "${CONTEXT_LIST:-}" ]; then
+              echo ""
+              echo "<details><summary>All open security issues (context, not a gate)</summary>"
+              echo ""
+              echo "${TOTAL:-0} open: $CONTEXT_LIST"
+              echo ""
+              if [ -n "${ACCEPTED_LINES:-}" ]; then
+                echo "Explicitly accepted by this review: $(printf '%s' "$ACCEPTED_LINES" | paste -sd';' - | sed 's/;/; /g')"
+                echo ""
+              fi
+              echo "</details>"
             fi
             echo ""
             echo '<details><summary>Mechanical check output</summary>'
