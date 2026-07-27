@@ -1,0 +1,48 @@
+name: Workflow files parse
+
+# Fail fast if any GitHub Actions workflow file stops being valid YAML.
+#
+# On 2026-07-27 a change to release.yml put a heredoc body at indent 0 inside a
+# `run: |` block scalar indented 10 spaces, which terminates the block. The file
+# stopped parsing and the release workflow was dead. The local check meant to
+# catch it ran `bash -n` on a dedented EXTRACTION of the run block, so it passed
+# while the actual file was broken.
+#
+# This lints the files themselves. Deliberately narrow: it proves each workflow
+# loads and has `on` + `jobs`, not that its Actions semantics are correct. That
+# is enough for the whole class of "the file no longer parses", and it needs no
+# third-party action in the release-critical path.
+
+# Reads the repo and runs one script; writes nothing. Declared explicitly so it
+# does not inherit the repository default (tsanetgit/Zendesk_App#109).
+permissions:
+  contents: read
+
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/lint-workflows.py'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/lint-workflows.py'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.x'
+
+      # Installed explicitly rather than relied on from the runner image: the
+      # linter exits 2 without it, and an indeterminate result must not be
+      # mistaken for a pass.
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Every workflow file parses
+        run: python3 scripts/lint-workflows.py
