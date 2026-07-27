@@ -8,7 +8,7 @@ Use Issues https://github.com/tsanetgit/Zendesk_App/issues to log bugs and enhan
 - [ZAF Quick Start](ZAF_Quick_Start.md)
 - [ZIS Quick Start](ZIS_Quick_Start.md)
 - [PII Retention and Data Handling](PII_Retention_and_Data_Handling.md) — what cross-org data lands in your tickets and how to bound its lifetime
-- [Full Implementation Guide (.docx)](Zendesk_PlainLanguage_Implementation_Guide_v2.21.docx)
+- [Full Implementation Guide (.docx)](Zendesk_PlainLanguage_Implementation_Guide_v2.22.docx)
 - [ZAF Custom Build Guide (Not Recommended)](ZAF_Custom_Build_Guide.md) — only for members who cannot, or will not, install the pre-built ZIP
 
 <b>CURRENT PACKAGE VERSION:</b>

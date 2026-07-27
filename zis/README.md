@@ -96,7 +96,7 @@ its job specs, then one curl creates the inbound webhook.
 
 ### 1. Upload the bundle and install job specs — in the app
 
-**Requires TSANet Connect app v1.0.50 or later.** Update the app first if the screen
+**Requires TSANet Connect app v1.0.51 or later.** Update the app first if the screen
 below is missing.
 
 1. In Zendesk Support, open **TSANet Connect** from the left nav bar.
