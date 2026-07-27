@@ -1,6 +1,6 @@
 # ZAF Custom Build Guide (Not Recommended for Most Members)
 
-**Most members should not read this document.** Install the pre-built ZIP from the [latest GitHub Release](https://github.com/tsanetgit/Zendesk_App/releases/latest) instead — see [`ZAF_Quick_Start.md`](ZAF_Quick_Start.md) or [the Implementation Guide](Zendesk_PlainLanguage_Implementation_Guide_v2.15.docx)'s Step 4. That path takes a few minutes, needs no build tools, and is identical for every member, which is what makes centralized support possible.
+**Most members should not read this document.** Install the pre-built ZIP from the [latest GitHub Release](https://github.com/tsanetgit/Zendesk_App/releases/latest) instead — see [`ZAF_Quick_Start.md`](ZAF_Quick_Start.md) or [the Implementation Guide](Zendesk_PlainLanguage_Implementation_Guide_v2.21.docx)'s Step 4. That path takes a few minutes, needs no build tools, and is identical for every member, which is what makes centralized support possible.
 
 This document is for the exception: members who **cannot, or will not,** use the pre-built ZIP — most commonly because they want to add company-specific customizations (extra panels, additional integrations, branding changes) on top of the canonical app.
 
