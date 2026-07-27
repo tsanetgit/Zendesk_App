@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>TSANet Connect — Deploy ZIS bundle</title>
+  <script src="https://static.zdassets.com/zendesk_app_framework_sdk/2.0/zaf_sdk.min.js"></script>
+  <style>
+    body { font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+           color: #2f3941; margin: 0; padding: 20px; }
+    h1 { font-size: 17px; margin: 0 0 4px; }
+    .sub { color: #68737d; margin: 0 0 18px; }
+    .card { border: 1px solid #d8dcde; border-radius: 4px; padding: 14px 16px; margin-bottom: 14px; }
+    .banner { border-radius: 4px; padding: 10px 14px; margin-bottom: 14px; font-weight: 600; }
+    .banner.warn { background: #fff7e6; border: 1px solid #ffb057; color: #ad5e18; }
+    .banner.bad  { background: #fff0f1; border: 1px solid #e35b66; color: #8c232c; }
+    .banner.good { background: #edf8f4; border: 1px solid #038153; color: #04724d; }
+    ul.steps { list-style: none; padding: 0; margin: 0; }
+    ul.steps li { padding: 7px 0; border-bottom: 1px solid #f0f2f3; }
+    ul.steps li:last-child { border-bottom: 0; }
+    .ok   { color: #04724d; font-weight: 600; }
+    .bad  { color: #8c232c; font-weight: 600; }
+    .skip { color: #68737d; }
+    .detail { color: #68737d; font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+              white-space: pre-wrap; word-break: break-all; margin-top: 4px; }
+    button { font: inherit; padding: 8px 16px; border-radius: 4px; cursor: pointer;
+             border: 1px solid #5293c7; background: #1f73b7; color: #fff; }
+    button.secondary { background: #fff; color: #1f73b7; }
+    button[disabled] { opacity: .5; cursor: default; }
+    .hidden { display: none; }
+    code { background: #f8f9f9; padding: 1px 4px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>TSANet Connect — Deploy ZIS bundle</h1>
+  <p class="sub">Uploads the flow bundle to this Zendesk instance and installs its job specs.
+     Runs on your own admin session, so no API token is required.</p>
+
+  <div id="gate" class="banner bad hidden"></div>
+
+  <div id="main" class="hidden">
+    <div id="preflight" class="card">
+      <strong>Pre-flight</strong>
+      <ul class="steps" id="preflight-steps"></ul>
+    </div>
+
+    <div class="banner warn">
+      Deploying replaces the installed bundle. Job specs are re-installed immediately
+      afterwards, but the integration is briefly inactive in between.
+      <strong>Do not close this tab while it runs.</strong>
+    </div>
+
+    <p>
+      <button id="deploy-btn" disabled>Deploy bundle</button>
+      <button id="recheck-btn" class="secondary">Re-run pre-flight</button>
+    </p>
+
+    <div id="result" class="hidden">
+      <div id="result-banner" class="banner"></div>
+      <div class="card">
+        <strong>Steps</strong>
+        <ul class="steps" id="result-steps"></ul>
+      </div>
+      <p>
+        <button id="retry-btn" class="hidden">Retry all</button>
+        <button id="copy-btn" class="secondary">Copy report</button>
+        <span id="copy-note" class="skip"></span>
+      </p>
+    </div>
+  </div>
+
+  <script src="deploy.js"></script>
+</body>
+</html>
