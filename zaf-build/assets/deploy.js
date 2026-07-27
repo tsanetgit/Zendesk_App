@@ -116,8 +116,11 @@
   //   1. validate  — reject values that could break out at all
   //   2. escape    — JSON-escape what is interpolated into string positions
   //   3. parse     — refuse to upload anything that is not valid JSON
-  // Layer 3 does NOT catch the vector above on its own; layer 2 is what kills
-  // it. Layer 3 turns the remaining malformed cases from fail-open to
+  // Layer 1 currently rejects exactly the characters layer 2 would escape, so
+  // layer 2 is redundant *today* — deliberately kept so that loosening layer 1
+  // later cannot silently reintroduce the injection. Layer 3 does NOT catch the
+  // vector above on its own (the exploit parses cleanly); it turns the remaining
+  // malformed cases, such as a non-numeric field id, from fail-open to
   // fail-closed.
   //
   // The host is not user input (it is derived from tsanet_env and both values

@@ -239,6 +239,8 @@ The connection from Step 4 does nothing by itself — the flows that create and 
 > the app's own role check is a convenience gate rather than a security boundary.
 > The boundary is server-side: Zendesk documents the ZIS registry endpoints as
 > [Allowed for: Admins](https://developer.zendesk.com/api-reference/integration-services/registry/bundles/).
+> That is Zendesk's documentation; TSANet has not tested an agent-role session
+> against these endpoints.
 >
 > **Deploying replaces the installed bundle**, and an upload orphans the installed job
 > specs. The app re-installs them immediately and verifies the result, but the
