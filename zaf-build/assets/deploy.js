@@ -98,17 +98,48 @@
 
   // ------------------------------------------------------------ substitution
 
-  // Substitute every per-instance value, then assert nothing was missed. A
-  // half-substituted bundle uploads cleanly and fails later at runtime, at the
-  // member, which is the failure mode this assertion exists to prevent.
+  // Substitution is textual, not structural, because the field-id placeholders
+  // appear in two contexts: as unquoted JSON numbers (`{"id": 1234567890`) and
+  // inside jq expression strings (`select(.id==1234567890)`). Parsing and
+  // walking the object would still need text replacement inside string leaves,
+  // so it buys nothing.
+  //
+  // Textual substitution means a setting value can escape its JSON context.
+  // Probed on the shipped bundle (#124): `tsanet_engineer_email` set to
+  // `a@b.com", "evil": "1` broke out of the string, injected a key into
+  // action_ts_accept, AND still parsed as valid JSON — so nothing downstream
+  // rejected it. Three layers below, because none alone is sufficient:
+  //   1. validate  — reject values that could break out at all
+  //   2. escape    — JSON-escape what is interpolated into string positions
+  //   3. parse     — refuse to upload anything that is not valid JSON
+  // Layer 3 does NOT catch the vector above on its own; layer 2 is what kills
+  // it. Layer 3 turns the remaining malformed cases from fail-open to
+  // fail-closed.
+  //
+  // The host is not user input (it is derived from tsanet_env and both values
+  // are literals in this file), so it needs no validation.
+
+  // Escape for interpolation into a JSON string literal.
+  function jsonStr(v) {
+    var q = JSON.stringify(String(v));
+    return q.slice(1, q.length - 1);
+  }
+
   function substitute(text, s) {
     var out = text;
     var missing = [];
+    var invalid = [];
 
     Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) {
       var key = FIELD_PLACEHOLDERS[ph];
       var val = (s[key] || '').toString().trim();
       if (!val) { missing.push(key); return; }
+      // Field ids land in an unquoted numeric position. Anything non-numeric
+      // either corrupts the JSON or injects structure, so refuse it here.
+      if (!/^\d+$/.test(val)) {
+        invalid.push(key + ' must be digits only (Zendesk field id)');
+        return;
+      }
       // \b so a placeholder can never match inside a longer numeric id.
       out = out.replace(new RegExp('\\b' + ph + '\\b', 'g'), val);
     });
@@ -120,14 +151,23 @@
     // named "zendesk" and is fixed, so match the key/value pair rather than the
     // bare string to avoid collateral edits.
     var conn = (s.tsanet_connection_name || CONN_PLACEHOLDER).trim();
-    out = out.replace(
-      new RegExp('("connectionName"\\s*:\\s*)"' + CONN_PLACEHOLDER + '"', 'g'),
-      '$1"' + conn + '"'
-    );
+    if (/["\\\u0000-\u001f]/.test(conn)) {
+      invalid.push('tsanet_connection_name contains a quote, backslash or control character');
+    } else {
+      out = out.replace(
+        new RegExp('("connectionName"\\s*:\\s*)"' + CONN_PLACEHOLDER + '"', 'g'),
+        '$1"' + jsonStr(conn) + '"'
+      );
+    }
 
     var email = (s.tsanet_engineer_email || '').trim();
-    if (!email) { missing.push('tsanet_engineer_email'); }
-    else { out = out.split(EMAIL_PLACEHOLDER).join(email); }
+    if (!email) {
+      missing.push('tsanet_engineer_email');
+    } else if (/["\\\u0000-\u001f]/.test(email)) {
+      invalid.push('tsanet_engineer_email contains a quote, backslash or control character');
+    } else {
+      out = out.split(EMAIL_PLACEHOLDER).join(jsonStr(email));
+    }
 
     var leftovers = [];
     Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) {
@@ -135,7 +175,15 @@
     });
     if (out.indexOf(EMAIL_PLACEHOLDER) !== -1) { leftovers.push(EMAIL_PLACEHOLDER); }
 
-    return { text: out, missing: missing, leftovers: leftovers };
+    // Nothing malformed leaves the browser.
+    var parseError = '';
+    if (!missing.length && !invalid.length && !leftovers.length) {
+      try { JSON.parse(out); }
+      catch (e) { parseError = String(e.message || e).slice(0, 200); }
+    }
+
+    return { text: out, missing: missing, invalid: invalid,
+             leftovers: leftovers, parseError: parseError };
   }
 
   function bundleJobSpecNames(bundle) {
@@ -171,13 +219,23 @@
       steps.push({ ok: false, name: 'App settings complete',
                    detail: 'Not set: ' + sub.missing.join(', ') +
                            '. Set them in Admin Center > Apps > TSANet Connect.' });
+    } else if (sub.invalid.length) {
+      ok = false;
+      steps.push({ ok: false, name: 'App settings well-formed',
+                   detail: sub.invalid.join('; ') +
+                           '. A value that breaks out of its JSON context would change the ' +
+                           'uploaded bundle, so it is rejected here rather than uploaded.' });
     } else if (sub.leftovers.length) {
       ok = false;
       steps.push({ ok: false, name: 'Bundle fully substituted',
                    detail: 'Placeholders still present after substitution: ' + sub.leftovers.join(', ') +
                            '. The embedded bundle and this app version disagree; do not deploy.' });
+    } else if (sub.parseError) {
+      ok = false;
+      steps.push({ ok: false, name: 'Substituted bundle is valid JSON',
+                   detail: sub.parseError + '. Nothing will be uploaded.' });
     } else {
-      steps.push({ ok: true, name: 'App settings complete and bundle fully substituted' });
+      steps.push({ ok: true, name: 'App settings complete, well-formed, and bundle parses' });
     }
     renderSteps('preflight-steps', steps);
 
@@ -241,8 +299,12 @@
     renderSteps('result-steps', state.steps);
 
     var sub = substitute(state.bundleText, s);
-    if (sub.missing.length || sub.leftovers.length) {
-      record('Substitute bundle', false, 'missing=' + sub.missing.join(',') + ' leftovers=' + sub.leftovers.join(','));
+    if (sub.missing.length || sub.invalid.length || sub.leftovers.length || sub.parseError) {
+      record('Substitute bundle', false,
+             'missing=' + sub.missing.join(',') +
+             ' invalid=' + sub.invalid.join('; ') +
+             ' leftovers=' + sub.leftovers.join(',') +
+             (sub.parseError ? ' parseError=' + sub.parseError : ''));
       return finish();
     }
     record('Substitute bundle', true, 'All per-instance values applied.');
