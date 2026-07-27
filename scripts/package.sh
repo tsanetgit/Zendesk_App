@@ -22,6 +22,24 @@ fi
 VERSION="$(python3 -c "import json; print(json.load(open('$BUNDLE/manifest.json'))['version'])")"
 ZIP="$DIST/tsanet-connect-v${VERSION}.zip"
 
+# Locations whose icon IS the thing the user clicks: without assets/icon_<loc>.svg
+# Zendesk renders nothing and the location is silently dead. v1.0.49 and v1.0.50
+# both shipped a nav_bar with no icon, so the deploy screen was unreachable on
+# every install while the manifest, the zip and the app code all looked correct
+# (tsanetgit/Zendesk_App#131). ticket_sidebar is deliberately absent: it renders
+# without one.
+for loc in nav_bar top_bar ticket_editor; do
+  declared="$(python3 -c "
+import json
+m = json.load(open('$BUNDLE/manifest.json'))
+print('yes' if '$loc' in m.get('location', {}).get('support', {}) else 'no')")"
+  if [ "$declared" = "yes" ] && [ ! -f "$BUNDLE/assets/icon_${loc}.svg" ]; then
+    echo "error: manifest declares the '$loc' location but assets/icon_${loc}.svg is missing." >&2
+    echo "       Zendesk will not render the location without it." >&2
+    exit 1
+  fi
+done
+
 mkdir -p "$DIST"
 rm -f "$ZIP"
 

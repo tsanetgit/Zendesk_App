@@ -257,8 +257,8 @@
     if (sub.missing.length) {
       ok = false;
       steps.push({ ok: false, name: 'App settings complete',
-                   detail: 'Not set: ' + sub.missing.join(', ') +
-                           '. Set them in Admin Center > Apps > TSANet Connect.' });
+                   detail: 'Required, but not set: ' + sub.missing.join(', ') +
+                           '. Set them in Admin Center > Apps > TSANet Connect, then Re-check.' });
     } else if (sub.invalid.length) {
       ok = false;
       steps.push({ ok: false, name: 'App settings well-formed',
