@@ -26,9 +26,13 @@
  *   installed but absent from the bundle is a stale orphan from an older
  *   generation and still intercepts events (see zis/README.md), so it is
  *   surfaced as a warning instead of being ignored or silently removed.
- * - There is no admin-only ZAF location: nav_bar is visible to every agent. The
- *   role check below is a UX gate; the real control is that ZIS registry
- *   endpoints reject non-admins.
+ * - nav_bar is visible to every agent, and this project has not found an
+ *   admin-only ZAF location. The role check below is therefore a UX gate, not a
+ *   security boundary. The boundary is server-side: Zendesk documents the ZIS
+ *   registry endpoints as "Allowed for: Admins"
+ *   (https://developer.zendesk.com/api-reference/integration-services/registry/bundles/).
+ *   That is vendor documentation, not a runtime probe by this project — an
+ *   agent-role session has not been tested against these endpoints (#125).
  */
 /* global ZAFClient */
 (function () {

@@ -235,8 +235,10 @@ The connection from Step 4 does nothing by itself — the flows that create and 
 > runs on your own admin session, so **there is no credential to create or maintain**
 > and nothing here expires.
 >
-> **You must be a Zendesk administrator.** ZAF has no admin-only location, so the
-> screen is visible to any agent, but ZIS rejects the calls for non-admins.
+> **You must be a Zendesk administrator.** The screen is visible to any agent, so
+> the app's own role check is a convenience gate rather than a security boundary.
+> The boundary is server-side: Zendesk documents the ZIS registry endpoints as
+> [Allowed for: Admins](https://developer.zendesk.com/api-reference/integration-services/registry/bundles/).
 >
 > **Deploying replaces the installed bundle**, and an upload orphans the installed job
 > specs. The app re-installs them immediately and verifies the result, but the
