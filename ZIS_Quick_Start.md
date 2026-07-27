@@ -222,7 +222,7 @@ ZIS renews the token automatically when it expires. Continue to Step 5 to deploy
 
 The connection from Step 4 does nothing by itself — the flows that create and update Zendesk tickets live in the **flow bundle** under [`zis/`](zis/). Deploying it is two steps (full detail, per-instance substitutions, and gotchas in [`zis/README.md`](zis/README.md)):
 
-1. **Upload the bundle and install its job specs — in the TSANet Connect app.** Open **TSANet Connect** from the left nav bar in Zendesk Support, confirm the three pre-flight checks pass, and click **Deploy bundle**. The app substitutes your custom field IDs from its own app settings, uploads the bundle, installs each job spec, then reads the registry back to confirm what is actually installed. **Requires app v1.0.49 or later**; update the app first if the screen is missing.
+1. **Upload the bundle and install its job specs — in the TSANet Connect app.** Open **TSANet Connect** from the left nav bar in Zendesk Support, confirm the three pre-flight checks pass, and click **Deploy bundle**. The app substitutes your custom field IDs from its own app settings, uploads the bundle, installs each job spec, then reads the registry back to confirm what is actually installed. **Requires app v1.0.50 or later**; update the app first if the screen is missing.
 2. **Create the inbound webhook** (`source_system: tsanet`, `event_type: collaboration_event`) and keep the returned ingest URL, Basic credentials, **and `uuid`** (required later for credential rotation — see [ZIS_Rotation_Runbook.md](ZIS_Rotation_Runbook.md); there is no list API, so a lost `uuid` is unrecoverable)
 
 > **Why the app and not curl.** The bundles endpoint **rejects OAuth** (401
