@@ -86,12 +86,16 @@ Connection name `zendesk` (Zendesk-side actions) matches the Quick Start. The TS
 ## Deploy
 
 ```bash
-# 1. Upload the bundle — the ONE basic-auth exception: this endpoint rejects ALL OAuth
-#    (401 "Authorization failed due to OAuth being disabled for this API request",
-#    verified 2026-07-07). Temporarily enable password access (Admin Center → Zendesk
-#    API → Settings), upload with email:password, then disable it again.
+# 1. Upload the bundle. This is the one call that REJECTS OAuth (401 "Authorization
+#    failed due to OAuth being disabled for this API request", re-verified 2026-07-27),
+#    so it cannot use $SETUP_TOKEN. It DOES accept an API token, used below, and it
+#    also accepts an admin session, which is how the ZAF app will upload the bundle
+#    with no token at all (verified; tracked in tsanetgit/Zendesk_App#120).
+#    DEADLINE: accounts created on or after 2026-07-28 cannot create API tokens, and
+#    no account can create new ones after 2026-10-27. Until the app path ships, an
+#    instance with no API token cannot complete this step.
 curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/registry/tsanet_connect/bundles" \
-  -u "YOUR_EMAIL:YOUR_PASSWORD" -H "Content-Type: application/json" \
+  -u "YOUR_EMAIL/token:YOUR_API_TOKEN" -H "Content-Type: application/json" \
   -d @tsanet_connect_bundle.json
 
 # 2. Create the inbound webhook (returns ingest path + Basic credentials + uuid —
