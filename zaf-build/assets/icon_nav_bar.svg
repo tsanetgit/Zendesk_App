@@ -1,23 +1,47 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
   <!--
-    Nav bar icon for the TSANet Connect deploy screen.
+    Nav bar icon: the TSANet mark, the radial dot burst.
 
-    Three linked nodes: multi-vendor collaboration, which is what TSANet Connect is.
+    Traced from zaf-build/assets/logo.png by fitting a circle to each of the 25
+    dots, so this is vector rather than a bitmap trace and stays crisp at any size.
 
     Two constraints from Zendesk's spec, both easy to break:
       - No fill attribute anywhere. Zendesk recolours the SVG with its own icon
         colours and drives the hover/active states; a hardcoded fill defeats that.
+        It is also why the mark's teal tile and red centre dot are absent: the tile
+        is Zendesk's container, and the icon is single-colour by contract.
       - Fills only, never stroke. The recolouring targets fill, so a stroked shape
-        keeps its original colour and reads wrong on a dark or branded nav bar.
-        The connectors below are therefore rotated rects, not lines.
+        would keep its original colour on a branded nav bar.
 
-    Renders at 18x18 inside a 30x30 container, so shapes are kept heavy enough to
-    survive the downscale.
+    Dot radii are the traced values scaled 1.30x, and the crop is tight. At the
+    18x18 this renders at, the mark's true proportions put every dot below one
+    pixel, which antialiases to pale grey and reads far lighter than the Zendesk
+    icons beside it. The positions are untouched, so the mark's geometry is exact;
+    only the ink weight is adjusted to survive the size.
   -->
-  <rect x="0.67" y="10.1" width="15.65" height="1.8" rx="0.9" transform="rotate(116.57 8.5 11)"/>
-  <rect x="7.67" y="10.1" width="15.65" height="1.8" rx="0.9" transform="rotate(63.43 15.5 11)"/>
-  <rect x="5" y="17.1" width="14" height="1.8" rx="0.9"/>
-  <circle cx="12" cy="4" r="3.1"/>
-  <circle cx="5" cy="18" r="3.1"/>
-  <circle cx="19" cy="18" r="3.1"/>
+  <circle cx="12.34" cy="1.54" r="0.80"/>
+  <circle cx="12.00" cy="3.30" r="1.07"/>
+  <circle cx="4.50" cy="3.60" r="0.94"/>
+  <circle cx="19.00" cy="4.57" r="0.82"/>
+  <circle cx="6.52" cy="5.37" r="1.09"/>
+  <circle cx="17.32" cy="5.44" r="0.98"/>
+  <circle cx="11.63" cy="5.57" r="1.27"/>
+  <circle cx="15.29" cy="6.30" r="1.07"/>
+  <circle cx="8.83" cy="7.41" r="1.28"/>
+  <circle cx="18.16" cy="9.40" r="1.22"/>
+  <circle cx="1.13" cy="10.19" r="1.21"/>
+  <circle cx="20.84" cy="10.37" r="1.07"/>
+  <circle cx="13.84" cy="10.51" r="2.09"/>
+  <circle cx="4.58" cy="10.52" r="1.36"/>
+  <circle cx="8.38" cy="10.99" r="1.60"/>
+  <circle cx="23.07" cy="11.35" r="0.94"/>
+  <circle cx="18.05" cy="12.94" r="1.20"/>
+  <circle cx="10.92" cy="14.71" r="1.59"/>
+  <circle cx="19.86" cy="15.52" r="1.14"/>
+  <circle cx="15.09" cy="15.68" r="1.49"/>
+  <circle cx="7.86" cy="16.96" r="1.39"/>
+  <circle cx="21.44" cy="18.14" r="0.96"/>
+  <circle cx="4.85" cy="19.09" r="1.19"/>
+  <circle cx="14.68" cy="19.13" r="1.28"/>
+  <circle cx="14.35" cy="22.21" r="1.11"/>
 </svg>
