@@ -114,8 +114,13 @@ Notes:
 - **Deploying replaces the installed bundle**, and an upload orphans the currently
   installed job specs. The app re-installs them immediately, but the integration is
   briefly inactive in between. Do not close the tab mid-run.
-- **The admin must be a Zendesk administrator.** ZAF has no admin-only location, so
-  the screen is visible to any agent, but ZIS rejects the calls for non-admins.
+- **You must be a Zendesk administrator.** The screen is visible to any agent,
+  because this project has not found an admin-only ZAF location, so the app's own
+  role check is a convenience gate rather than a security boundary. The boundary is
+  server-side: Zendesk documents the ZIS registry endpoints as
+  [Allowed for: Admins](https://developer.zendesk.com/api-reference/integration-services/registry/bundles/).
+  That is vendor documentation; an agent-role session has not been tested against
+  these endpoints by TSANet.
 - Job specs left installed from an **older bundle generation** still intercept
   events. The app surfaces these as a warning; uninstall them with
   `DELETE /api/services/zis/registry/job_specs/install?job_spec_name=...`.

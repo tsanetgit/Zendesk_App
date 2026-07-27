@@ -26,9 +26,13 @@
  *   installed but absent from the bundle is a stale orphan from an older
  *   generation and still intercepts events (see zis/README.md), so it is
  *   surfaced as a warning instead of being ignored or silently removed.
- * - There is no admin-only ZAF location: nav_bar is visible to every agent. The
- *   role check below is a UX gate; the real control is that ZIS registry
- *   endpoints reject non-admins.
+ * - nav_bar is visible to every agent, and this project has not found an
+ *   admin-only ZAF location. The role check below is therefore a UX gate, not a
+ *   security boundary. The boundary is server-side: Zendesk documents the ZIS
+ *   registry endpoints as "Allowed for: Admins"
+ *   (https://developer.zendesk.com/api-reference/integration-services/registry/bundles/).
+ *   That is vendor documentation, not a runtime probe by this project — an
+ *   agent-role session has not been tested against these endpoints (#125).
  */
 /* global ZAFClient */
 (function () {
@@ -98,17 +102,60 @@
 
   // ------------------------------------------------------------ substitution
 
-  // Substitute every per-instance value, then assert nothing was missed. A
-  // half-substituted bundle uploads cleanly and fails later at runtime, at the
-  // member, which is the failure mode this assertion exists to prevent.
+  // Substitution is textual, not structural, because the field-id placeholders
+  // appear in two contexts: as unquoted JSON numbers (`{"id": 1234567890`) and
+  // inside jq expression strings (`select(.id==1234567890)`). Parsing and
+  // walking the object would still need text replacement inside string leaves,
+  // so it buys nothing.
+  //
+  // Textual substitution means a setting value can escape its JSON context.
+  // Probed on the shipped bundle (#124): `tsanet_engineer_email` set to
+  // `a@b.com", "evil": "1` broke out of the string, injected a key into
+  // action_ts_accept, AND still parsed as valid JSON — so nothing downstream
+  // rejected it. Three layers below, because none alone is sufficient:
+  //   1. validate  — reject values that could break out at all
+  //   2. escape    — JSON-escape what is interpolated into string positions
+  //   3. parse     — refuse to upload anything that is not valid JSON
+  // Layer 1 currently rejects exactly the characters layer 2 would escape, so
+  // layer 2 is redundant *today* — deliberately kept so that loosening layer 1
+  // later cannot silently reintroduce the injection. Layer 3 does NOT catch the
+  // vector above on its own (the exploit parses cleanly); it turns the remaining
+  // malformed cases, such as a non-numeric field id, from fail-open to
+  // fail-closed.
+  //
+  // The host is not user input (it is derived from tsanet_env and both values
+  // are literals in this file), so it needs no validation.
+
+  // Effective connection name. Trim BEFORE defaulting: defaulting first lets a
+  // whitespace-only setting survive `||` (it is truthy) and then trim to "",
+  // which uploads an empty connection name that every TSANet action silently
+  // fails to resolve through its Catch. Lived in three places and was wrong in
+  // two of them, so it is computed once here.
+  function connName(s) {
+    return (s.tsanet_connection_name || '').trim() || CONN_PLACEHOLDER;
+  }
+
+  // Escape for interpolation into a JSON string literal.
+  function jsonStr(v) {
+    var q = JSON.stringify(String(v));
+    return q.slice(1, q.length - 1);
+  }
+
   function substitute(text, s) {
     var out = text;
     var missing = [];
+    var invalid = [];
 
     Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) {
       var key = FIELD_PLACEHOLDERS[ph];
       var val = (s[key] || '').toString().trim();
       if (!val) { missing.push(key); return; }
+      // Field ids land in an unquoted numeric position. Anything non-numeric
+      // either corrupts the JSON or injects structure, so refuse it here.
+      if (!/^\d+$/.test(val)) {
+        invalid.push(key + ' must be digits only (Zendesk field id)');
+        return;
+      }
       // \b so a placeholder can never match inside a longer numeric id.
       out = out.replace(new RegExp('\\b' + ph + '\\b', 'g'), val);
     });
@@ -119,15 +166,28 @@
     // Only the TSANet connection is per-instance. The Zendesk-side connection is
     // named "zendesk" and is fixed, so match the key/value pair rather than the
     // bare string to avoid collateral edits.
-    var conn = (s.tsanet_connection_name || CONN_PLACEHOLDER).trim();
-    out = out.replace(
-      new RegExp('("connectionName"\\s*:\\s*)"' + CONN_PLACEHOLDER + '"', 'g'),
-      '$1"' + conn + '"'
-    );
+    var conn = connName(s);
+    if (/["\\\u0000-\u001f]/.test(conn)) {
+      invalid.push('tsanet_connection_name contains a quote, backslash or control character');
+    } else {
+      // Function replacement, not a replacement string: in a string `$` is
+      // special, so a connection name containing `$$` would silently become `$`
+      // (valid JSON, wrong name, past all three layers) and `$1`/`$&` would
+      // splice the match back in. A function's return value is used verbatim.
+      out = out.replace(
+        new RegExp('("connectionName"\\s*:\\s*)"' + CONN_PLACEHOLDER + '"', 'g'),
+        function (whole, prefix) { return prefix + '"' + jsonStr(conn) + '"'; }
+      );
+    }
 
     var email = (s.tsanet_engineer_email || '').trim();
-    if (!email) { missing.push('tsanet_engineer_email'); }
-    else { out = out.split(EMAIL_PLACEHOLDER).join(email); }
+    if (!email) {
+      missing.push('tsanet_engineer_email');
+    } else if (/["\\\u0000-\u001f]/.test(email)) {
+      invalid.push('tsanet_engineer_email contains a quote, backslash or control character');
+    } else {
+      out = out.split(EMAIL_PLACEHOLDER).join(jsonStr(email));
+    }
 
     var leftovers = [];
     Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) {
@@ -135,7 +195,15 @@
     });
     if (out.indexOf(EMAIL_PLACEHOLDER) !== -1) { leftovers.push(EMAIL_PLACEHOLDER); }
 
-    return { text: out, missing: missing, leftovers: leftovers };
+    // Nothing malformed leaves the browser.
+    var parseError = '';
+    if (!missing.length && !invalid.length && !leftovers.length) {
+      try { JSON.parse(out); }
+      catch (e) { parseError = String(e.message || e).slice(0, 200); }
+    }
+
+    return { text: out, missing: missing, invalid: invalid,
+             leftovers: leftovers, parseError: parseError };
   }
 
   function bundleJobSpecNames(bundle) {
@@ -171,13 +239,23 @@
       steps.push({ ok: false, name: 'App settings complete',
                    detail: 'Not set: ' + sub.missing.join(', ') +
                            '. Set them in Admin Center > Apps > TSANet Connect.' });
+    } else if (sub.invalid.length) {
+      ok = false;
+      steps.push({ ok: false, name: 'App settings well-formed',
+                   detail: sub.invalid.join('; ') +
+                           '. A value that breaks out of its JSON context would change the ' +
+                           'uploaded bundle, so it is rejected here rather than uploaded.' });
     } else if (sub.leftovers.length) {
       ok = false;
       steps.push({ ok: false, name: 'Bundle fully substituted',
                    detail: 'Placeholders still present after substitution: ' + sub.leftovers.join(', ') +
                            '. The embedded bundle and this app version disagree; do not deploy.' });
+    } else if (sub.parseError) {
+      ok = false;
+      steps.push({ ok: false, name: 'Substituted bundle is valid JSON',
+                   detail: sub.parseError + '. Nothing will be uploaded.' });
     } else {
-      steps.push({ ok: true, name: 'App settings complete and bundle fully substituted' });
+      steps.push({ ok: true, name: 'App settings complete, well-formed, and bundle parses' });
     }
     renderSteps('preflight-steps', steps);
 
@@ -209,7 +287,7 @@
       .then(function () {
         // 3. the TSANet OAuth connection the bundle references. Advisory only:
         //    the bundle deploys without it, but every TSANet action then fails auth.
-        var conn = (s.tsanet_connection_name || CONN_PLACEHOLDER).trim();
+        var conn = connName(s);
         return req({ url: '/api/services/zis/connections/' + INTEGRATION + '?name=' + encodeURIComponent(conn), type: 'GET' })
           .then(function (r) {
             if (r.ok) { steps.push({ ok: true, name: 'TSANet connection "' + conn + '" exists' }); }
@@ -241,8 +319,12 @@
     renderSteps('result-steps', state.steps);
 
     var sub = substitute(state.bundleText, s);
-    if (sub.missing.length || sub.leftovers.length) {
-      record('Substitute bundle', false, 'missing=' + sub.missing.join(',') + ' leftovers=' + sub.leftovers.join(','));
+    if (sub.missing.length || sub.invalid.length || sub.leftovers.length || sub.parseError) {
+      record('Substitute bundle', false,
+             'missing=' + sub.missing.join(',') +
+             ' invalid=' + sub.invalid.join('; ') +
+             ' leftovers=' + sub.leftovers.join(',') +
+             (sub.parseError ? ' parseError=' + sub.parseError : ''));
       return finish();
     }
     record('Substitute bundle', true, 'All per-instance values applied.');
@@ -341,7 +423,7 @@
       'when:        ' + new Date().toISOString(),
       'integration: ' + INTEGRATION,
       'env:         ' + (s.tsanet_env || '?'),
-      'connection:  ' + (s.tsanet_connection_name || CONN_PLACEHOLDER),
+      'connection:  ' + connName(s),
       'bundle:      ' + (state.bundle && state.bundle.name) + ' / ' + (state.bundle && state.bundle.zis_template_version),
       ''
     ];

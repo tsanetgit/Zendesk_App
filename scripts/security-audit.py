@@ -23,6 +23,7 @@ are reported as SKIP rather than counted as passes.
 """
 import argparse
 import base64
+import glob
 import hashlib
 import json
 import os
@@ -108,7 +109,20 @@ def check_action_pinning(root):
 
 def check_sdk_sri(root, network):
     cat = "supply-chain"
-    pages = ["zaf-build/assets/index.html", "zaf-build/assets/background.html"]
+    # Discover pages rather than listing them. A hardcoded list silently stops
+    # covering the app the moment someone adds an entry point: deploy.html
+    # shipped in v1.0.49 loading the SDK from a mutable channel with no SRI,
+    # and this check reported PASS because it was not on the list
+    # (tsanetgit/Zendesk_App#123, regressing #94 via #122).
+    pattern = os.path.join(root, "zaf-build", "assets", "**", "*.html")
+    pages = sorted(
+        os.path.relpath(p, root) for p in glob.glob(pattern, recursive=True)
+    )
+    # An empty glob passing vacuously is the same failure class as a stale list.
+    if not pages:
+        record("FAIL", "SDK integrity", "no HTML pages found under "
+               "zaf-build/assets/ — the check has nothing to inspect", cat)
+        return
     tags = {}
     for page in pages:
         try:
