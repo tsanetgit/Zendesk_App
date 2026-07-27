@@ -126,6 +126,15 @@
   // The host is not user input (it is derived from tsanet_env and both values
   // are literals in this file), so it needs no validation.
 
+  // Effective connection name. Trim BEFORE defaulting: defaulting first lets a
+  // whitespace-only setting survive `||` (it is truthy) and then trim to "",
+  // which uploads an empty connection name that every TSANet action silently
+  // fails to resolve through its Catch. Lived in three places and was wrong in
+  // two of them, so it is computed once here.
+  function connName(s) {
+    return (s.tsanet_connection_name || '').trim() || CONN_PLACEHOLDER;
+  }
+
   // Escape for interpolation into a JSON string literal.
   function jsonStr(v) {
     var q = JSON.stringify(String(v));
@@ -157,13 +166,17 @@
     // Only the TSANet connection is per-instance. The Zendesk-side connection is
     // named "zendesk" and is fixed, so match the key/value pair rather than the
     // bare string to avoid collateral edits.
-    var conn = (s.tsanet_connection_name || CONN_PLACEHOLDER).trim();
+    var conn = connName(s);
     if (/["\\\u0000-\u001f]/.test(conn)) {
       invalid.push('tsanet_connection_name contains a quote, backslash or control character');
     } else {
+      // Function replacement, not a replacement string: in a string `$` is
+      // special, so a connection name containing `$$` would silently become `$`
+      // (valid JSON, wrong name, past all three layers) and `$1`/`$&` would
+      // splice the match back in. A function's return value is used verbatim.
       out = out.replace(
         new RegExp('("connectionName"\\s*:\\s*)"' + CONN_PLACEHOLDER + '"', 'g'),
-        '$1"' + jsonStr(conn) + '"'
+        function (whole, prefix) { return prefix + '"' + jsonStr(conn) + '"'; }
       );
     }
 
@@ -274,7 +287,7 @@
       .then(function () {
         // 3. the TSANet OAuth connection the bundle references. Advisory only:
         //    the bundle deploys without it, but every TSANet action then fails auth.
-        var conn = (s.tsanet_connection_name || CONN_PLACEHOLDER).trim();
+        var conn = connName(s);
         return req({ url: '/api/services/zis/connections/' + INTEGRATION + '?name=' + encodeURIComponent(conn), type: 'GET' })
           .then(function (r) {
             if (r.ok) { steps.push({ ok: true, name: 'TSANet connection "' + conn + '" exists' }); }
@@ -410,7 +423,7 @@
       'when:        ' + new Date().toISOString(),
       'integration: ' + INTEGRATION,
       'env:         ' + (s.tsanet_env || '?'),
-      'connection:  ' + (s.tsanet_connection_name || CONN_PLACEHOLDER),
+      'connection:  ' + connName(s),
       'bundle:      ' + (state.bundle && state.bundle.name) + ' / ' + (state.bundle && state.bundle.zis_template_version),
       ''
     ];
