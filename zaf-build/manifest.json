@@ -21,7 +21,7 @@
       }
     }
   },
-  "version": "1.0.53",
+  "version": "1.0.54",
   "icon": "assets/logo.png",
   "frameworkVersion": "2.0",
   "parameters": [
@@ -55,7 +55,7 @@
       "secure": false,
       "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Token. Leave blank on install — open TSANet Connect from the left nav bar and click \"Detect field IDs\" to fill this in automatically."
+      "description": "Zendesk numeric Field ID for TSANet Token. Leave blank on install. Open TSANet Connect from the left nav bar, click \"Detect field IDs\", then Apply, and the app fills this in from your instance. No hand-copying."
     },
     {
       "name": "field_id_tokens_multi",
@@ -63,7 +63,7 @@
       "secure": false,
       "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Tokens Multi (optional)"
+      "description": "Zendesk numeric Field ID for TSANet Tokens Multi (optional). Leave blank on install. \"Detect field IDs\" fills this in if the field exists on your instance, and skips it if it does not."
     },
     {
       "name": "field_id_status",
@@ -71,7 +71,7 @@
       "secure": false,
       "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Status (dropdown). Leave blank on install — use \"Detect field IDs\" in the app."
+      "description": "Zendesk numeric Field ID for TSANet Status (dropdown). Leave blank on install. \"Detect field IDs\" in the app fills this in from your instance."
     },
     {
       "name": "field_id_partner",
@@ -79,7 +79,7 @@
       "secure": false,
       "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Partner. Leave blank on install — use \"Detect field IDs\" in the app."
+      "description": "Zendesk numeric Field ID for TSANet Partner. Leave blank on install. \"Detect field IDs\" in the app fills this in from your instance."
     },
     {
       "name": "field_id_respond_by",
@@ -87,7 +87,7 @@
       "secure": false,
       "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Respond By (date). Leave blank on install — use \"Detect field IDs\" in the app."
+      "description": "Zendesk numeric Field ID for TSANet Respond By (date). Leave blank on install. \"Detect field IDs\" in the app fills this in from your instance."
     },
     {
       "name": "allowed_action_roles",
@@ -103,7 +103,7 @@
       "secure": false,
       "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Action (the dropdown that drives Accept/Reject/Info/Note). Optional — part of \"Native Field Actions and One-Click Macros\". Leave blank unless you use them; set it together with field_id_action_text."
+      "description": "Zendesk numeric Field ID for TSANet Action (the dropdown that drives Accept/Reject/Info/Note). Optional, part of \"Native Field Actions and One-Click Macros\". Leave blank on install. \"Detect field IDs\" fills it in if the field exists, and it must be set together with field_id_action_text: one without the other is rejected, not guessed at."
     },
     {
       "name": "field_id_action_text",
@@ -111,7 +111,7 @@
       "secure": false,
       "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Action Text (free-text body for Add Note). Optional — set it together with field_id_action, or leave both blank."
+      "description": "Zendesk numeric Field ID for TSANet Action Text (free-text body for Add Note). Optional, and set together with field_id_action or leave both blank. Leave blank on install. \"Detect field IDs\" fills it in if the field exists."
     },
     {
       "name": "tsanet_connection_name",

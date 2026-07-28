@@ -15,9 +15,9 @@ A Zendesk Apps Framework (ZAF) sidebar app that embeds TSANet Connect collaborat
 Most members should not build from source. Install the pre-built ZIP that TSANet publishes on each release:
 
 > Admin Center → Apps and integrations → Zendesk Support apps → Upload private app
-> Filename: `tsanet-connect-v<version>.zip` — always grab the most recent from the [latest release](https://github.com/tsanetgit/Zendesk_App/releases/latest) (the version matches [`manifest.json`](manifest.json), currently **1.0.48**).
+> Filename: `tsanet-connect-v<version>.zip` — always grab the most recent from the [latest release](https://github.com/tsanetgit/Zendesk_App/releases/latest). The version there matches [`manifest.json`](manifest.json).
 
-Configure the eight settings (TSANet credentials + your five Zendesk custom field IDs) and you're done. No build tools, no Node, no command line. Five minutes total.
+Enter three settings (TSANet username, password, environment) and you're done. The field IDs are detected for you: open TSANet Connect from the left nav bar, click **Detect field IDs**, then **Apply**. No build tools, no Node, no command line. Five minutes total.
 
 ### 2. Customize from this source bundle (not recommended for most members)
 
@@ -100,22 +100,27 @@ No `npm install`, no `vite build`. The zip is exactly the committed files.
 
 ---
 
-## App Settings (filled in on install)
+## App Settings
 
-All defaults are intentionally empty. The Zendesk install dialog will block install until required fields are filled.
+Only three settings are entered by hand. The Zendesk install dialog blocks install until those three are filled; everything else can be left at its default.
 
-| Setting | Required | Description |
+| Setting | Entered by | Description |
 |---|---|---|
-| `tsanet_username` | ✅ | TSANet API user email (e.g. `api@yourcompany.com`) |
-| `tsanet_password` | ✅ | TSANet API password |
-| `tsanet_env` | ✅ | `BETA` or `PRODUCTION` (default: `BETA`) |
-| `field_id_token` | ✅ | Numeric Field ID of your TSANet Token custom field |
-| `field_id_tokens_multi` | — | Numeric Field ID of your TSANet Tokens Multi custom field (optional) |
-| `field_id_status` | ✅ | Numeric Field ID of your TSANet Status custom field |
-| `field_id_partner` | ✅ | Numeric Field ID of your TSANet Partner custom field |
-| `field_id_respond_by` | ✅ | Numeric Field ID of your TSANet Respond By custom field |
+| `tsanet_username` | you, on install | TSANet API user email (e.g. `api@yourcompany.com`) |
+| `tsanet_password` | you, on install | TSANet API password |
+| `tsanet_env` | you, on install | `BETA` or `PRODUCTION` (default: `BETA`) |
+| `field_id_token` | **Detect field IDs** | Numeric Field ID of your TSANet Token custom field |
+| `field_id_status` | **Detect field IDs** | Numeric Field ID of your TSANet Status custom field |
+| `field_id_partner` | **Detect field IDs** | Numeric Field ID of your TSANet Partner custom field |
+| `field_id_respond_by` | **Detect field IDs** | Numeric Field ID of your TSANet Respond By custom field |
+| `field_id_tokens_multi` | **Detect field IDs** | Numeric Field ID of your TSANet Tokens Multi custom field (optional field) |
+| `field_id_action` | **Detect field IDs** | TSANet Action dropdown. Optional; pairs with `field_id_action_text` |
+| `field_id_action_text` | **Detect field IDs** | TSANet Action Text. Optional; pairs with `field_id_action` |
+| `allowed_action_roles` | you, if wanted | Comma-separated Zendesk role names allowed to invoke TSANet actions. Empty = all agents. Defense in depth only; the TSANet API is the real authorization boundary |
+| `tsanet_connection_name` | leave as-is | Name of the ZIS OAuth connection (default: `tsanet_oauth`) |
+| `tsanet_engineer_email` | you, if using field actions | Address used as `engineerEmail` on Accept calls. Must be on your member company's registered domain. Not a ticket field, so it cannot be detected |
 
-To find your Field IDs: Admin Center → Objects and rules → Tickets → Fields → click the field → look at the URL (e.g. `…/fields/1234567890`).
+**Do not copy field IDs out of Admin Center URLs.** Create the custom fields, then open TSANet Connect from the left nav bar, click **Detect field IDs**, and click **Apply**. The app matches your fields by title, shows you every mapping before writing anything, and refuses to guess when two fields share a title or a field has the wrong type.
 
 ---
 

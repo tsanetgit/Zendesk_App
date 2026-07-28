@@ -1,5 +1,6 @@
 /**
- * TSANet Connect ZAF App — v1.0.42
+ * TSANet Connect ZAF App. Version lives in manifest.json; this banner used to
+ * carry its own copy and drifted eleven releases behind, so it no longer does.
  * Public Add Note: post the public comment only; #35 forwards it (no explicit
  * /notes) so the partner gets it once, not twice (issue #38).
  * client.metadata() with .then() chains after app.registered
