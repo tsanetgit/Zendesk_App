@@ -1,7 +1,7 @@
 {
   "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit.",
   "schema": 1,
-  "reviewed_commit": "724ec9d",
+  "reviewed_commit": "cd1e6e7",
   "reviewed_at": "2026-07-28",
   "taxonomy_version": 3,
   "reviewer": "tsanet-ops-security-review",
@@ -14,35 +14,33 @@
     "skip": 0
   },
   "findings": {
-    "high": 0,
-    "medium": 2,
+    "high": 1,
+    "medium": 1,
     "low": 1
   },
   "open_findings": [
-    "MEDIUM #140: an uncovered release is easy to accept repeatedly, because no run knows what the previous run decided; and 'not verified' items live as prose with no lifecycle. OPEN, and ACCEPTED by Shawn on 2026-07-28 — see the acceptance note below.",
-    "MEDIUM #125: the client-side admin gate is a UX gate. Scope widened by v1.0.53: applyDetected() adds PUT /api/v2/apps/installations/{id} behind the same unprobed check. Both endpoints vendor-documented admin-only, neither probed by TSANet.",
-    "MEDIUM #96: durable audit trail. Strengthened by this review's probe showing Zendesk records nothing at all for ZIS registry writes.",
-    "LOW #98: note attribution heuristic remains open pending Connect-API-Code#131"
+    "HIGH #144: the shipped ZAF bundle calls four endpoints the TSANet spec marks deprecated with x-sunset 2027-01-01 (157 days out), and no issue covers the app-side migration. #101 covers the ZIS flow and rotation script, not the app. background.html:67 fails open: when GET /v1/webhooks stops answering, .catch sets _pushRegistered=false and the poller promotes itself from fallback to primary on installs where push is live.",
+    "MEDIUM #145: check_deprecated_endpoints() in scripts/security-audit.py skips .html, so it saw 1 of the 4 sunset call sites; the other 3 are in background.html. It also never escalates WARN->FAIL as the date approaches \u2014 the sunset dates are literals, never compared to today. The previous record cited this check's output as evidence the WARN was covered.",
+    "LOW NEW (unfiled): QUICK_START.md:341, zis/README.md:126-128 and the GitBook security-considerations page still say the admin-only boundary is untested and cite #125, which closed 2026-07-28 with a probe (Staff custom role, 403 on both endpoints). Remediation must say what was actually probed: one role, one environment, one day.",
+    "MEDIUM #140: an uncovered release is easy to accept repeatedly. OPEN, accepted by Shawn 2026-07-28.",
+    "MEDIUM #96: durable audit trail. OPEN.",
+    "MEDIUM #119: move the ZAF app off the TSANet API user password to the ZIS Entra client credential. OPEN.",
+    "LOW #98: note attribution heuristic remains open pending Connect-API-Code#131.",
+    "CLOSED SINCE LAST RECORD: #125 \u2014 probed 2026-07-28 from a Staff custom-role session on DEV. POST /api/services/zis/registry/tsanet_connect/bundles returned 403 'Only admin user is allowed'; PUT /api/v2/apps/installations/{id} returned 403 Forbidden. CSRF confirmed present, so both are authorization refusals. The server-side boundary is real on both endpoints, including the one v1.0.53's applyDetected() added."
   ],
   "notes": [
-    "Extends the v1.0.53 review (originally recorded at c166008) forward to 724ec9d, which is that review's own remediation plus two docs commits. The findings count is unchanged because this is the same review, not a new one.",
-    "SELF-REVIEWED, and unusually so: this reviewer wrote most of the code under review, found the findings, and wrote their fixes. Weight accordingly; the 'clean' categories remain the weakest part of this record.",
-    "CLOSED BY THIS REMEDIATION: #138 (release.yml no longer interpolates ${{ github.ref_name }} into a run: block — the tag is bound in env: and referenced as \"$TAG\"; merged as 1a5f981) and #139 (the workflow-permissions rule now globs the directory instead of reading release.yml alone; merged as 724ec9d).",
-    "TWO NEW MECHANICAL CHECKS, both proven failing before being trusted. check_workflow_expression_injection() globs the workflow directory and FAILs on any ${{ }} inside a run: script — demonstrated by reintroducing the vulnerable line and watching it name release.yml:321. check_all_workflows_declare_permissions() globs and FAILs when any workflow lacks a permissions block — demonstrated by removing the block from zis-readme-check.yml, and separately proven to FAIL on an empty workflow directory rather than passing vacuously (#108's failure mode). Mechanical floor is now 14 PASS.",
-    "The two rules were split rather than merged: check_workflow_permissions() still reads release.yml alone, deliberately, because that workflow must be permissions:{} with jobs opting in, while contents: read is correct for the three read-only workflows. Both functions carry a note saying which is which, so the next workflow-wide rule lands in the globbing one instead of becoming a third narrow check.",
-    "SOURCE DRIFT since c166008, reviewed and inert: ec543ef (Shawn's quick-start merge) touched two watched paths — a remediation string literal in scripts/audit-connection-auth.py and two documentation links in zis/README.md. Diffs inspected; no logic and no security surface in either.",
-    "DOCS DEFECT found while verifying the quick-start merge, corrected on both surfaces: QUICK_START.md and the GitBook Installation Guide both stated that TSANet Action and TSANet Action Text 'are not covered by Detect field IDs' and told members to copy those IDs out of Admin Center URLs. Both fields are optional entries in EXPECTED_FIELDS in the shipped deploy.js, and Detect resolving and applying them was verified on DEV. Fixed in 3655fda and published to the live and sandbox GitBook spaces, with the public page re-fetched to confirm. Not a security finding, but it recreated exactly the toil #135 removed.",
-    "OBSERVATION, not a finding: a change to scripts/security-audit.py triggers no CI on a pull request, because no workflow path filter covers scripts/*.py other than lint-workflows.py. The audit runs pre-tag inside release.yml, so a broken audit script would surface at tag time rather than at review time. Worth considering alongside #140.",
-    "TAXONOMY: Category 1 gained a row for untrusted input reaching workflow shell, committed to tsanet-ops as 7065c7b. taxonomy_version raised 2 -> 3. The row exists because the checklist never asked the question, which is why three prior reviews passed over #138 — the same reason Category 7 was added after the first review missed XSS.",
-    "NOT VERIFIED, carried forward: (1) ZIS rejecting an agent-role session, and PUT /api/v2/apps/installations/{id} rejecting one — #125, blocked on an agent-role user existing on a sandbox. (2) The rewritten release gate's behaviour under a failing audit: logic read, not exercised. (3) #138 was reasoned rather than executed — the tag names were confirmed creatable and the substitution confirmed pre-shell, but no hostile tag was pushed, because that would run the injected code in CI. The fix is likewise verified by the new check rather than by exploitation. (4) That private apps do not auto-update.",
-    "ACCEPTANCE: accepted_issues names what a human has signed for — #96, #98, #119, #125, and now #140. #138 and #139 drop off, closed by this remediation. The reviewer wrote #140 and therefore left it unaccepted; Shawn accepted it explicitly on 2026-07-28, which is the separation this persona depends on. Rationale recorded on the issue: #140 concerns the release gate's own ergonomics and changes nothing in the shipped artifact, so it does not warrant flagging every release while the design work is pending. Verified against the gate's own classification logic that with #140 accepted no open security issue blocks: #96/#119/#125/#140 accepted, #98 low-priority and reported only. Acceptance expires with this record — source drift invalidates coverage, so the next review must re-accept explicitly rather than inheriting this list.",
-    "The remaining mechanical WARN is the known v1-endpoint sunset 2027-01-01 (#101)."
+    "Extends the record from 724ec9d to cd1e6e7 (v1.0.54). The delta is five commits and contains NO executable change: manifest version plus seven field_id_* description strings, one banner comment in main.js, and markdown/docx. No new code path, permission, domainWhitelist entry, dependency, or network destination.",
+    "The delta being inert is why this review went looking elsewhere. Both new findings are pre-existing conditions in the shipped artifact that prior records mis-dispositioned, not regressions introduced by v1.0.54.",
+    "CORRECTION TO THE PREVIOUS RECORD: its closing line, 'The remaining mechanical WARN is the known v1-endpoint sunset 2027-01-01 (#101)', is wrong. #101's scope is flow_handle_ping, the comment-forwarding flow, the bundle, zis/README.md, ZIS_Quick_Start.md and the rotation script; its acceptance criteria are CloudEvents deliveries and member subscription migration. The ZAF app's own polling calls are in none of it. Tracker searched for collaboration-requests / v2 polling / sunset / deprecated endpoint: #101 is the only hit.",
+    "SPEC EVIDENCE, fetched this session rather than taken from the audit script's table: connect-core-api/src/main/resources/openapi.yaml from Connect-API-Code@master, 80142 bytes, info.version 1.0.0. GET /v1/collaboration-requests, POST /v1/webhooks and GET /v1/webhooks all carry deprecated:true and x-sunset 2027-01-01. GET /v1/collaboration-requests/{token} and POST /v1/collaboration-requests do NOT \u2014 the migration is narrow. Replacements exist in the same spec: GET /v2/collaboration-requests and /v2/collaboration-requests/list.",
+    "RUNTIME EVIDENCE: probed BETA live this session with the TSANET_BETA_* credential. Both GET /v1/collaboration-requests?type=INBOUND and GET /v1/webhooks return HTTP 200 today and emit NO Deprecation, Sunset, Link or Warning response header. The deadline is real per the spec but invisible at runtime, so no client or monitor can discover it programmatically. An RFC 8594 Sunset header is the upstream fix and belongs to TSANet as platform owner.",
+    "The four sunset call sites, all in the shipped bundle: main.js:625 (GET /v1/collaboration-requests?type=INBOUND); background.html:197 (same, background poller); background.html:143 (GET /v1/collaboration-requests?status=OPEN, SLA poller); background.html:67 (GET /v1/webhooks, the one-time push-registration probe). Base URL is built at main.js:96-98 and background.html:89-90 and ends in /v1 in both.",
+    "NOT VERIFIED: whether GuardCreate (#41) fully absorbs the duplicate-ticket condition that background.html:67's fail-open path would create after sunset. The failure mode is read from source, not exercised.",
+    "TOOLING: the mechanical suite reports 14 PASS / 0 FAIL / 1 WARN, unchanged in count from the previous record, but the WARN's detail string is materially incomplete for the reason in the MEDIUM above. A headline count is not coverage. Separately, my first parse of --json read every row as FAIL because I keyed on 'ok' instead of 'status'; caught before any conclusion was drawn, and noted here because the same mistake in an automated consumer would invert the gate.",
+    "DELTA CHECKS RUN ANYWAY, all clean: tsanet_password still secure:true and tsanet_username still the only other credential setting; domainWhitelist still exactly connect2.tsanet.net and connect2.tsanet.org; none of the seven rewritten description strings contains markup, a script-ish literal, or an instruction to put a secret into a non-secure field. Category 7 has no delta \u2014 no rendering code changed.",
+    "SELF-REVIEWED, and more so than last round: this reviewer wrote the v1.0.54 change under review, wrote and published the GitBook security-considerations paragraph on the same day, and is now reviewing both. The GitBook paragraph is the piece most in need of independent eyes: it asserts that Apply is governed by server-side authorization, which #125's probe supports, but it was written before that probe closed and reviewed by its own author. This record should carry a second signer.",
+    "ACCEPTANCE: deliberately left empty. The previous record's own rule is that acceptance expires with it and the next review must re-accept explicitly rather than inherit. #125 drops off, closed. #96, #98, #119 and #140 need Shawn's explicit re-acceptance, and the new HIGH is unaccepted by design.",
+    "FILED FROM THIS REVIEW: #144 (high) and #145 (medium), on Shawn's go. A scope-boundary comment was posted on #101 so the sunset is not assumed covered there again. The LOW is recorded here but deliberately unfiled: it is a documentation-accuracy item whose error direction is safe, and its remediation must be scoped to what #125 actually probed \u2014 one role (Staff custom role), one environment (DEV), one day (2026-07-28) \u2014 rather than becoming an unqualified 'verified'."
   ],
-  "accepted_issues": [
-    96,
-    98,
-    119,
-    125,
-    140
-  ]
+  "accepted_issues": []
 }
