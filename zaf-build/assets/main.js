@@ -41,6 +41,23 @@ if (typeof ZAFClient === 'undefined') {
         return;
       }
 
+      // The four core field ids are optional in the manifest so a member can
+      // install before the fields exist (#137); Detect fills them in afterwards.
+      // Until it has, this app cannot read or write TSANet data on a ticket —
+      // every custom_field lookup misses, and the ticket search would build
+      // "custom_field_:TOKEN", a malformed query. Without this guard the panel
+      // renders normally and reports no collaborations, which is indistinguishable
+      // from a ticket that genuinely has none.
+      var unsetIds = ['field_id_token', 'field_id_status', 'field_id_partner', 'field_id_respond_by']
+        .filter(function(k) { return !String(settings[k] == null ? '' : settings[k]).trim(); });
+      if (unsetIds.length) {
+        show('loading', false);
+        showError('TSANet Connect is not configured yet — missing ' + unsetIds.join(', ') +
+                  '. An admin should open TSANet Connect from the left nav bar, click ' +
+                  '"Detect field IDs", then Apply. No hand-copying of field IDs is needed.');
+        return;
+      }
+
       client.get('currentUser').then(function(d) {
         agentRole = (d.currentUser && d.currentUser.role) || '';
       }).catch(function() { agentRole = ''; }).then(function() {

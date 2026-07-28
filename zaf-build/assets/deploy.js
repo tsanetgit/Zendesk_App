@@ -35,6 +35,29 @@
  *   agent-role session has not been tested against these endpoints (#125).
  */
 /* global ZAFClient */
+
+// Surface anything that escapes, before the app has a chance to render nothing.
+// A ZAF app lives in a cross-origin iframe, so a thrown error or a rejected
+// promise in here is invisible from the parent page's console — the screen just
+// stays blank, which is indistinguishable from "still loading". That cost real
+// debugging time twice, so failures now show up on the screen they broke.
+(function () {
+  function surface(what, msg) {
+    var g = document.getElementById('gate');
+    if (!g) { return; }
+    g.textContent = what + ': ' + msg;
+    g.classList.remove('hidden');
+  }
+  window.addEventListener('error', function (e) {
+    surface('Script error', (e.message || 'unknown') +
+            (e.lineno ? ' (line ' + e.lineno + ')' : ''));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e && e.reason;
+    surface('Unhandled rejection', (r && (r.message || r.statusText)) || String(r));
+  });
+})();
+
 (function () {
   'use strict';
 
@@ -121,7 +144,34 @@
     return { text: JSON.stringify(b, null, 2), dropped: dropped };
   }
 
-  var state = { settings: null, bundleText: null, bundle: null, steps: [], preflightOk: false };
+  // ------------------------------------------------------------ field detect
+  //
+  // Admins were copying five to seven numeric ids out of Admin Center URLs into
+  // app settings (#135). The app can read the same fields itself, so it does.
+  //
+  // Matching is by title, which is fragile in a specific way: titles drift. The
+  // published guides already disagree — GitBook says "TSANet Tokens (Multi)",
+  // the repo Quick Start says "TSANet Tokens Multi" — so an exact compare would
+  // already miss that field for half our readers. Hence normalise, and hence the
+  // rule that nothing is written without the admin seeing the mapping first: a
+  // bad paste fails loudly at pre-flight, a bad auto-match would not.
+  var EXPECTED_FIELDS = [
+    { key: 'field_id_token',        title: 'TSANet Token',        type: 'text',   required: true  },
+    { key: 'field_id_status',       title: 'TSANet Status',       type: 'tagger', required: true  },
+    { key: 'field_id_partner',      title: 'TSANet Partner',      type: 'text',   required: true  },
+    { key: 'field_id_respond_by',   title: 'TSANet Respond By',   type: 'date',   required: true  },
+    { key: 'field_id_tokens_multi', title: 'TSANet Tokens Multi', type: 'text',   required: false },
+    { key: 'field_id_action',       title: 'TSANet Action',       type: 'tagger', required: false },
+    { key: 'field_id_action_text',  title: 'TSANet Action Text',  type: 'text',   required: false }
+  ];
+
+  // Case and punctuation are noise; word order and spelling are not.
+  function normTitle(t) {
+    return (t || '').toString().toLowerCase().replace(/[^a-z0-9]+/g, '');
+  }
+
+  var state = { settings: null, bundleText: null, bundle: null, steps: [],
+                preflightOk: false, detected: null, installationId: null };
 
   // ---------------------------------------------------------------- helpers
 
@@ -317,6 +367,112 @@
       if (res[k] && res[k].type === 'ZIS::JobSpec') { names.push(k); }
     });
     return names.sort();
+  }
+
+  // Resolve every expected field against this instance. Returns one row per
+  // expected field so the admin sees the whole picture, including what was not
+  // found, rather than only the successes.
+  function detectFields() {
+    el('detect-btn').disabled = true;
+    el('detect-note').textContent = ' looking up ticket fields…';
+    return req({ url: '/api/v2/ticket_fields.json?page[size]=100', type: 'GET' }).then(function (r) {
+      if (!r.ok) {
+        el('detect-note').textContent = '';
+        el('detect-btn').disabled = false;
+        renderSteps('detect-rows', [{ ok: false, name: 'Could not read ticket fields',
+                                      detail: 'HTTP ' + r.status + ' ' + r.body }]);
+        return;
+      }
+      var live = (r.data && r.data.ticket_fields) || [];
+      var rows = [], resolved = {}, blocked = false;
+
+      EXPECTED_FIELDS.forEach(function (f) {
+        var hits = live.filter(function (lf) { return normTitle(lf.title) === normTitle(f.title); });
+        var current = (state.settings[f.key] || '').toString().trim();
+
+        if (hits.length > 1) {
+          // Never pick. Two fields answering to one name is a question only the
+          // admin can settle, and guessing wrong is silent.
+          blocked = true;
+          rows.push({ ok: false, name: f.title + ' — ambiguous',
+                      detail: hits.length + ' fields share this name (ids ' +
+                              hits.map(function (h) { return h.id; }).join(', ') +
+                              '). Rename or delete the duplicate, then Detect again.' });
+          return;
+        }
+        if (!hits.length) {
+          rows.push({ ok: f.required ? false : null,
+                      name: f.title + ' — not found' + (f.required ? '' : ' (optional)'),
+                      detail: f.required
+                        ? 'Required. Create it in Admin Center > Objects and rules > Tickets > Fields.'
+                        : 'Not created on this instance, which is fine — the feature it belongs to stays off.' });
+          if (f.required) { blocked = true; }
+          return;
+        }
+
+        var hit = hits[0];
+        // A title match on the wrong type is the strongest available signal that
+        // this is a different field that happens to share a name.
+        if (hit.type !== f.type) {
+          blocked = true;
+          rows.push({ ok: false, name: f.title + ' — wrong type',
+                      detail: 'Found id ' + hit.id + ' but it is a "' + hit.type +
+                              '", expected "' + f.type + '". Refusing to use it.' });
+          return;
+        }
+
+        resolved[f.key] = String(hit.id);
+        var same = current === String(hit.id);
+        rows.push({ ok: true,
+                    name: f.title + ' → ' + hit.id,
+                    detail: same ? 'Already set to this in app settings.'
+                                 : (current ? 'App settings currently say ' + current + ' — Apply will change it.'
+                                            : 'Not set in app settings yet — Apply will set it.') });
+      });
+
+      state.detected = blocked ? null : resolved;
+      renderSteps('detect-rows', rows);
+      el('detect-btn').disabled = false;
+      el('detect-note').textContent = '';
+      var changes = state.detected && Object.keys(resolved).filter(function (k) {
+        return (state.settings[k] || '').toString().trim() !== resolved[k];
+      });
+      if (state.detected && changes.length) {
+        show('apply-btn', true);
+        el('apply-btn').textContent = 'Apply to app settings (' + changes.length + ' change' +
+                                      (changes.length === 1 ? '' : 's') + ')';
+      } else {
+        show('apply-btn', false);
+        if (state.detected) { el('detect-note').textContent = ' app settings already match'; }
+      }
+      resize();
+    });
+  }
+
+  // Write the resolved ids into this app's own installation settings. Sends only
+  // the resolved keys: the installations endpoint merges, so everything else —
+  // including the secure tsanet_password, which is never readable here — is left
+  // untouched. Verified by diffing a full settings snapshot before and after.
+  function applyDetected() {
+    if (!state.detected || !state.installationId) { return; }
+    el('apply-btn').disabled = true;
+    el('detect-note').textContent = ' saving…';
+    return req({
+      url: '/api/v2/apps/installations/' + state.installationId + '.json',
+      type: 'PUT', contentType: 'application/json',
+      data: JSON.stringify({ settings: state.detected })
+    }).then(function (r) {
+      el('apply-btn').disabled = false;
+      if (!r.ok) {
+        el('detect-note').textContent = ' failed: HTTP ' + r.status + ' ' + r.body;
+        return;
+      }
+      // Update the in-memory copy so pre-flight reflects the save without a reload.
+      Object.keys(state.detected).forEach(function (k) { state.settings[k] = state.detected[k]; });
+      el('detect-note').textContent = ' saved';
+      show('apply-btn', false);
+      return detectFields().then(function () { return preflight(); });
+    });
   }
 
   // ---------------------------------------------------------------- pre-flight
@@ -594,6 +750,12 @@
       state.bundle = JSON.parse(text);
       return client.metadata().then(function (md) {
         state.settings = (md && md.settings) || {};
+        // Needed to write settings back from Apply. If Zendesk ever stops
+        // supplying it, detection still works and only Apply is unavailable.
+        state.installationId = (md && md.installationId) || null;
+        if (!state.installationId) {
+          el('detect-note').textContent = ' (detect only — no installation id, save manually)';
+        }
         show('main', true);
         return preflight();
       });
@@ -607,6 +769,8 @@
   el('deploy-btn').addEventListener('click', deploy);
   el('retry-btn').addEventListener('click', deploy);
   el('recheck-btn').addEventListener('click', function () { preflight(); });
+  el('detect-btn').addEventListener('click', function () { detectFields(); });
+  el('apply-btn').addEventListener('click', function () { applyDetected(); });
   el('copy-btn').addEventListener('click', function () {
     var t = reportText();
     var done = function () { el('copy-note').textContent = ' copied'; };

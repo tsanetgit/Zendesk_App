@@ -38,9 +38,9 @@ The app uses four custom ticket fields to store TSANet data. Create each one in 
 | TSANet Partner | Text | Stores the partner company name |
 | TSANet Respond By | Date | SLA acknowledgment deadline (auto-cleared on acknowledgment) |
 
-**After creating each field, note its Field ID** (shown in the URL when you click the field, e.g. `1234567890`). You'll need all four IDs in Step 3.
+**You do not need to note the Field IDs.** Create the fields and move on. Once the app is installed, open **TSANet Connect** from the left nav bar and click **Detect field IDs**: it reads them from this instance, shows what it matched, and writes them to the app's settings when you click **Apply**. The ID settings are deliberately left blank at install time.
 
-> **Optional:** Create a fifth field **TSANet Tokens Multi** (Text) if you need to store multiple token references on a single ticket. Add its ID to the `field_id_tokens_multi` setting.
+> **Optional:** Create a fifth field **TSANet Tokens Multi** (Text) if you need to store multiple token references on a single ticket. Detect picks that one up too.
 
 ---
 
@@ -95,11 +95,7 @@ Fill in the settings on the installation screen:
 | **TSANet API username** | Your TSANet API user email (e.g. `api@yourcompany.com`) | ✅ |
 | **TSANet API password** | TSANet API user password | ✅ |
 | **TSANet environment** | `BETA` or `PRODUCTION` | ✅ |
-| **Zendesk Field ID for TSANet Token** | Field ID from Step 1 | ✅ |
-| **Zendesk Field ID for TSANet Tokens Multi** | Field ID from Step 1 (optional) | ❌ |
-| **Zendesk Field ID for TSANet Status** | Field ID from Step 1 | ✅ |
-| **Zendesk Field ID for TSANet Partner** | Field ID from Step 1 | ✅ |
-| **Zendesk Field ID for TSANet Respond By** | Field ID from Step 1 | ✅ |
+| **All five Zendesk Field ID settings** | **Leave blank.** Detect fills them in after install — see Step 3a | ❌ |
 | **Allowed action roles** | Comma-separated Zendesk role names permitted to invoke TSANet actions (e.g. `admin, Support Lead`). Empty = all agents | ❌ |
 
 > **Allowed action roles** is defense-in-depth for the UI only: it controls which
@@ -116,6 +112,20 @@ Fill in the settings on the installation screen:
 > server-side by Zendesk.
 
 Click **Install**.
+
+### Step 3a — Detect the field IDs
+
+Open **TSANet Connect** from the left nav bar in Zendesk Support and click **Detect field IDs**.
+
+It reads this instance's ticket fields, matches them by name, and shows you exactly what it found — field name, id, and type — before anything is saved. Click **Apply** to write them into the app's settings.
+
+It refuses rather than guesses:
+
+- two fields sharing a name are reported as ambiguous, and it names both ids
+- a name match with the wrong type is refused — **TSANet Status** must be a dropdown, **Respond By** a date
+- a missing required field is called out, with where to create it; a missing optional one is fine
+
+Until this is done the sidebar app will tell any agent who opens a ticket that TSANet Connect is not configured yet, rather than appearing to work and quietly doing nothing.
 
 ---
 
