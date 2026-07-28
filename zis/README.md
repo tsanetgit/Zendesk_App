@@ -80,9 +80,9 @@ misbehaves.
 | What | Where | Note |
 |---|---|---|
 | Custom field IDs | `action_create_ticket`, `action_search_ticket`, `action_update_ticket` | The three numeric IDs (TSANet Token / Status / Partner, plus Respond By in the update action), taken from **your** instance's fields |
-| Field-driven field IDs | `flow_field_action` `GuardField`, `action_zd_finish_status` / `_silent` / `_fail`, and the `Extract` jq | The two field-driven fields: **TSANet Action** dropdown (`1234567891`) and **TSANet Action Text** (`1234567895`), both taken from **your** instance — see *Field-driven case actions* below |
+| Field-driven field IDs — **optional** | `flow_field_action` `GuardField`, `action_zd_finish_status` / `_silent` / `_fail`, and the `Extract` jq | The two field-driven fields: **TSANet Action** dropdown (`1234567891`) and **TSANet Action Text** (`1234567895`). Leave **both** blank and the resources holding these placeholders are omitted from the upload entirely — see *Field-driven case actions* below |
 | API host | **all five** TSANet API actions — `action_get_collaboration`, `action_ts_accept`, `action_ts_reject`, `action_ts_info`, `action_ts_note` | File ships with Production (`connect2.tsanet.org`); Beta is `connect2.tsanet.net`. The host appears in every action that calls the TSANet API, not just `action_get_collaboration` — all five move together or the lifecycle actions hit the wrong environment |
-| `engineerEmail` | `action_ts_accept` | Your TSANet API user email, in place of `YOUR_TSANET_API_EMAIL`. It **must** be on your member-registered domain — TSANet's Accept endpoint rejects emails from any other domain. See *Field-driven case actions* below |
+| `engineerEmail` — **optional** | `action_ts_accept` | Your TSANet API user email, in place of `YOUR_TSANET_API_EMAIL`. It **must** be on your member-registered domain — TSANet's Accept endpoint rejects emails from any other domain. Needed only with field actions on: `action_ts_accept` is the only place it appears, and that action ships only when they are enabled. See *Field-driven case actions* below |
 | OAuth connection name | **all five** TSANet API actions (the same five as API host) | File ships with `tsanet_oauth`. If your instance named its OAuth connection differently (e.g. `tsanet_beta_oauth`), that name has to reach **all five** actions, or every TSANet call fails auth against a nonexistent connection. Symptom: ingest accepts (HTTP 200) but the flow's `action_ts_*` silently no-op via their `Catch`. Verify the live name with `GET /api/services/zis/connections/{integration}?name=<name>` |
 
 Connection name `zendesk` (Zendesk-side actions) matches the Quick Start. The TSANet OAuth connection name is per-instance — see the row above.
@@ -96,7 +96,7 @@ its job specs, then one curl creates the inbound webhook.
 
 ### 1. Upload the bundle and install job specs — in the app
 
-**Requires TSANet Connect app v1.0.51 or later.** Update the app first if the screen
+**Requires TSANet Connect app v1.0.52 or later.** Update the app first if the screen
 below is missing.
 
 1. In Zendesk Support, open **TSANet Connect** from the left nav bar.
@@ -149,14 +149,24 @@ The webhook subscription on the TSANet side uses the `callbackAuth` capability (
 
 The bundle also includes `flow_field_action` + `jobspec_field_action` (issue #22): the full inbound lifecycle — Accept, Reject, Request Info, Add Note — driven entirely by native Zendesk controls. An agent (or a macro) sets the **TSANet Action** dropdown; a ZIS flow executes the action against the TSANet API and clears the field. No private app needed.
 
+**This feature is off unless you turn it on**, and it is off on a first install. The
+app decides from its own settings: leave **TSANet Action** and **TSANet Action Text**
+blank and the deploy screen omits `flow_field_action`, `jobspec_field_action` and the
+seven actions only that flow uses, then deploys everything else normally. Fill both in
+and deploy again to add it. Nothing about the sidebar app changes either way — it never
+reads these two fields, and performs Accept / Reject / Request Info / Add Note by
+calling the TSANet API directly.
+
 ### Additional setup
 
-1. Create two more custom ticket fields and substitute their IDs in the bundle (alongside the other field IDs):
+1. Create two more custom ticket fields:
    - **TSANet Action** — dropdown with options `Accept` (tag `tsanet_action_accept`), `Reject` (`tsanet_action_reject`), `Request Info` (`tsanet_action_request_info`), `Add Note` (`tsanet_action_add_note`)
    - **TSANet Action Text** — text; holds the reject reason / info question / note body
-2. Substitute `YOUR_TSANET_API_EMAIL` in `action_ts_accept` with your TSANet API user email (TSANet's Accept endpoint requires an `engineerEmail` from your registered domain — agent emails fail validation).
-3. The job spec `jobspec_field_action` subscribes to `support` / `ticket.CustomFieldChanged` — install it like the others (and reinstall after every bundle upload).
+2. Enter both Field IDs in the app's settings, plus **`tsanet_engineer_email`** — TSANet's Accept endpoint requires an `engineerEmail` from your registered domain, and agent emails fail validation. All three are required together: the two field IDs are a pair, and the deploy screen rejects one without the other rather than guessing.
+3. **Deploy again** from the app. The bundle now carries the field-driven flow, and every job spec — including `jobspec_field_action` — is reinstalled, which is necessary because uploading a bundle orphans the specs from the previous one.
 4. Optional but recommended: four macros ("TSANet: Accept", ...) that set the Action (and prompt for Action Text where relevant) for one-click agent UX.
+
+> **Turning it back off.** Clearing the field IDs and redeploying omits the flow but does **not** uninstall `jobspec_field_action`, which would leave it registered and still intercepting `ticket.CustomFieldChanged` with no flow behind it. Pre-flight warns when it spots this. Uninstall it with `DELETE /api/services/zis/registry/job_specs/install?job_spec_name=zis:tsanet_connect:job_spec:jobspec_field_action`.
 
 ### Behavior
 
