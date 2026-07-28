@@ -40,6 +40,20 @@
   <div id="gate" class="banner bad hidden"></div>
 
   <div id="main" class="hidden">
+    <div id="detect" class="card">
+      <strong>Custom field IDs</strong>
+      <p class="sub" style="margin:4px 0 10px">
+        Look the IDs up from this instance's ticket fields instead of copying them
+        out of Admin Center by hand. Nothing is saved until you click Apply.
+      </p>
+      <ul class="steps" id="detect-rows"></ul>
+      <p>
+        <button id="detect-btn" class="secondary">Detect field IDs</button>
+        <button id="apply-btn" class="hidden">Apply to app settings</button>
+        <span id="detect-note" class="skip"></span>
+      </p>
+    </div>
+
     <div id="preflight" class="card">
       <strong>Pre-flight</strong>
       <ul class="steps" id="preflight-steps"></ul>
