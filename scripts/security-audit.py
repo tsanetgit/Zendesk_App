@@ -389,6 +389,13 @@ SUNSET_FAIL_WITHIN_DAYS = 90
 # extend it whenever the bundle grows a new extension.
 SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 
+# How a call to a sunsetting endpoint declares that it is deliberate. It is
+# honoured only on the line it sits on, so it cannot be used to quiet a file:
+# a second, unmarked call to the same endpoint in the same file still flags.
+# Every use is a claim that the call survives its sunset, and is reviewable as
+# one because it sits on the call rather than in a config list somewhere else.
+ALLOW_MARKER = re.compile(r"audit-allow:\s*v1-sunset")
+
 
 def _sunset_urgency(dates, today=None):
     """Days until the nearest sunset in `dates`, or None if there are none.
@@ -426,31 +433,33 @@ def check_deprecated_endpoints(root, today=None):
     # v1 call would not have been flagged. Demonstrated by injecting one and
     # watching the check pass, which is the only reason it was caught.
     v1_base = r"""connect2\.tsanet\.(?:net|org)/v1|\|\|\s*['"]v1['"]"""
-    # (pattern, needs_v1_base, cleared_by, label, sunset, replacement)
+    # (pattern, needs_v1_base, label, sunset, replacement)
     #
-    # `cleared_by` is how a file says "the v1 call here is deliberate". The
-    # push-registration probe queries v1 AND v2 and unions the results,
-    # because the two are separate collections and a member sits in one or
-    # the other until tsanetgit/Zendesk_App#101 migrates them. That code does
-    # not break at sunset — the v1 call fails, the v2 call answers — so
-    # flagging it is a false positive, and one that would turn into a
-    # release-blocking FAIL on 2026-10-03 for code that is already correct.
+    # A deliberate v1 call declares itself on its own line with ALLOW_MARKER.
+    # It is not inferred from a v2 call elsewhere in the file: the probe below
+    # asks v1 AND v2 and unions the results, and a file-scoped rule that read
+    # "this file has a v2 webhooks call, so its v1 webhooks calls are fine"
+    # would hide a NEW v1-only call added to that same file later. That is the
+    # residue the line-scoped marker removes — the marker is on the call, so it
+    # covers that call and nothing else.
     deprecated = [
-        (r"/collaboration-requests\?", True, None,
+        (r"/collaboration-requests\?", True,
          "GET /v1/collaboration-requests (list)",
          "2027-01-01", "GET /v2/collaboration-requests"),
-        (r"""['"]/webhooks['"]""", True,
-         r"""['"]/webhooks['"]\s*,\s*['"]v2['"]""",
+        # The lookahead is what makes a relative path readable as versioned:
+        # tsanetGet('/webhooks') resolves to v1 through baseUrl's default and
+        # counts, tsanetGet('/webhooks', 'v2') names its version and does not.
+        # Without it the migrated call matches its own replacement pattern.
+        (r"""['"]/webhooks['"](?!\s*,\s*['"]v2['"])""", True,
          "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
-        # Same clearing rule as the relative form. Prose mentioning
-        # /v1/webhooks in a comment tripped this and produced a false
-        # positive on a file whose actual call is already dual-version;
-        # relying on comment wording to stay clear of the pattern is not a
-        # rule anyone can be expected to remember. The rotation script has
-        # no v2 call, so it is untouched by this and stays flagged — moving
-        # it is tsanetgit/Zendesk_App#101's job.
-        (r"/v1/webhooks", False,
-         r"""['"]/webhooks['"]\s*,\s*['"]v2['"]""",
+        # A URL expression joins the path to something without a space
+        # (f"{ts}/v1/webhooks", "https://host/v1/webhooks"); prose puts a space
+        # or a backtick in front of it ("GET /v1/webhooks returned ..."). That
+        # is a shape rule, not a wording rule, which is why comments naming the
+        # endpoint no longer flag the file that calls it. Comments are NOT
+        # skipped wholesale, because commented-out code is worth flagging and a
+        # commented-out call keeps its call shape.
+        (r"(?<![\s`])/v1/webhooks", False,
          "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
     ]
     found = []
@@ -473,12 +482,15 @@ def check_deprecated_endpoints(root, today=None):
             except OSError:
                 continue
             on_v1_base = re.search(v1_base, body) is not None
-            for pat, needs_v1_base, cleared_by, label, date, repl in deprecated:
+            lines = body.splitlines()
+            for pat, needs_v1_base, label, date, repl in deprecated:
                 if needs_v1_base and not on_v1_base:
                     continue
-                if cleared_by and re.search(cleared_by, body):
-                    continue
-                if re.search(pat, body):
+                # Per line, so the marker clears the call it sits on and no
+                # other. Matching the whole body would make one marked call
+                # anywhere in the file clear every call in it.
+                if any(re.search(pat, ln) and not ALLOW_MARKER.search(ln)
+                       for ln in lines):
                     found.append(f"{rel}: {label} (sunset {date}, use {repl})")
                     hit_dates.append(date)
     if not found:

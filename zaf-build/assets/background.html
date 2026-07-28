@@ -78,7 +78,9 @@
       // is correct, because their v1 subscription is dead and push really has
       // stopped for them.
       Promise.all([
-        tsanetGet('/webhooks').catch(function() { return null; }),
+        // Deliberate for the #101 transition: this call is expected to fail
+        // after 2027-01-01, and the v2 one below answers in its place.
+        tsanetGet('/webhooks').catch(function() { return null; }), // audit-allow: v1-sunset
         tsanetGet('/webhooks', 'v2').catch(function() { return null; })
       ]).then(function(lists) {
         var reachable = lists.filter(function(l) { return Array.isArray(l); });
