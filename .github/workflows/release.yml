@@ -304,6 +304,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SECURITY_NOTE: ${{ needs.security-status.outputs.note }}
+          # Passed as an environment value, never interpolated into the script
+          # below. Actions substitutes ${{ }} before the shell parses the line,
+          # so quoting at the call site is not protection: git allows " $ ; ( )
+          # in tag names, and this job holds attestations: write (#138).
+          TAG: ${{ github.ref_name }}
         run: |
           # SECURITY_NOTE is empty when the gate did not flag, and otherwise
           # carries the reason the gate actually established (#115). Written as
@@ -312,12 +317,12 @@ jobs:
           if [ -n "$SECURITY_NOTE" ]; then
             SECURITY_NOTE="$SECURITY_NOTE"$'\n\n'
           fi
-          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
-            gh release upload "${{ github.ref_name }}" dist/*.zip dist/checksums.txt --clobber
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip dist/checksums.txt --clobber
           else
-            gh release create "${{ github.ref_name }}" dist/*.zip dist/checksums.txt \
-              --title "${{ github.ref_name }}" \
-              --notes "${SECURITY_NOTE}Automated ZAF app package for ${{ github.ref_name }}.
+            gh release create "$TAG" dist/*.zip dist/checksums.txt \
+              --title "$TAG" \
+              --notes "${SECURITY_NOTE}Automated ZAF app package for $TAG.
 
           Verify provenance before install:
             gh attestation verify tsanet-connect-v<version>.zip --repo tsanetgit/Zendesk_App
