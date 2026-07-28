@@ -261,10 +261,12 @@ ZAF (Zendesk Apps Framework) apps run inside cross-origin sandboxed iframes insi
     { "name": "tsanet_username", "type": "text", "required": true },
     { "name": "tsanet_password", "type": "text", "required": true },
     { "name": "tsanet_env",      "type": "text", "required": true, "default": "BETA" },
-    { "name": "field_id_token",  "type": "text", "required": true }
+    { "name": "field_id_token",  "type": "text", "required": false }
   ]
 }
 ```
+
+The `field_id_*` parameters are deliberately `required: false`. A member installs the app before the custom fields necessarily exist, then uses the app's **Detect field IDs** screen to populate them (see *Zendesk Custom Fields* below). Declaring them required blocked fresh installs in v1.0.51 (`tsanetgit/Zendesk_App#134`).
 
 **Required files in the ZIP:**
 - `manifest.json`
@@ -670,7 +672,9 @@ Create these in Admin Center → Objects and rules → Tickets → Fields:
 | TSANet Partner | Text | Stores partner company name |
 | TSANet Respond By | **Date** | YYYY-MM-DD format only |
 
-After creating each field, note the **Field ID** from the URL (e.g. `1234567890`). These are passed as ZAF app settings.
+**Do not copy the Field IDs out of the Admin Center URLs.** Create the fields, then open TSANet Connect from the left nav bar, click **Detect field IDs**, and click **Apply**. The app matches your fields by title, shows the full mapping before writing anything, and writes the IDs into its own settings via `PUT /api/v2/apps/installations/{id}` (app v1.0.53+, `tsanetgit/Zendesk_App#135`).
+
+Detect refuses to guess in two cases, both of which it reports rather than working around: two fields sharing a title, and a title match whose field type is wrong. Fix the field in Admin Center and run Detect again.
 
 ### Zendesk Views
 Create a view for agents to monitor active TSANet cases without opening individual tickets.
@@ -757,7 +761,7 @@ Full data map and recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_an
 
 - [ ] Get TSANet API credentials from membership@tsanet.org
 - [ ] Create 5 Zendesk custom fields (Token, Tokens Multi, Status, Partner, Respond By)
-- [ ] Note all Field IDs
+- [ ] Run **Detect field IDs** → **Apply** from the app's nav-bar screen (do not copy IDs from Admin Center URLs)
 - [ ] Create ZIS OAuth client in Admin Center
 - [ ] Create `tsanet_connect` ZIS integration via API
 - [ ] Build ZAF app (use custom modal — no `prompt()`/`confirm()`)

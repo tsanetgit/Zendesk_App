@@ -162,7 +162,7 @@ calling the TSANet API directly.
 1. Create two more custom ticket fields:
    - **TSANet Action** — dropdown with options `Accept` (tag `tsanet_action_accept`), `Reject` (`tsanet_action_reject`), `Request Info` (`tsanet_action_request_info`), `Add Note` (`tsanet_action_add_note`)
    - **TSANet Action Text** — text; holds the reject reason / info question / note body
-2. Enter both Field IDs in the app's settings, plus **`tsanet_engineer_email`** — TSANet's Accept endpoint requires an `engineerEmail` from your registered domain, and agent emails fail validation. All three are required together: the two field IDs are a pair, and the deploy screen rejects one without the other rather than guessing.
+2. Run **Detect field IDs** → **Apply** on the app's nav-bar screen. Both new fields are in the app's expected-field list as optional entries, so detection picks them up once they exist; there is no need to copy IDs out of Admin Center URLs. Then set **`tsanet_engineer_email`** by hand — it is not a ticket field, so it cannot be detected, and TSANet's Accept endpoint requires an `engineerEmail` from your registered domain (agent emails fail validation). All three are required together: the two field IDs are a pair, and the deploy screen rejects one without the other rather than guessing.
 3. **Deploy again** from the app. The bundle now carries the field-driven flow, and every job spec — including `jobspec_field_action` — is reinstalled, which is necessary because uploading a bundle orphans the specs from the previous one.
 4. Optional but recommended: four macros ("TSANet: Accept", ...) that set the Action (and prompt for Action Text where relevant) for one-click agent UX.
 
