@@ -5,3 +5,4 @@ node_modules/
 
 # Packaged release artifacts (carried by GitHub Releases, not committed)
 dist/
+__pycache__/

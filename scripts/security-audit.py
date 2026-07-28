@@ -426,13 +426,32 @@ def check_deprecated_endpoints(root, today=None):
     # v1 call would not have been flagged. Demonstrated by injecting one and
     # watching the check pass, which is the only reason it was caught.
     v1_base = r"""connect2\.tsanet\.(?:net|org)/v1|\|\|\s*['"]v1['"]"""
+    # (pattern, needs_v1_base, cleared_by, label, sunset, replacement)
+    #
+    # `cleared_by` is how a file says "the v1 call here is deliberate". The
+    # push-registration probe queries v1 AND v2 and unions the results,
+    # because the two are separate collections and a member sits in one or
+    # the other until tsanetgit/Zendesk_App#101 migrates them. That code does
+    # not break at sunset — the v1 call fails, the v2 call answers — so
+    # flagging it is a false positive, and one that would turn into a
+    # release-blocking FAIL on 2026-10-03 for code that is already correct.
     deprecated = [
-        (r"/collaboration-requests\?", True, "GET /v1/collaboration-requests (list)",
+        (r"/collaboration-requests\?", True, None,
+         "GET /v1/collaboration-requests (list)",
          "2027-01-01", "GET /v2/collaboration-requests"),
-        (r"""['"]/webhooks['"]""", True, "v1 webhook registration/list",
-         "2027-01-01", "/v2/webhooks"),
-        (r"/v1/webhooks", False, "v1 webhook registration/list",
-         "2027-01-01", "/v2/webhooks"),
+        (r"""['"]/webhooks['"]""", True,
+         r"""['"]/webhooks['"]\s*,\s*['"]v2['"]""",
+         "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
+        # Same clearing rule as the relative form. Prose mentioning
+        # /v1/webhooks in a comment tripped this and produced a false
+        # positive on a file whose actual call is already dual-version;
+        # relying on comment wording to stay clear of the pattern is not a
+        # rule anyone can be expected to remember. The rotation script has
+        # no v2 call, so it is untouched by this and stays flagged — moving
+        # it is tsanetgit/Zendesk_App#101's job.
+        (r"/v1/webhooks", False,
+         r"""['"]/webhooks['"]\s*,\s*['"]v2['"]""",
+         "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
     ]
     found = []
     hit_dates = []
@@ -454,8 +473,10 @@ def check_deprecated_endpoints(root, today=None):
             except OSError:
                 continue
             on_v1_base = re.search(v1_base, body) is not None
-            for pat, needs_v1_base, label, date, repl in deprecated:
+            for pat, needs_v1_base, cleared_by, label, date, repl in deprecated:
                 if needs_v1_base and not on_v1_base:
+                    continue
+                if cleared_by and re.search(cleared_by, body):
                     continue
                 if re.search(pat, body):
                     found.append(f"{rel}: {label} (sunset {date}, use {repl})")
