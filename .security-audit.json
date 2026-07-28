@@ -19,7 +19,7 @@
     "low": 1
   },
   "open_findings": [
-    "MEDIUM #140: an uncovered release is easy to accept repeatedly, because no run knows what the previous run decided; and 'not verified' items live as prose with no lifecycle. OPEN and deliberately NOT accepted — see the acceptance note below.",
+    "MEDIUM #140: an uncovered release is easy to accept repeatedly, because no run knows what the previous run decided; and 'not verified' items live as prose with no lifecycle. OPEN, and ACCEPTED by Shawn on 2026-07-28 — see the acceptance note below.",
     "MEDIUM #125: the client-side admin gate is a UX gate. Scope widened by v1.0.53: applyDetected() adds PUT /api/v2/apps/installations/{id} behind the same unprobed check. Both endpoints vendor-documented admin-only, neither probed by TSANet.",
     "MEDIUM #96: durable audit trail. Strengthened by this review's probe showing Zendesk records nothing at all for ZIS registry writes.",
     "LOW #98: note attribution heuristic remains open pending Connect-API-Code#131"
@@ -35,13 +35,14 @@
     "OBSERVATION, not a finding: a change to scripts/security-audit.py triggers no CI on a pull request, because no workflow path filter covers scripts/*.py other than lint-workflows.py. The audit runs pre-tag inside release.yml, so a broken audit script would surface at tag time rather than at review time. Worth considering alongside #140.",
     "TAXONOMY: Category 1 gained a row for untrusted input reaching workflow shell, committed to tsanet-ops as 7065c7b. taxonomy_version raised 2 -> 3. The row exists because the checklist never asked the question, which is why three prior reviews passed over #138 — the same reason Category 7 was added after the first review missed XSS.",
     "NOT VERIFIED, carried forward: (1) ZIS rejecting an agent-role session, and PUT /api/v2/apps/installations/{id} rejecting one — #125, blocked on an agent-role user existing on a sandbox. (2) The rewritten release gate's behaviour under a failing audit: logic read, not exercised. (3) #138 was reasoned rather than executed — the tag names were confirmed creatable and the substitution confirmed pre-shell, but no hostile tag was pushed, because that would run the injected code in CI. The fix is likewise verified by the new check rather than by exploitation. (4) That private apps do not auto-update.",
-    "ACCEPTANCE, and its consequence: accepted_issues carries forward only what a human has signed for (#96, #98, #119, #125). #138 and #139 drop off, closed. #140 is OPEN and deliberately NOT accepted, so the next tag will flag as shipping with an unaccepted finding. That is intended — this reviewer does not sign off on its own findings, and the persona may tighten a gate but never loosen one. #140 concerns the gate's own ergonomics and touches nothing in the shipped artifact, so accepting it is a reasonable call; it is simply not this reviewer's call to make. Add 140 to accepted_issues to ship without the flag.",
+    "ACCEPTANCE: accepted_issues names what a human has signed for — #96, #98, #119, #125, and now #140. #138 and #139 drop off, closed by this remediation. The reviewer wrote #140 and therefore left it unaccepted; Shawn accepted it explicitly on 2026-07-28, which is the separation this persona depends on. Rationale recorded on the issue: #140 concerns the release gate's own ergonomics and changes nothing in the shipped artifact, so it does not warrant flagging every release while the design work is pending. Verified against the gate's own classification logic that with #140 accepted no open security issue blocks: #96/#119/#125/#140 accepted, #98 low-priority and reported only. Acceptance expires with this record — source drift invalidates coverage, so the next review must re-accept explicitly rather than inheriting this list.",
     "The remaining mechanical WARN is the known v1-endpoint sunset 2027-01-01 (#101)."
   ],
   "accepted_issues": [
     96,
     98,
     119,
-    125
+    125,
+    140
   ]
 }
