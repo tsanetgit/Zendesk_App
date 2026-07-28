@@ -23,6 +23,7 @@ are reported as SKIP rather than counted as passes.
 """
 import argparse
 import base64
+import datetime
 import glob
 import hashlib
 import json
@@ -370,37 +371,103 @@ def check_secure_settings(root):
 
 # ── Category 6: external deadlines ──────────────────────────────────────
 
-def check_deprecated_endpoints(root):
+# A deadline this close is no longer a note for the next review to consider;
+# it is a release-blocking defect, because the next release may well be the
+# last one before the endpoint stops answering. 90 days is long enough to
+# schedule and land a migration and short enough that no release crosses the
+# line unremarked. Below this, the check FAILs and the release gate reports
+# the build as uncovered (release.yml treats a nonzero audit as a coverage
+# failure) rather than merely warning.
+SUNSET_FAIL_WITHIN_DAYS = 90
+
+# Files the endpoint scan reads. `.html` is here because zaf-build ships three
+# HTML assets carrying inline script, and background.html alone holds three of
+# the connector's four sunset call sites — omitting it is what let
+# tsanetgit/Zendesk_App#144 read as a single-site problem for four releases
+# (tsanetgit/Zendesk_App#145). An allowlist fails silently by construction: a
+# future shipped asset type is invisible until someone remembers this line, so
+# extend it whenever the bundle grows a new extension.
+SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
+
+
+def _sunset_urgency(dates, today=None):
+    """Days until the nearest sunset in `dates`, or None if there are none.
+
+    `today` is a parameter so the escalation can be exercised against a
+    synthetic date instead of by waiting for the calendar.
+    """
+    today = today or datetime.date.today()
+    remaining = [(datetime.date.fromisoformat(d) - today).days for d in dates]
+    return min(remaining) if remaining else None
+
+
+def check_deprecated_endpoints(root, today=None):
     cat = "platform-deadlines"
     # Endpoints with a published sunset that the connector still calls.
-    deprecated = {
-        r"/collaboration-requests\?": ("GET /v1/collaboration-requests (list)",
-                                       "2027-01-01", "GET /v2/collaboration-requests"),
-        r"/v1/webhooks": ("v1 webhook registration/list", "2027-01-01",
-                          "/v2/webhooks"),
-    }
+    #
+    # Each pattern must match how the call is WRITTEN, not the URL it resolves
+    # to, and it must stop matching once the call is migrated. Those two pull
+    # in opposite directions here, because the ZAF app keeps the API version in
+    # its base URL and writes paths relative to it: background.html:67 is
+    # tsanetGet('/webhooks'), with no version in the literal at all.
+    #
+    # Matching the bare literal catches the call but can never be cleared — the
+    # same string is correct against a v2 base — so the check would flag
+    # forever and mean nothing, which is the defect this whole check was
+    # rewritten to fix. Hence `needs_v1_base`: a relative path counts only in a
+    # file that also declares the v1 base, so migrating the base clears it.
+    # Absolute references carry their own version and need no context.
+    v1_base = r"connect2\.tsanet\.(?:net|org)/v1"
+    deprecated = [
+        (r"/collaboration-requests\?", True, "GET /v1/collaboration-requests (list)",
+         "2027-01-01", "GET /v2/collaboration-requests"),
+        (r"""['"]/webhooks['"]""", True, "v1 webhook registration/list",
+         "2027-01-01", "/v2/webhooks"),
+        (r"/v1/webhooks", False, "v1 webhook registration/list",
+         "2027-01-01", "/v2/webhooks"),
+    ]
     found = []
+    hit_dates = []
     for base, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in (".git", "dist", "node_modules")]
         for fn in files:
-            if not fn.endswith((".js", ".json", ".py")):
+            if not fn.endswith(SCANNED_SUFFIXES):
                 continue
             rel = os.path.relpath(os.path.join(base, fn), root)
-            if rel == os.path.join("scripts", "security-audit.py"):
-                continue  # this file names the patterns it looks for
+            # Files that DESCRIBE the deprecated endpoints rather than call
+            # them. Without the audit-record exclusion this check can never
+            # reach PASS again: the record permanently names the call sites a
+            # migration removed, so fixing the finding would not clear it.
+            if rel in (os.path.join("scripts", "security-audit.py"),
+                       ".security-audit.json"):
+                continue
             try:
                 body = read(root, rel)
             except OSError:
                 continue
-            for pat, (label, date, repl) in deprecated.items():
+            on_v1_base = re.search(v1_base, body) is not None
+            for pat, needs_v1_base, label, date, repl in deprecated:
+                if needs_v1_base and not on_v1_base:
+                    continue
                 if re.search(pat, body):
                     found.append(f"{rel}: {label} (sunset {date}, use {repl})")
-    if found:
-        record("WARN", "no calls to sunsetting endpoints",
-               "; ".join(sorted(set(found))), cat)
-    else:
+                    hit_dates.append(date)
+    if not found:
         record("PASS", "no calls to sunsetting endpoints",
                "no known-deprecated endpoint usage found", cat)
+        return
+
+    days = _sunset_urgency(hit_dates, today)
+    detail = "; ".join(sorted(set(found)))
+    if days is not None and days <= SUNSET_FAIL_WITHIN_DAYS:
+        n = abs(days)
+        unit = "day" if n == 1 else "days"
+        when = f"{days} {unit} away" if days >= 0 else f"{n} {unit} PAST"
+        record("FAIL", "no calls to sunsetting endpoints",
+               f"nearest sunset is {when} (threshold {SUNSET_FAIL_WITHIN_DAYS}d): {detail}", cat)
+    else:
+        record("WARN", "no calls to sunsetting endpoints",
+               f"nearest sunset in {days} days: {detail}", cat)
 
 
 def main():
