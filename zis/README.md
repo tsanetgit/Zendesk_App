@@ -124,9 +124,15 @@ Notes:
   because this project has not found an admin-only ZAF location, so the app's own
   role check is a convenience gate rather than a security boundary. The boundary is
   server-side: Zendesk documents the ZIS registry endpoints as
-  [Allowed for: Admins](https://developer.zendesk.com/api-reference/integration-services/registry/bundles/).
-  That is vendor documentation; an agent-role session has not been tested against
-  these endpoints by TSANet.
+  [Allowed for: Admins](https://developer.zendesk.com/api-reference/integration-services/registry/bundles/),
+  and TSANet has tested that claim. On 2026-07-28 a session holding the `Staff`
+  custom role — the most privileged non-admin role on the test instance — was
+  refused `403 Only admin user is allowed` on the bundles endpoint, and
+  `403 Forbidden` on `PUT /api/v2/apps/installations/{id}`, which **Apply** on the
+  same screen writes to. Both probes sent a deliberately malformed body, and CSRF
+  was confirmed present, so these are authorization refusals rather than CSRF
+  rejections. One role, one instance, one day (`tsanetgit/Zendesk_App#125`):
+  evidence the vendor documentation holds, not an exhaustive proof.
 - Job specs left installed from an **older bundle generation** still intercept
   events. The app surfaces these as a warning; uninstall them with
   `DELETE /api/services/zis/registry/job_specs/install?job_spec_name=...`.
