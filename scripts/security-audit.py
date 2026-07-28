@@ -88,6 +88,63 @@ def check_workflow_permissions(root):
                "no checksum published alongside the artifact", cat)
 
 
+def check_workflow_expression_injection(root):
+    """Actions expressions must not be interpolated into a run: script.
+
+    GitHub substitutes ${{ }} into the script text BEFORE any shell parses it,
+    so quoting at the call site is not protection. A value containing shell
+    metacharacters escapes its quotes and runs as code with the job's
+    permissions.
+
+    That is not theoretical here: git allows " $ ; ( ) in tag names (only space,
+    ~ ^ : ? * [ \\ and control characters are forbidden), and the publish job
+    holds attestations: write, so injected code could sign provenance over a
+    tampered artifact. #138.
+
+    The fix is always the same shape: bind the value in `env:` and reference it
+    as "$NAME" in the script, where the shell treats it as data.
+
+    Globs the directory rather than naming files, so a workflow added later is
+    covered without anyone remembering to widen this (#123, #139).
+    """
+    cat = "supply-chain"
+    wf_dir = os.path.join(root, ".github/workflows")
+    offenders = []
+
+    for name in sorted(os.listdir(wf_dir)):
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        lines = read(root, f".github/workflows/{name}").splitlines()
+        base = None          # indent of the `run:` key while inside its block
+        for n, line in enumerate(lines, 1):
+            stripped = line.strip()
+            indent = len(line) - len(line.lstrip())
+
+            if base is not None:
+                # A block scalar ends at the first non-blank line indented no
+                # further than the key that introduced it.
+                if stripped and indent <= base:
+                    base = None
+                elif "${{" in line:
+                    offenders.append(f"{name}:{n}: {stripped[:60]}")
+                    continue
+
+            m = re.match(r"(\s*)-?\s*run:\s*(.*)$", line)
+            if m:
+                rest = m.group(2).strip()
+                if rest in ("|", ">", "|-", ">-", "|+", ">+"):
+                    base = indent          # block scalar follows
+                elif "${{" in rest:
+                    offenders.append(f"{name}:{n}: {rest[:60]}")
+
+    if offenders:
+        record("FAIL", "no Actions expressions inside run: scripts",
+               "interpolated into shell: " + "; ".join(offenders), cat)
+    else:
+        record("PASS", "no Actions expressions inside run: scripts",
+               "every ${{ }} is bound in env:/with:/if:, none reaches a shell script", cat)
+
+
 def check_action_pinning(root):
     cat = "supply-chain"
     wf_dir = os.path.join(root, ".github/workflows")
@@ -309,6 +366,7 @@ def main():
 
     try:
         check_workflow_permissions(root)
+        check_workflow_expression_injection(root)
         check_action_pinning(root)
         check_sdk_sri(root, network=not args.no_network)
         check_no_embedded_secrets(root)
