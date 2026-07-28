@@ -1,6 +1,6 @@
 # ZAF Custom Build Guide (Not Recommended for Most Members)
 
-**Most members should not read this document.** Install the pre-built ZIP from the [latest GitHub Release](https://github.com/tsanetgit/Zendesk_App/releases/latest) instead — see [`QUICK_START.md`](QUICK_START.md) Step 3, or [the Implementation Guide](Zendesk_PlainLanguage_Implementation_Guide_v2.22.docx)'s Step 4. That path takes a few minutes, needs no build tools, and is identical for every member, which is what makes centralized support possible.
+**Most members should not read this document.** Install the pre-built ZIP from the [latest GitHub Release](https://github.com/tsanetgit/Zendesk_App/releases/latest) instead — see [`QUICK_START.md`](QUICK_START.md) Step 3, or [the Implementation Guide](Zendesk_PlainLanguage_Implementation_Guide_v2.23.docx)'s Step 3. That path takes a few minutes, needs no build tools, and is identical for every member, which is what makes centralized support possible.
 
 This document is for the exception: members who **cannot, or will not,** use the pre-built ZIP — most commonly because they want to add company-specific customizations (extra panels, additional integrations, branding changes) on top of the canonical app.
 
@@ -129,7 +129,7 @@ Zendesk reads this file to understand what the app is, where it appears, what pe
 | `location: ticket_sidebar` | App appears in the right sidebar on every ticket page |
 | `flexible_height: true` | Sidebar expands to fit content rather than a fixed height |
 | `frameworkVersion: "2.0"` | Use ZAF SDK v2 — required for `client.request()` API calls |
-| `parameters` | Settings the admin fills in on install: TSANet username, password, environment (BETA/PRODUCTION), and the Field IDs of the custom ticket fields |
+| `parameters` | App settings. Three are filled in on install (TSANet username, password, environment). The custom-field IDs are declared `required: false` and left blank: the app's **Detect field IDs** screen reads them from the instance and writes them back itself, so nobody types them |
 | `secure: true` on password | Zendesk encrypts this value at rest and never shows it again after the admin saves it |
 
 If you customize the app, lock down your field schema and settings before first distribution to your own members — requirement-created fields (if you migrate to `requirements.json`) are not updatable or deletable once installed.
