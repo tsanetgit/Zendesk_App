@@ -1,8 +1,8 @@
 {
   "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit.",
   "schema": 1,
-  "reviewed_commit": "2daf22f",
-  "reviewed_at": "2026-07-27",
+  "reviewed_commit": "c166008",
+  "reviewed_at": "2026-07-28",
   "taxonomy_version": 2,
   "reviewer": "tsanet-ops-security-review",
   "review_scope": "delta",
@@ -15,32 +15,35 @@
   },
   "findings": {
     "high": 0,
-    "medium": 0,
+    "medium": 2,
     "low": 1
   },
   "open_findings": [
-    "LOW #125: the client-side admin gate is a UX gate; the server-side boundary is now cited from Zendesk's 'Allowed for: Admins' documentation, but TSANet has still not probed an agent-role session. Documented-but-unverified, not closed.",
-    "MEDIUM #96: durable audit trail \u2014 direction set (B+C), documentation deliverable sequenced after #101",
+    "MEDIUM #138: release.yml interpolates ${{ github.ref_name }} directly into a run: block, in the job holding contents/id-token/attestations write. Shell metacharacters are legal in git tag names (verified: both v9.9.9\";id;# and v9.9.9$(id) pass git check-ref-format), so a tag push can execute code in the job that signs provenance. Requires repo write, so MEDIUM not HIGH. NOT accepted by this review.",
+    "MEDIUM #140: an uncovered release is easy to accept repeatedly, because no run knows what the previous run decided; and 'not verified' items live as prose with no lifecycle. NOT accepted by this review.",
+    "LOW #139: check_workflow_permissions() reads only release.yml while check_action_pinning() globs the directory. All four workflows currently carry a permissions block, so no active exposure; a workflow added later would pass a green audit. NOT accepted by this review.",
+    "MEDIUM #125: the client-side admin gate is a UX gate. Scope WIDENED this review: v1.0.53's applyDetected() adds PUT /api/v2/apps/installations/{id} behind the same unprobed check. Both endpoints are vendor-documented admin-only; neither has been probed by TSANet.",
+    "MEDIUM #96: durable audit trail. Strengthened this review by a probe showing Zendesk records nothing at all for ZIS registry writes.",
     "LOW #98: note attribution heuristic remains open pending Connect-API-Code#131"
   ],
   "notes": [
-    "Delta review of v1.0.50 against 1ec74d4 (v1.0.49). This release exists to fix the four findings that review produced.",
-    "CLOSED BY THIS RELEASE: #122 (SDK pinned to an exact version with SRI + crossorigin on all three pages, hash verified against the CDN this session), #123 (audit globs zaf-build/assets/**/*.html with an empty-glob FAIL guard; proven by committing the guard before the fix and observing the FAIL flip), #124 (validate + escape + JSON.parse before upload).",
-    "#125 is NOT closed. Citing vendor documentation converts an unverified assumption into a documented unverified assumption \u2014 a severity downgrade, not a closure. Docs on all three surfaces state plainly that TSANet has not tested an agent-role session.",
-    "FOUND AND FIXED DURING THIS REVIEW, pre-tag: substitute() was not single-pass, so a later substitution re-scanned text an earlier one had written. field_id_token=1234567891 shipped field_id_action's value; tsanet_connection_name=YOUR_TSANET_API_EMAIL shipped the engineer email. Both passed validation, left no placeholder, and parsed, so all three #124 layers missed them. Fixed in #127 (single-pass field replacement; connection substitution moved last). Not filed as an issue because it never shipped.",
-    "ALSO FOUND PRE-MERGE by QA on #126: the connection-name replacement used a replacement STRING, so `$` was expanded (my$$conn -> my$conn, valid JSON, past all three layers). Fixed with a function replacement.",
-    "Verification method note: an early harness replicated substitute() by hand and, after the fix, still reported the bug present because the replica had not changed. All later harnesses evaluate the ACTUAL source text out of deploy.js. Any future test of this file should do the same.",
-    "Cat 7: the three invalid-value messages name the SETTING KEY and never the offending value, so a hostile value cannot reach the DOM by the error path. The single innerHTML sink still escapes both interpolations.",
-    "Verified this session that the SDK check parses the tag out of the shipped HTML (src + integrity from the tag, crossorigin required, exact-version required) rather than comparing against a hardcoded constant, and that the CDN fetch uses the URL taken from that tag.",
-    "NOT verified: ZIS rejecting an agent-role session (#125); whether Zendesk audit-logs ZIS registry writes; that private apps do not auto-update, which is what the v1.0.49 'exposure believed nil' assessment rests on.",
-    "Remaining mechanical WARN is the known v1-endpoint sunset 2027-01-01 (#101).",
-    "accepted_issues records which open security issues this review knowingly ships with, so the release gate stops flagging on the standing backlog (#128). Accepted here: #96 (durable audit trail, long-horizon architecture), #119 (move off password auth, enhancement), #98 (low-priority, non-blocking anyway), #125 (boundary is vendor-documented but unprobed by TSANet), #128 (a defect in the gate itself, not in the shipped artifact). Acceptance is per-review and expires with it: source drift invalidates coverage, so the next review must re-accept explicitly rather than inheriting this list."
+    "Delta review of c166008 (v1.0.53) against 2daf22f (v1.0.50). Nine commits, 19 files. Covers three releases that shipped uncovered: v1.0.51, v1.0.52 and v1.0.53.",
+    "SELF-REVIEWED, and unusually so: this reviewer wrote most of the code under review in the same session (deploy.js Detect/Apply/strip, main.js unconfigured guard, the manifest required flips, the package.sh icon guard). Weight the findings accordingly, and treat the 'clean' categories as the weakest part of this record.",
+    "NEW FINDINGS: #138 (MEDIUM, tag-name injection into the attestation-signing job), #140 (MEDIUM, uncovered-release drift and not_verified lifecycle), #139 (LOW, audit permissions check scoped to a single file).",
+    "#138 provenance: git log -L attributes the interpolated lines to 8d441ba, 'security: harden release pipeline against artifact tampering (#93)' — the hardening commit introduced it — and to 96815ac, the commit that added scripts/security-audit.py, which touched the same lines without adding a check for them. security-audit.py has six check functions and none inspects expression interpolation, so the checklist never asked the question. Same shape as Category 7 being added after the first review missed XSS.",
+    "PROBE, Cat 5, resolving an item the v1.0.50 record listed as NOT verified: Zendesk does NOT audit ZIS registry writes. Paginated /api/v2/audit_logs.json to 600 entries over 6 pages spanning 2026-05-11 to 2026-07-28. A full bundle deploy ran at 2026-07-27T22:50:28Z, inside that window. The 22:00-23:09 slice holds 8 entries, ALL zendesk/app_market/*; every entry in the slice was inspected rather than string-matched. Source types across all 600: o_auth/token 55, app_market/installation 21, app_market/app 13, user 6, api_token 2, o_auth/client 2, ticket_field 1. Zero ZIS. App installation changes ARE audited, with actor attribution. Evidence posted to #96.",
+    "Cat 7 clean for the delta: a single innerHTML sink (renderSteps), both interpolations passing esc(). The server-sourced values reaching it (hit.id, hit.type from the Fields API) are escaped. The new global error surface uses textContent, as does main.js showError. The new icon_nav_bar.svg contains only <svg> and <circle> — no script, onload, foreignObject, xlink:href or DOCTYPE.",
+    "Cat 1 verified positively: package.sh, carrying the new icon guard, runs in the release path at release.yml:290, so the guard protects releases and not merely local builds. workflow-lint.yml uses pull_request, NOT pull_request_target, with contents: read and SHA-pinned actions — the advisor's highest-priority hypothesis did not materialise. audit-record-fields.py is read-only (no file writes, no subprocess, no network) and fails closed.",
+    "Cat 2: the required:true -> false flips touch only non-credential field-id settings; tsanet_password remains required and secure:true. Enforcement moved to deploy.js pre-flight and was verified still blocking — with nothing set, the deploy is BLOCKED listing all four core ids; with the four set, it is allowed. No default: values were introduced alongside the flips, which was the way that change could have become a silent mis-binding.",
+    "The advisor pass materially improved this review. It caught that the audit-log evidence was unfalsifiable as first gathered (100 entries is Zendesk's default page size, and 'zero ZIS-related' implied a string match), which is why the finding now rests on 600 paginated entries with every entry in the deploy window inspected individually. It also prompted the workflow-lint trigger check and the settings-to-bundle validation check, both of which came back clean.",
+    "NOT VERIFIED: (1) ZIS rejecting an agent-role session, and now also PUT /api/v2/apps/installations/{id} rejecting one — #125, blocked on an agent-role user existing on a sandbox. (2) The rewritten release gate's behaviour under a failing audit: the logic was read, not exercised. (3) #138 is reasoned rather than executed — the tag names were confirmed creatable and the interpolation confirmed unquoted at substitution time, but no hostile tag was pushed, because that would run the injected code in CI. (4) That private apps do not auto-update, carried forward unresolved from the v1.0.50 record.",
+    "ACCEPTANCE, and its consequence: accepted_issues carries forward only the standing backlog a human previously signed for (#96, #98, #119, #125). #128 drops off, closed. The three findings this review produced (#138, #139, #140) are deliberately NOT accepted, so the next tag will flag as shipping with unaccepted findings. That is intended: this reviewer does not sign off on its own findings, and the persona may tighten a gate but never loosen one. To ship before fixing them, add them to accepted_issues explicitly.",
+    "The remaining mechanical WARN is the known v1-endpoint sunset 2027-01-01 (#101)."
   ],
   "accepted_issues": [
     96,
     98,
     119,
-    125,
-    128
+    125
   ]
 }
