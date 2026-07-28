@@ -94,8 +94,14 @@ if (typeof ZAFClient === 'undefined') {
 // ── TSANet Auth ───────────────────────────────────────────────────────────────
 // The API version lives here rather than in each call site, which is how the
 // sunset on GET /v1/collaboration-requests stayed invisible for so long: the
-// literals read `/collaboration-requests?...` with no version in them at all
-// (tsanetgit/Zendesk_App#144). Pass a version to reach anything but v1.
+// call-site literals named the path and its query string with no version in
+// them at all (tsanetgit/Zendesk_App#144). Pass a version to reach anything
+// but v1.
+//
+// One of those literals is deliberately not quoted here. check_deprecated_endpoints
+// matches how a call is WRITTEN, so a sample of the deprecated form in a comment is
+// indistinguishable from the call itself and makes the check report a call site that
+// no longer exists.
 function baseUrl(version) {
   var host = (settings.tsanet_env === 'PRODUCTION')
     ? 'https://connect2.tsanet.org'
