@@ -21,7 +21,7 @@
       }
     }
   },
-  "version": "1.0.51",
+  "version": "1.0.52",
   "icon": "assets/logo.png",
   "frameworkVersion": "2.0",
   "parameters": [
@@ -101,17 +101,17 @@
       "name": "field_id_action",
       "type": "text",
       "secure": false,
-      "required": true,
+      "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Action (the dropdown that drives Accept/Reject/Info/Note). Required: the ZIS bundle references it, and the deploy screen will not upload without it."
+      "description": "Zendesk numeric Field ID for TSANet Action (the dropdown that drives Accept/Reject/Info/Note). Optional — part of \"Native Field Actions and One-Click Macros\". Leave blank unless you use them; set it together with field_id_action_text."
     },
     {
       "name": "field_id_action_text",
       "type": "text",
       "secure": false,
-      "required": true,
+      "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Action Text (free-text body for Add Note). Required: the ZIS bundle references it, and the deploy screen will not upload without it."
+      "description": "Zendesk numeric Field ID for TSANet Action Text (free-text body for Add Note). Optional — set it together with field_id_action, or leave both blank."
     },
     {
       "name": "tsanet_connection_name",
@@ -125,9 +125,9 @@
       "name": "tsanet_engineer_email",
       "type": "text",
       "secure": false,
-      "required": true,
+      "required": false,
       "default": "",
-      "description": "Email used as engineerEmail on TSANet Accept calls. Must be on your member company's registered domain. Required: the ZIS bundle's Accept action carries it, and the deploy screen will not upload without it."
+      "description": "Email used as engineerEmail on TSANet Accept calls. Must be on your member company's registered domain. Required only if you use field actions; the sidebar app does not need it."
     }
   ],
   "domainWhitelist": [

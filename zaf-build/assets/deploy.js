@@ -64,6 +64,63 @@
   var CONN_PLACEHOLDER = 'tsanet_oauth';
   var EMAIL_PLACEHOLDER = 'YOUR_TSANET_API_EMAIL';
 
+  // "Optional: Native Field Actions and One-Click Macros" in the Installation
+  // Guide. The TSANet Action / Action Text ticket fields are created AFTER the
+  // bundle is deployed — the guide's optional section sits ~110 lines below the
+  // deploy step — so a first-time installer does not have them yet. Requiring
+  // them made the deploy screen unreachable on a fresh install (#132). The ZAF
+  // sidebar app never reads either field: it calls /approval, /rejection,
+  // /information and /notes directly. This set is only for the field-driven
+  // path, which the docs title "no ZAF app required".
+  //
+  // These resources are owned EXCLUSIVELY by flow_field_action, so dropping them
+  // leaves the rest of the bundle intact. action_ts_note is deliberately NOT
+  // here: flow_forward_comment uses it too.
+  var FIELD_ACTION_RESOURCES = [
+    'flow_field_action',
+    'jobspec_field_action',
+    'action_ts_accept',
+    'action_ts_reject',
+    'action_ts_info',
+    'action_zd_get_ticket',
+    'action_zd_finish_status',
+    'action_zd_finish_note_receipt',
+    'action_zd_finish_fail'
+  ];
+
+  // Settings that only exist to serve FIELD_ACTION_RESOURCES. Every placeholder
+  // they fill lives inside that set — including YOUR_TSANET_API_EMAIL, which
+  // appears solely in action_ts_accept — so with the set dropped, none of them
+  // is needed and none can be left over.
+  var FIELD_ACTION_SETTINGS = ['field_id_action', 'field_id_action_text', 'tsanet_engineer_email'];
+
+  // on | off | partial. `partial` is an error rather than a guess: the two field
+  // ids are a functional pair, and picking a side would either half-wire the
+  // flow or silently discard a value the admin entered on purpose.
+  function fieldActionMode(s) {
+    var a = (s.field_id_action || '').toString().trim();
+    var t = (s.field_id_action_text || '').toString().trim();
+    if (a && t) { return 'on'; }
+    if (!a && !t) { return 'off'; }
+    return 'partial';
+  }
+
+  // Remove the field-action resources from the bundle text. Parses and
+  // re-serialises rather than editing the string: these are whole JSON objects,
+  // and a textual cut would have to get brace matching and trailing commas right
+  // on every one of them.
+  function stripFieldActions(text) {
+    var b = JSON.parse(text);
+    var dropped = [];
+    FIELD_ACTION_RESOURCES.forEach(function (name) {
+      if (b.resources && Object.prototype.hasOwnProperty.call(b.resources, name)) {
+        delete b.resources[name];
+        dropped.push(name);
+      }
+    });
+    return { text: JSON.stringify(b, null, 2), dropped: dropped };
+  }
+
   var state = { settings: null, bundleText: null, bundle: null, steps: [], preflightOk: false };
 
   // ---------------------------------------------------------------- helpers
@@ -146,6 +203,22 @@
     var missing = [];
     var invalid = [];
 
+    // Decide the field-action mode first: it determines which resources ship and
+    // therefore which settings are required at all.
+    var mode = fieldActionMode(s);
+    var dropped = [];
+    if (mode === 'partial') {
+      invalid.push('field_id_action and field_id_action_text must both be set or both be empty — ' +
+                   'they are a pair, and one alone cannot drive a field action');
+    } else if (mode === 'off') {
+      var strip = stripFieldActions(out);
+      out = strip.text;
+      dropped = strip.dropped;
+    }
+    // Which settings count as required this run.
+    var optional = {};
+    if (mode !== 'on') { FIELD_ACTION_SETTINGS.forEach(function (k) { optional[k] = true; }); }
+
     // Validate every field id BEFORE substituting anything, then replace all six
     // in a SINGLE pass. Replacing them one at a time re-scans text already
     // written: a value equal to another placeholder's token was expanded again by
@@ -158,7 +231,9 @@
     Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) {
       var key = FIELD_PLACEHOLDERS[ph];
       var val = (s[key] || '').toString().trim();
-      if (!val) { missing.push(key); return; }
+      // With field actions off, these placeholders are gone from `out` along with
+      // the resources that held them, so a blank value is correct, not missing.
+      if (!val) { if (!optional[key]) { missing.push(key); } return; }
       // Field ids land in an unquoted numeric position. Anything non-numeric
       // either corrupts the JSON or injects structure, so refuse it here.
       if (!/^\d+$/.test(val)) {
@@ -171,7 +246,13 @@
       // \b so a placeholder can never match inside a longer numeric id.
       out = out.replace(
         new RegExp('\\b(' + Object.keys(FIELD_PLACEHOLDERS).join('|') + ')\\b', 'g'),
-        function (whole, token) { return fieldValues[token]; }
+        // A token with no value can only mean an optional placeholder survived a
+        // strip that should have removed it. Return it unchanged so the leftovers
+        // check below fails the deploy, rather than writing "undefined" into the
+        // bundle — which would be valid JSON pointing at nothing.
+        function (whole, token) {
+          return Object.prototype.hasOwnProperty.call(fieldValues, token) ? fieldValues[token] : token;
+        }
       );
     }
 
@@ -180,7 +261,9 @@
 
     var email = (s.tsanet_engineer_email || '').trim();
     if (!email) {
-      missing.push('tsanet_engineer_email');
+      // EMAIL_PLACEHOLDER lives only in action_ts_accept, which the strip removes,
+      // so with field actions off there is nothing left for this to fill.
+      if (!optional.tsanet_engineer_email) { missing.push('tsanet_engineer_email'); }
     } else if (/["\\\u0000-\u001f]/.test(email)) {
       invalid.push('tsanet_engineer_email contains a quote, backslash or control character');
     } else {
@@ -223,7 +306,8 @@
     }
 
     return { text: out, missing: missing, invalid: invalid,
-             leftovers: leftovers, parseError: parseError };
+             leftovers: leftovers, parseError: parseError,
+             mode: mode, dropped: dropped };
   }
 
   function bundleJobSpecNames(bundle) {
@@ -252,8 +336,22 @@
     var steps = [];
     var ok = true;
 
-    // 1. every substitution input present
+    // 0. what is actually being deployed. Shown first and always, so "field
+    //    actions are off" is a visible choice rather than a silent omission.
     var sub = substitute(state.bundleText, s);
+    if (sub.mode === 'on') {
+      steps.push({ ok: true, name: 'Field actions: ON',
+                   detail: 'Deploying the full bundle, including the TSANet Action dropdown flow.' });
+    } else if (sub.mode === 'off') {
+      steps.push({ ok: null, name: 'Field actions: OFF (optional feature)',
+                   detail: 'TSANet Action / Action Text are not configured, so the field-driven flow ' +
+                           'is left out: ' + sub.dropped.join(', ') + '. Everything else deploys ' +
+                           'normally, and the sidebar app is unaffected — it never uses those fields. ' +
+                           'To enable later, create the two fields, enter their IDs in app settings, ' +
+                           'and deploy again.' });
+    }
+
+    // 1. every substitution input present
     if (sub.missing.length) {
       ok = false;
       steps.push({ ok: false, name: 'App settings complete',
@@ -317,6 +415,28 @@
                                    'if this connection is missing. Not blocking.' });
             }
           });
+      })
+      .then(function () {
+        // 4. downgrade guard. Deploying with field actions off does not uninstall
+        //    an already-installed jobspec_field_action — the upload orphans it, and
+        //    an orphaned spec still intercepts events while its flow is gone. Say
+        //    so before the deploy, not after, because this is usually a mistake:
+        //    someone cleared the settings without meaning to turn the feature off.
+        if (sub.mode !== 'off') { return; }
+        return req({ url: REGISTRY + '/job_specs', type: 'GET' }).then(function (r) {
+          if (!r.ok) { return; }   // advisory only; never block on a failed read
+          var live = (r.data && r.data.job_specs) || [];
+          var on = live.some(function (j) { return j.installed && j.name === 'jobspec_field_action'; });
+          if (on) {
+            steps.push({ ok: null, name: 'Field actions are installed but about to be dropped',
+                         detail: 'jobspec_field_action is currently installed, and this deploy leaves it ' +
+                                 'out. It will be orphaned: still registered, still intercepting ' +
+                                 'ticket.CustomFieldChanged, with its flow gone. If you meant to keep ' +
+                                 'field actions, set the two field IDs and Re-check. If you meant to ' +
+                                 'remove them, uninstall it with DELETE /api/services/zis/registry/' +
+                                 'job_specs/install?job_spec_name=' + JOB_SPEC_PREFIX + 'jobspec_field_action' });
+          }
+        });
       })
       .then(function () {
         state.preflightOk = ok;
