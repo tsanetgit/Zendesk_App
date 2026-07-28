@@ -53,9 +53,9 @@
       "name": "field_id_token",
       "type": "text",
       "secure": false,
-      "required": true,
+      "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Token (Admin Center > Tickets > Fields)"
+      "description": "Zendesk numeric Field ID for TSANet Token. Leave blank on install — open TSANet Connect from the left nav bar and click \"Detect field IDs\" to fill this in automatically."
     },
     {
       "name": "field_id_tokens_multi",
@@ -69,25 +69,25 @@
       "name": "field_id_status",
       "type": "text",
       "secure": false,
-      "required": true,
+      "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Status (Admin Center > Tickets > Fields)"
+      "description": "Zendesk numeric Field ID for TSANet Status (dropdown). Leave blank on install — use \"Detect field IDs\" in the app."
     },
     {
       "name": "field_id_partner",
       "type": "text",
       "secure": false,
-      "required": true,
+      "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Partner (Admin Center > Tickets > Fields)"
+      "description": "Zendesk numeric Field ID for TSANet Partner. Leave blank on install — use \"Detect field IDs\" in the app."
     },
     {
       "name": "field_id_respond_by",
       "type": "text",
       "secure": false,
-      "required": true,
+      "required": false,
       "default": "",
-      "description": "Zendesk numeric Field ID for TSANet Respond By (Admin Center > Tickets > Fields)"
+      "description": "Zendesk numeric Field ID for TSANet Respond By (date). Leave blank on install — use \"Detect field IDs\" in the app."
     },
     {
       "name": "allowed_action_roles",
