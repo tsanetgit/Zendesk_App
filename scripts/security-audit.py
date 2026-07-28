@@ -48,7 +48,59 @@ def read(root, rel):
 
 # ── Category 1: supply chain and release integrity ──────────────────────
 
+def check_all_workflows_declare_permissions(root):
+    """Every workflow states its token scope explicitly.
+
+    A workflow with no `permissions:` block inherits the repository default,
+    which is broad (#109 found exactly that on zis-readme-check.yml). This is
+    the rule that applies to ALL workflows; check_workflow_permissions() below
+    holds release.yml to the stricter `{}`-plus-job-opt-in shape, because that
+    one has jobs with write scopes.
+
+    Globs rather than naming files. The previous version of this rule read only
+    release.yml, so a workflow added later shipped unchecked while the audit
+    stayed green (#139) — the same failure as #123, where the page check
+    inspected a hardcoded list. Workflow-wide rules belong here, in a loop over
+    the directory; only release-specific rules should name a file.
+
+    Accepts a declaration at either level: top-level covers every job, and
+    job-level is explicit per job. What fails is declaring neither.
+    """
+    cat = "supply-chain"
+    wf_dir = os.path.join(root, ".github/workflows")
+    undeclared = []
+    checked = 0
+
+    for name in sorted(os.listdir(wf_dir)):
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        checked += 1
+        wf = read(root, f".github/workflows/{name}")
+        top = re.search(r"^permissions:", wf, re.M)
+        job = re.search(r"^\s+permissions:", wf, re.M)
+        if not top and not job:
+            undeclared.append(name)
+
+    if not checked:
+        record("FAIL", "every workflow declares its token scope",
+               "no workflow files found — the check could not run, which is not a pass", cat)
+    elif undeclared:
+        record("FAIL", "every workflow declares its token scope",
+               "no permissions block, so the repository default applies: "
+               + "; ".join(undeclared), cat)
+    else:
+        record("PASS", "every workflow declares its token scope",
+               f"all {checked} workflow(s) declare permissions explicitly", cat)
+
+
 def check_workflow_permissions(root):
+    """release.yml specifically: workflow scope empty, jobs opt in.
+
+    Deliberately reads one file — this is a rule about the release workflow,
+    not about workflows in general. The general rule lives in
+    check_all_workflows_declare_permissions() above, which globs. Add
+    workflow-wide checks there, not here (#139).
+    """
     cat = "supply-chain"
     try:
         wf = read(root, ".github/workflows/release.yml")
@@ -365,6 +417,7 @@ def main():
         sys.exit(3)
 
     try:
+        check_all_workflows_declare_permissions(root)
         check_workflow_permissions(root)
         check_workflow_expression_injection(root)
         check_action_pinning(root)
