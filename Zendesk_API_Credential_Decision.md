@@ -19,7 +19,7 @@ The bundle uses **two** connections, in opposite directions:
 
 | Connection | Direction | Talks to | Credential |
 |---|---|---|---|
-| `tsanet_oauth` | outbound | TSANet Connect API (`connect2.tsanet.org/v1`) | OAuth2 client credentials, Entra (already in place — see [ZIS_Quick_Start.md](ZIS_Quick_Start.md)) |
+| `tsanet_oauth` | outbound | TSANet Connect API (`connect2.tsanet.org/v1`) | OAuth2 client credentials, Entra (already in place — see [QUICK_START.md](QUICK_START.md)) |
 | **`zendesk`** | inbound / local | **your own** Zendesk REST API (`/api/v2/...`) | **the Zendesk credential in question** |
 
 The `zendesk` connection is used by **seven** actions across both flows — everything
@@ -149,7 +149,7 @@ instance: the client_credentials grant returns a 30-minute token that authentica
 re-mint of an expired token**; and the minimal scope is **`read tickets:write`**
 (`/api/v2/search.json` returns 403 under `tickets:read` alone, so `SearchTicket`
 needs the general `read` scope). The validated install steps live in
-[ZIS_Quick_Start.md](ZIS_Quick_Start.md) and [`zis/README.md`](zis/README.md).
+[QUICK_START.md](QUICK_START.md) and [`zis/README.md`](zis/README.md).
 Gotchas: the OAuth client must be **confidential at creation** — the grant rejects
 public clients (`unauthorized_client`), and changing `kind` later regenerates the
 secret while only displaying it truncated. ZIS-auto-generated OAuth clients
@@ -193,7 +193,7 @@ Integration"), not a real person's account, because:
 
 The ZIS connections endpoint requires a **ZIS OAuth bearer token** (API-token basic
 auth returns 403 "API token is not supported"). Mint one per
-[ZIS_Quick_Start.md](ZIS_Quick_Start.md) Step 4, then:
+[QUICK_START.md](QUICK_START.md) Step 1c, then:
 
 ```bash
 curl -s "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/integrations/tsanet_connect/connections/all" \

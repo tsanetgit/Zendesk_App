@@ -88,7 +88,7 @@ def main():
         reason = (f"connection {args.zendesk_connection!r} uses "
                   f"{zd[0]['auth']} — it stops working when Zendesk retires "
                   f"API tokens on {RETIREMENT_DATE}. Migrate to an OAuth "
-                  "client-credentials connection (ZIS_Quick_Start.md Step 1 "
+                  "client-credentials connection (QUICK_START.md Step 4a "
                   "+ zis/README.md prerequisites).")
     elif hygiene:
         status, exit_code = "WARN", 2

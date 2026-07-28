@@ -28,11 +28,11 @@ TSANet webhook ping (eventType + requestToken)
 
 ## Prerequisites
 
-1. The ZIS integration `tsanet_connect` exists and the **OAuth client-credentials connection** `tsanet_oauth` is configured — see [ZIS_Quick_Start.md](../ZIS_Quick_Start.md) Steps 1–4.
+1. The ZIS integration `tsanet_connect` exists and the **OAuth client-credentials connection** `tsanet_oauth` is configured — see [QUICK_START.md](../QUICK_START.md) Steps 1–2.
 2. An **OAuth connection named `zendesk`** for the Zendesk-side actions (path-only actions do **not** auto-authenticate). Earlier revisions used a basic-auth connection holding an API token; Zendesk is retiring API tokens for the Ticketing API (creation blocked for new accounts **2026-07-28** and for all accounts **2026-10-27**; all existing tokens stop working **2027-04-30**), so the connection now stores an auto-renewing OAuth credential. Full background: [Zendesk_API_Credential_Decision.md](../Zendesk_API_Credential_Decision.md). Three steps (validated 2026-07-07):
 
    **2a. Use the integration's confidential OAuth client** created in
-   [ZIS_Quick_Start.md](../ZIS_Quick_Start.md) **Step 1** (Admin Center → OAuth
+   [QUICK_START.md](../QUICK_START.md) **Step 1a** (Admin Center → OAuth
    clients, **Client kind: Confidential**, created as the dedicated service user —
    client_credentials tokens act as the user associated with the client). The same
    client that mints your setup tokens backs this connection; you need its

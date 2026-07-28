@@ -3,7 +3,7 @@
 How to rotate the three credentials tracked in issue
 [#91](https://github.com/tsanetgit/Zendesk_App/issues/91): the **inbound
 webhook Basic credential** (the `callbackAuth` credential from
-[ZIS_Quick_Start.md](ZIS_Quick_Start.md) Step 5), the **Zendesk OAuth
+[QUICK_START.md](QUICK_START.md) Step 4d), the **Zendesk OAuth
 client secret** behind the `zendesk` connection, and the **TSANet-issued
 Entra client secret** behind the TSANet connection (rotated in coordination
 with TSANet). Closing sections cover credential handling and
