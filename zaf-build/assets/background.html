@@ -70,7 +70,27 @@
         });
         console.log('[TSANet BG] ZIS push registered: ' + _pushRegistered +
                     ' (poller is ' + (_pushRegistered ? 'fallback' : 'primary') + ')');
-      }).catch(function() { _pushRegistered = false; });
+      }).catch(function() {
+        // Fail CLOSED: assume push IS registered when we cannot tell.
+        //
+        // This used to set false, which promotes the poller from fallback to
+        // primary — so on an install where push works, a transient failure
+        // here produced duplicate inbound tickets. The two errors are not
+        // symmetric: a missed inbound is recoverable (an agent clicks Sync
+        // Now, and the next poll picks it up once this probe succeeds), while
+        // a duplicate ticket is member-visible and reaches the partner.
+        //
+        // This matters more after 2027-01-01, when GET /v1/webhooks is
+        // removed and this probe fails permanently until it moves to v2.
+        // That move is deliberately NOT in this change: v1 and v2
+        // subscriptions are separate collections (probed on BETA 2026-07-28 —
+        // v1 listed the live subscription, v2 returned []), so switching
+        // before tsanetgit/Zendesk_App#101 migrates members would report
+        // push-not-registered for every existing install.
+        _pushRegistered = true;
+        console.log('[TSANet BG] push-registration probe failed — assuming ' +
+                    'push IS registered so the poller stays a fallback');
+      });
 
       // Run immediately on startup, then on POLL_INTERVAL_MS
       pollForInboundCases();
@@ -84,10 +104,13 @@
   });
 
   // ── TSANet Auth ───────────────────────────────────────────────────────────
-  function baseUrl() {
-    return (settings.tsanet_env === 'PRODUCTION')
-      ? 'https://connect2.tsanet.org/v1'
-      : 'https://connect2.tsanet.net/v1';
+  // Version is a parameter, not part of the host string — see main.js for why
+  // (tsanetgit/Zendesk_App#144).
+  function baseUrl(version) {
+    var host = (settings.tsanet_env === 'PRODUCTION')
+      ? 'https://connect2.tsanet.org'
+      : 'https://connect2.tsanet.net';
+    return host + '/' + (version || 'v1');
   }
 
   function getJwt() {
@@ -117,13 +140,13 @@
     });
   }
 
-  function tsanetGet(path) {
+  function tsanetGet(path, version) {
     return getJwt().then(function(jwt) {
-      return fetch(baseUrl() + path, {
+      return fetch(baseUrl(version) + path, {
         headers: { Authorization: 'Bearer ' + jwt }
       });
     }).then(function(res) {
-      if (res.status === 401) { _jwt = null; return tsanetGet(path); }
+      if (res.status === 401) { _jwt = null; return tsanetGet(path, version); }
       if (!res.ok) throw new Error('TSANet GET failed: ' + res.status);
       return res.json();
     });
@@ -140,7 +163,7 @@
     // Only check OPEN cases — SLA is acknowledgment-only per TSANet policy.
     // Once a case is acknowledged (Accept/Reject/Req Info), TSANet stops tracking it.
     Promise.all([
-      tsanetGet('/collaboration-requests?status=OPEN').catch(function() { return []; })
+      tsanetGet('/collaboration-requests/list?status=OPEN', 'v2').catch(function() { return []; })
     ]).then(function(results) {
       var allActive = results[0] || [];
       var now = Date.now();
@@ -194,7 +217,7 @@
   function pollForInboundCases() {
     console.log('[TSANet BG] Polling for inbound cases...');
 
-    tsanetGet('/collaboration-requests?type=INBOUND').then(function(cases) {
+    tsanetGet('/collaboration-requests/list?type=INBOUND', 'v2').then(function(cases) {
       var open = (cases || []).filter(function(c) {
         return c.status === 'OPEN' || c.status === 'INFORMATION';
       });
