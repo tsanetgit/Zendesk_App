@@ -192,6 +192,55 @@
     });
   }
 
+  // ── Zendesk ticket tags ───────────────────────────────────────────────────
+  // Add one tag without disturbing the ticket's other tags. Resolves true if it
+  // wrote, false if the tag was already there.
+  //
+  // Zendesk names POST /api/v2/tickets/{id}/tags.json "Add Tags", and it does NOT
+  // add: it REPLACES the tag set. Probed 2026-07-29 on a scratch ticket carrying
+  // two tags, with no trigger or automation on the instance touching tags: a POST
+  // of one tag left exactly that one tag, the response body echoed only the posted
+  // tag, and the ticket audit recorded ['probe_keep_a','probe_keep_b'] ->
+  // ['probe_added_c']. Both tag writes in this app used it and silently destroyed
+  // whatever else was on the ticket, including the tagger-backed TSANet Status
+  // field, which Zendesk stores as a tag (tsanetgit/Zendesk_App#165).
+  //
+  // `additional_tags` is not the way out either: on the single-ticket update
+  // endpoint it returns 200 and writes nothing, with no audit event.
+  //
+  // So read, write the union, and guard the write with safe_update so a ticket
+  // that changed underneath us is rejected (409 UpdateConflict) instead of being
+  // clobbered by a stale tag list. One retry absorbs the ordinary race; a second
+  // conflict is left for the next poll rather than looped on, so this cannot
+  // become the kind of unbounded retry chain tsanetgit/Zendesk_App#155 removed.
+  //
+  // main.js carries the same function with the same signature. Keep them identical;
+  // the two files have already drifted once on a shared helper's argument order.
+  function addTicketTag(ticketId, tag, retried) {
+    return client.request({ url: '/api/v2/tickets/' + ticketId + '.json', type: 'GET' })
+      .then(function(d) {
+        var tags = (d && d.ticket && d.ticket.tags) || [];
+        if (tags.indexOf(tag) !== -1) return false;
+        return client.request({
+          url: '/api/v2/tickets/' + ticketId + '.json',
+          type: 'PUT',
+          contentType: 'application/json',
+          data: JSON.stringify({
+            ticket: {
+              tags: tags.concat([tag]),
+              safe_update: true,
+              updated_stamp: d.ticket.updated_at
+            }
+          })
+        }).then(function() { return true; }, function(err) {
+          if (((err && err.status) || 0) === 409 && !retried) {
+            return addTicketTag(ticketId, tag, true);
+          }
+          throw err;
+        });
+      });
+  }
+
   // ── SLA Breach Detection ──────────────────────────────────────────────────
   // Every poll cycle: find any OPEN/INFORMATION cases past their respondBy
   // deadline and add tag tsanet_sla_breached to the corresponding Zendesk ticket.
@@ -229,18 +278,16 @@
           if (!res.count || !res.results.length) return;
           var ticket = res.results[0];
 
-          // Skip if already tagged — prevents duplicate trigger fires
+          // Skip if already tagged — prevents duplicate trigger fires. The search
+          // result can lag the index, so this only saves addTicketTag's read in the
+          // common case; the authoritative check is inside it.
           if ((ticket.tags || []).indexOf('tsanet_sla_breached') !== -1) return;
 
-          // Add breach tag via POST (additive — preserves existing tags)
-          return client.request({
-            url: '/api/v2/tickets/' + ticket.id + '/tags.json',
-            type: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify({ tags: ['tsanet_sla_breached'] })
-          }).then(function() {
-            console.log('[TSANet BG] ⚠️ SLA breached — tagged ticket #' + ticket.id +
-                        ' (token ' + c.token.substring(0, 8) + '...)');
+          return addTicketTag(ticket.id, 'tsanet_sla_breached').then(function(written) {
+            if (written) {
+              console.log('[TSANet BG] ⚠️ SLA breached — tagged ticket #' + ticket.id +
+                          ' (token ' + c.token.substring(0, 8) + '...)');
+            }
           });
         }).catch(function(err) {
           console.warn('[TSANet BG] SLA tag error for token ' +
