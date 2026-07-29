@@ -391,11 +391,11 @@ SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 
 # How a call to a sunsetting endpoint declares that it is deliberate:
 #
-#     tsanetGet('/webhooks')   // audit-allow: v1-webhooks
+#     tsanetGet('/webhooks')   // audit-allow: v1-webhooks until 2027-01-01
 #
 # Every use is a claim that the call survives its sunset, reviewable in the
 # diff that adds it because it sits on the call rather than in a list
-# somewhere else. Four conditions keep it from becoming a way to quiet the
+# somewhere else. Six conditions keep it from becoming a way to quiet the
 # check, and each exists because the marker was found to over-clear without it:
 #
 #   1. It is read only on the line the call starts on.
@@ -406,6 +406,20 @@ SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 #   4. It excuses a line carrying exactly ONE matching call. Two calls and one
 #      marker means the second was never granted anything, so the line flags;
 #      put the second call on its own line and mark it too if it is deliberate.
+#   5. It must carry an EXPIRY (`until <YYYY-MM-DD>`). An undated marker excuses
+#      nothing, and is reported rather than ignored so the author learns why.
+#      Past its date it stops excusing and the check FAILs (#151).
+#   6. It stops excusing entirely once the entry's sunset is within
+#      SUNSET_FAIL_WITHIN_DAYS, whatever its expiry says, so the scheduled
+#      escalation cannot be deferred by a marker (#151).
+#
+# Even while a marker is valid the excused call is still REPORTED, by a
+# separate check, so the suite never returns a silent all-clear while a
+# sunsetting call is in the shipped bundle. That was #151: a marked call left
+# both `found` and `hit_dates`, so migrating the one unmarked call site
+# elsewhere in the tree produced PASS at exit 0 with a live v1 call still in
+# the bundle members install, and the dated escalation never fired because it
+# is driven by an empty `hit_dates`.
 #
 # Condition 3's comment openers cover the scanned languages except JSON, which
 # has no comment syntax and therefore cannot carry a marker. Nothing in a
@@ -427,7 +441,17 @@ SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 # Markers that excused nothing are reported by check_deprecated_endpoints
 # rather than ignored, so a typo'd key or one left behind by a call that moved
 # surfaces instead of sitting there looking like protection.
-ALLOW_MARKER = re.compile(r"(?:(?<!:)//|#|/\*|<!--)[^\n]*?audit-allow:\s*([\w.-]+)")
+# Matches any marker, dated or not. Used for REPORTING, so an undated or
+# expired one surfaces instead of reading as absent. Excusing needs a valid
+# date, which is why the date group is optional here and required below.
+ALLOW_MARKER = re.compile(
+    r"(?:(?<!:)//|#|/\*|<!--)[^\n]*?audit-allow:\s*([\w.-]+)"
+    # Group 2 is a well-formed date; group 3 catches whatever else was
+    # written after `until`, so a malformed expiry can be reported as one
+    # instead of collapsing into "no expiry" on a line that visibly says
+    # `until` (#159 review).
+    r"(?:\s+until\s+(?:(\d{4}-\d{2}-\d{2})(?!\d)|(\S+)))?"
+)
 
 
 def _sunset_urgency(dates, today=None):
@@ -441,13 +465,15 @@ def _sunset_urgency(dates, today=None):
     return min(remaining) if remaining else None
 
 
-def _matches_unmarked(lines, pat, key, used=None):
+def _matches_unmarked(lines, pat, key, date, used=None, marked=None, today=None):
     """True when `pat` hits a call site that no `audit-allow: <key>` excuses.
 
     Matching is per call site rather than per file, so a marker clears the call
     it sits on and nothing else. `used` collects the (line, column) of every
-    marker that actually excused something, which is how the caller reports the
-    ones that excused nothing.
+    marker that was applied to a call, and `marked` collects
+    (line_number, key, until) for every marked call site so the caller can
+    report calls that are excused but still present. `date` is the entry's
+    sunset, which decides whether a marker is still allowed to excuse at all.
 
     Two details make the per-line approach workable:
 
@@ -489,11 +515,40 @@ def _matches_unmarked(lines, pat, key, used=None):
                     excuse = mk
                     break
         if excuse is not None:
+            # Credit the marker as used even when it does not excuse, so an
+            # expired or undated one is reported as the problem it is rather
+            # than additionally as "excused nothing", which sends the author
+            # chasing the wrong edit.
             if used is not None:
                 used.add((i, excuse.start()))
-            continue
+            if marked is not None:
+                marked.append((i + 1, excuse.group(1),
+                               excuse.group(2), excuse.group(3)))
+            if _excuses(excuse, key, date, today):
+                continue
         hit = True
     return hit
+
+
+def _excuses(marker, key, sunset, today=None):
+    """Does this marker actually excuse a call to an entry sunsetting on `sunset`?
+
+    Naming the right key and sitting in the right place is not enough (#151).
+    A marker must also be dated and unexpired, and it stops excusing once the
+    sunset is close enough that the suite would escalate, so the scheduled
+    2026-10-03 FAIL cannot be deferred by writing a later date.
+    """
+    if marker.group(1) != key or not marker.group(2):
+        return False
+    today = today or datetime.date.today()
+    try:
+        until = datetime.date.fromisoformat(marker.group(2))
+    except ValueError:
+        return False
+    if until < today:
+        return False
+    days = (datetime.date.fromisoformat(sunset) - today).days
+    return days > SUNSET_FAIL_WITHIN_DAYS
 
 
 def check_deprecated_endpoints(root, today=None):
@@ -564,6 +619,10 @@ def check_deprecated_endpoints(root, today=None):
     found = []
     hit_dates = []
     stale_markers = []
+    bad_markers = []      # undated or expired: they excuse nothing
+    still_marked = []     # excused, and the call is still in the tree
+    superseded = []       # marked, but the escalation window withdrew the excuse
+    marked_dates = []
     for base, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in (".git", "dist", "node_modules")]
         for fn in files:
@@ -587,7 +646,57 @@ def check_deprecated_endpoints(root, today=None):
             for pat, needs_v1_base, key, label, date, repl in deprecated:
                 if needs_v1_base and not on_v1_base:
                     continue
-                if _matches_unmarked(lines, pat, key, used):
+                marked = []
+                unmarked = _matches_unmarked(
+                    lines, pat, key, date, used, marked, today)
+                now = today or datetime.date.today()
+                for lineno, mkey, until, malformed in marked:
+                    # Three different mistakes, three different messages. They
+                    # all FAIL and none excuses its call, but "has no expiry"
+                    # on a line that visibly reads `until soon` sends the author
+                    # looking for the wrong thing (#159 review).
+                    if not until and malformed:
+                        bad_markers.append(
+                            f"{rel}:{lineno}: audit-allow: {mkey} has a malformed "
+                            f"expiry {malformed!r}, expected "
+                            f"`until <YYYY-MM-DD>`, so it excuses nothing")
+                        continue
+                    if not until:
+                        bad_markers.append(
+                            f"{rel}:{lineno}: audit-allow: {mkey} has no "
+                            f"`until <YYYY-MM-DD>` expiry, so it excuses nothing")
+                        continue
+                    # ALLOW_MARKER only checks the SHAPE of the date, so an
+                    # ordinary typo like 2026-02-30 reaches this parse. Left
+                    # unguarded it raised out of the whole audit: exit 3, no
+                    # finding, no file, no line, and the other checks never ran.
+                    # _excuses already guarded the same call; this caller did
+                    # not (#159 review).
+                    try:
+                        expires = datetime.date.fromisoformat(until)
+                    except ValueError:
+                        bad_markers.append(
+                            f"{rel}:{lineno}: audit-allow: {mkey} has an expiry "
+                            f"of {until!r}, which is the right shape but not a "
+                            f"real date, so it excuses nothing")
+                        continue
+                    if expires < now:
+                        bad_markers.append(
+                            f"{rel}:{lineno}: audit-allow: {mkey} expired {until}")
+                        continue
+                    # A marker inside the escalation window has stopped
+                    # excusing (condition 6), so its call is already a finding
+                    # below. Reporting it here as "deliberate" too would put two
+                    # lines about one call in the same run saying opposite
+                    # things (#159 review).
+                    if (datetime.date.fromisoformat(date) - now).days <= SUNSET_FAIL_WITHIN_DAYS:
+                        superseded.append(f"{rel}:{lineno}: audit-allow: {mkey}")
+                        continue
+                    still_marked.append(
+                        f"{rel}:{lineno}: {label} (deliberate until {until}, "
+                        f"sunset {date}, use {repl})")
+                    marked_dates.append(date)
+                if unmarked:
                     found.append(f"{rel}: {label} (sunset {date}, use {repl})")
                     hit_dates.append(date)
             # A marker that excused nothing is not harmless. It reads in review
@@ -606,6 +715,38 @@ def check_deprecated_endpoints(root, today=None):
     else:
         record("PASS", "every audit-allow marker excuses a real call",
                "no unused audit-allow markers", cat)
+
+    # An undated or expired marker is a FAIL rather than a WARN: it looks like
+    # a considered exemption in review while granting nothing, so the call it
+    # sits on is flagged AND the marker is called out, and neither reading is
+    # left to be inferred from the other.
+    if bad_markers:
+        record("FAIL", "every audit-allow marker is dated and current",
+               "; ".join(sorted(set(bad_markers))), cat)
+    else:
+        record("PASS", "every audit-allow marker is dated and current",
+               "no undated or expired audit-allow markers", cat)
+
+    # A valid marker stops a call being a FINDING; it never stops it being
+    # REPORTED. #151: without this the suite returned PASS at exit 0 with a
+    # live v1 call in the shipped bundle, because the marked call left both
+    # `found` and `hit_dates`.
+    if still_marked or superseded:
+        parts = []
+        if still_marked:
+            days = _sunset_urgency(marked_dates, today)
+            parts.append(
+                f"{len(still_marked)} deliberate call(s) still in the tree, "
+                f"nearest sunset in {days} days: " + "; ".join(sorted(set(still_marked))))
+        if superseded:
+            parts.append(
+                f"{len(superseded)} marker(s) no longer excusing, because the sunset "
+                f"is within {SUNSET_FAIL_WITHIN_DAYS} days; those calls are reported "
+                f"as findings rather than as deliberate: " + "; ".join(sorted(set(superseded))))
+        record("WARN", "no deliberate sunsetting calls remain", " | ".join(parts), cat)
+    else:
+        record("PASS", "no deliberate sunsetting calls remain",
+               "no audit-allow-marked calls in the tree", cat)
 
     if not found:
         record("PASS", "no calls to sunsetting endpoints",

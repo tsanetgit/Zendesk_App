@@ -88,7 +88,7 @@
       Promise.all([
         // Deliberate for the #101 transition: this call is expected to fail
         // after 2027-01-01, and the v2 one below answers in its place.
-        tsanetGet('/webhooks').catch(function() { return null; }), // audit-allow: v1-webhooks
+        tsanetGet('/webhooks').catch(function() { return null; }), // audit-allow: v1-webhooks until 2027-01-01
         tsanetGet('/webhooks', 'v2').catch(function() { return null; })
       ]).then(function(lists) {
         var reachable = lists.filter(function(l) { return Array.isArray(l); });
@@ -169,13 +169,19 @@
     });
   }
 
-  function tsanetGet(path, version) {
+  // `retried` guards the 401 path. Without it a login that SUCCEEDS followed by
+  // a call that still 401s recurses forever, re-submitting credentials each
+  // pass, and because it never rejects the caller's .catch never runs while
+  // setInterval starts another non-terminating chain every 60 seconds
+  // (tsanetgit/Zendesk_App#155). getJwt() rejects on a failed login, so only
+  // the login-succeeds-then-401 case was ever unbounded.
+  function tsanetGet(path, version, retried) {
     return getJwt().then(function(jwt) {
       return fetch(baseUrl(version) + path, {
         headers: { Authorization: 'Bearer ' + jwt }
       });
     }).then(function(res) {
-      if (res.status === 401) { _jwt = null; return tsanetGet(path, version); }
+      if (res.status === 401 && !retried) { _jwt = null; return tsanetGet(path, version, true); }
       if (!res.ok) throw new Error('TSANet GET failed: ' + res.status);
       return res.json();
     });
