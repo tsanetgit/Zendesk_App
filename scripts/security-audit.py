@@ -393,14 +393,28 @@ SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 #
 #     tsanetGet('/webhooks')   // audit-allow: v1-webhooks
 #
-# Two things keep this from becoming a way to quiet the check. It is honoured
-# only on the line it sits on, so a second unmarked call to the same endpoint
-# in the same file still flags. And it must NAME the entry it excuses, so a
-# marker granted for one endpoint does not cover a different sunsetting call
-# that happens to share the line. Every use is a claim that the call survives
-# its sunset, reviewable in the diff that adds it because it sits on the call
-# rather than in a list somewhere else.
-ALLOW_MARKER = re.compile(r"audit-allow:\s*([\w.-]+)")
+# Every use is a claim that the call survives its sunset, reviewable in the
+# diff that adds it because it sits on the call rather than in a list
+# somewhere else. Four conditions keep it from becoming a way to quiet the
+# check, and each exists because the marker was found to over-clear without it:
+#
+#   1. It is read only on the line the call starts on.
+#   2. It must NAME the entry it excuses, so a marker granted for one endpoint
+#      does not cover a different sunsetting call sharing the line.
+#   3. It must sit in a COMMENT and BEGIN AFTER the call it excuses. The token
+#      inside a string literal, or in prose ahead of the call, is not a grant.
+#   4. It excuses a line carrying exactly ONE matching call. Two calls and one
+#      marker means the second was never granted anything, so the line flags;
+#      put the second call on its own line and mark it too if it is deliberate.
+#
+# Condition 3's comment openers cover the scanned languages except JSON, which
+# has no comment syntax and therefore cannot carry a marker. Nothing in a
+# scanned .json needs one today; if that changes, this is the line to revisit.
+#
+# Markers that excused nothing are reported by check_deprecated_endpoints
+# rather than ignored, so a typo'd key or one left behind by a call that moved
+# surfaces instead of sitting there looking like protection.
+ALLOW_MARKER = re.compile(r"(?://|#|/\*|<!--)[^\n]*?audit-allow:\s*([\w.-]+)")
 
 
 def _sunset_urgency(dates, today=None):
@@ -414,11 +428,15 @@ def _sunset_urgency(dates, today=None):
     return min(remaining) if remaining else None
 
 
-def _matches_unmarked(lines, pat, key):
-    """True when `pat` hits a line that no `audit-allow: <key>` marker excuses.
+def _matches_unmarked(lines, pat, key, used=None):
+    """True when `pat` hits a call site that no `audit-allow: <key>` excuses.
 
     Matching is per call site rather than per file, so a marker clears the call
-    it sits on and nothing else. Two details make that workable:
+    it sits on and nothing else. `used` collects the (line, column) of every
+    marker that actually excused something, which is how the caller reports the
+    ones that excused nothing.
+
+    Two details make the per-line approach workable:
 
     - The search runs against a two-line window, because a call can wrap and
       put its version argument on the next physical line:
@@ -438,16 +456,31 @@ def _matches_unmarked(lines, pat, key):
     - A match must START on the line being judged, so each call is considered
       once, and the marker is read from that line only. A marker on the
       following line belongs to whatever sits there.
+
+    Every line is walked even after a hit, rather than returning early, so that
+    markers further down the file are still credited as used.
     """
+    hit = False
     for i, ln in enumerate(lines):
         window = ln if i + 1 >= len(lines) else ln + "\n" + lines[i + 1]
-        m = re.search(pat, window)
-        if not m or m.start() >= len(ln):
+        starts_here = [m for m in re.finditer(pat, window) if m.start() < len(ln)]
+        if not starts_here:
             continue
-        if any(mk.group(1) == key for mk in ALLOW_MARKER.finditer(ln)):
+        # One marker excuses one call. With two matching calls on a line the
+        # marker was granted for at most one of them, and which one is not
+        # knowable, so the line flags and the author splits it.
+        excuse = None
+        if len(starts_here) == 1:
+            for mk in ALLOW_MARKER.finditer(ln):
+                if mk.group(1) == key and mk.start() >= starts_here[0].end():
+                    excuse = mk
+                    break
+        if excuse is not None:
+            if used is not None:
+                used.add((i, excuse.start()))
             continue
-        return True
-    return False
+        hit = True
+    return hit
 
 
 def check_deprecated_endpoints(root, today=None):
@@ -517,6 +550,7 @@ def check_deprecated_endpoints(root, today=None):
     ]
     found = []
     hit_dates = []
+    stale_markers = []
     for base, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in (".git", "dist", "node_modules")]
         for fn in files:
@@ -536,12 +570,30 @@ def check_deprecated_endpoints(root, today=None):
                 continue
             on_v1_base = re.search(v1_base, body) is not None
             lines = body.splitlines()
+            used = set()
             for pat, needs_v1_base, key, label, date, repl in deprecated:
                 if needs_v1_base and not on_v1_base:
                     continue
-                if _matches_unmarked(lines, pat, key):
+                if _matches_unmarked(lines, pat, key, used):
                     found.append(f"{rel}: {label} (sunset {date}, use {repl})")
                     hit_dates.append(date)
+            # A marker that excused nothing is not harmless. It reads in review
+            # as a considered exemption while protecting nothing, and it is what
+            # a typo'd key or a call that moved leaves behind.
+            for i, ln in enumerate(lines):
+                for mk in ALLOW_MARKER.finditer(ln):
+                    if (i, mk.start()) not in used:
+                        stale_markers.append(
+                            f"{rel}:{i + 1}: audit-allow: {mk.group(1)}")
+
+    if stale_markers:
+        record("WARN", "every audit-allow marker excuses a real call",
+               "marker excused nothing — stale, misspelled key, or the call it "
+               "named has moved: " + "; ".join(sorted(set(stale_markers))), cat)
+    else:
+        record("PASS", "every audit-allow marker excuses a real call",
+               "no unused audit-allow markers", cat)
+
     if not found:
         record("PASS", "no calls to sunsetting endpoints",
                "no known-deprecated endpoint usage found", cat)
