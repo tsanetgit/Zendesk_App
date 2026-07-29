@@ -411,10 +411,23 @@ SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 # has no comment syntax and therefore cannot carry a marker. Nothing in a
 # scanned .json needs one today; if that changes, this is the line to revisit.
 #
+# `//` is qualified with (?<!:) so the one inside `https://` does not read as a
+# comment opener. Without it, a deliberate ABSOLUTE v1 call could not be marked
+# at all: the opener matched at the scheme, so the marker's start landed before
+# the call rather than after it, and the line emitted two contradictory
+# warnings — "this marker excused nothing" and "this call is unmarked" — with
+# no edit that satisfied both.
+#
+# That is a heuristic, not a parse. Whether a position is inside a comment is
+# not decidable by regex, and the same collision exists in principle for a `#`
+# in a URL fragment or a `/*` inside a string. Both fail CLOSED, the way this
+# one did, so they cost a false flag rather than an unearned clear. Neither is
+# reachable in the tree today, and neither is patched on speculation.
+#
 # Markers that excused nothing are reported by check_deprecated_endpoints
 # rather than ignored, so a typo'd key or one left behind by a call that moved
 # surfaces instead of sitting there looking like protection.
-ALLOW_MARKER = re.compile(r"(?://|#|/\*|<!--)[^\n]*?audit-allow:\s*([\w.-]+)")
+ALLOW_MARKER = re.compile(r"(?:(?<!:)//|#|/\*|<!--)[^\n]*?audit-allow:\s*([\w.-]+)")
 
 
 def _sunset_urgency(dates, today=None):
