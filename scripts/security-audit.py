@@ -446,7 +446,11 @@ SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 # date, which is why the date group is optional here and required below.
 ALLOW_MARKER = re.compile(
     r"(?:(?<!:)//|#|/\*|<!--)[^\n]*?audit-allow:\s*([\w.-]+)"
-    r"(?:\s+until\s+(\d{4}-\d{2}-\d{2})(?!\d))?"
+    # Group 2 is a well-formed date; group 3 catches whatever else was
+    # written after `until`, so a malformed expiry can be reported as one
+    # instead of collapsing into "no expiry" on a line that visibly says
+    # `until` (#159 review).
+    r"(?:\s+until\s+(?:(\d{4}-\d{2}-\d{2})(?!\d)|(\S+)))?"
 )
 
 
@@ -518,7 +522,8 @@ def _matches_unmarked(lines, pat, key, date, used=None, marked=None, today=None)
             if used is not None:
                 used.add((i, excuse.start()))
             if marked is not None:
-                marked.append((i + 1, excuse.group(1), excuse.group(2)))
+                marked.append((i + 1, excuse.group(1),
+                               excuse.group(2), excuse.group(3)))
             if _excuses(excuse, key, date, today):
                 continue
         hit = True
@@ -645,7 +650,17 @@ def check_deprecated_endpoints(root, today=None):
                 unmarked = _matches_unmarked(
                     lines, pat, key, date, used, marked, today)
                 now = today or datetime.date.today()
-                for lineno, mkey, until in marked:
+                for lineno, mkey, until, malformed in marked:
+                    # Three different mistakes, three different messages. They
+                    # all FAIL and none excuses its call, but "has no expiry"
+                    # on a line that visibly reads `until soon` sends the author
+                    # looking for the wrong thing (#159 review).
+                    if not until and malformed:
+                        bad_markers.append(
+                            f"{rel}:{lineno}: audit-allow: {mkey} has a malformed "
+                            f"expiry {malformed!r}, expected "
+                            f"`until <YYYY-MM-DD>`, so it excuses nothing")
+                        continue
                     if not until:
                         bad_markers.append(
                             f"{rel}:{lineno}: audit-allow: {mkey} has no "
