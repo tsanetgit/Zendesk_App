@@ -230,6 +230,55 @@ function writeFields(ticketId, fields) {
   });
 }
 
+// Add one tag without disturbing the ticket's other tags. Resolves true if it
+// wrote, false if the tag was already there.
+//
+// Zendesk names POST /api/v2/tickets/{id}/tags.json "Add Tags", and it does NOT
+// add: it REPLACES the tag set. Probed 2026-07-29 on a scratch ticket carrying two
+// tags, with no trigger or automation on the instance touching tags: a POST of one
+// tag left exactly that one tag, the response body echoed only the posted tag, and
+// the ticket audit recorded ['probe_keep_a','probe_keep_b'] -> ['probe_added_c'].
+// Both tag writes in this app used it and silently destroyed whatever else was on
+// the ticket, including the tagger-backed TSANet Status field, which Zendesk stores
+// as a tag (tsanetgit/Zendesk_App#165).
+//
+// `additional_tags` is not the way out either: on the single-ticket update endpoint
+// it returns 200 and writes nothing, with no audit event.
+//
+// So read, write the union, and guard the write with safe_update so a ticket that
+// changed underneath us is rejected (409 UpdateConflict) instead of being clobbered
+// by a stale tag list. One retry absorbs the ordinary race; a second conflict is
+// left for the caller rather than looped on, so this cannot become the kind of
+// unbounded retry chain tsanetgit/Zendesk_App#155 removed.
+//
+// background.html carries the same function with the same signature. Keep them
+// identical; the two files have already drifted once on a shared helper's argument
+// order.
+function addTicketTag(ticketId, tag, retried) {
+  return client.request({ url: '/api/v2/tickets/' + ticketId + '.json', type: 'GET' })
+    .then(function(d) {
+      var tags = (d && d.ticket && d.ticket.tags) || [];
+      if (tags.indexOf(tag) !== -1) return false;
+      return client.request({
+        url: '/api/v2/tickets/' + ticketId + '.json',
+        type: 'PUT',
+        contentType: 'application/json',
+        data: JSON.stringify({
+          ticket: {
+            tags: tags.concat([tag]),
+            safe_update: true,
+            updated_stamp: d.ticket.updated_at
+          }
+        })
+      }).then(function() { return true; }, function(err) {
+        if (((err && err.status) || 0) === 409 && !retried) {
+          return addTicketTag(ticketId, tag, true);
+        }
+        throw err;
+      });
+    });
+}
+
 // ── Load collaborations ───────────────────────────────────────────────────────
 function loadCollaborations(quiet) {
   if (!quiet) show('loading', true);
@@ -961,15 +1010,15 @@ function handleSubmit() {
           { id: settings.field_id_status,       value: 'tsanet_status_open' }
         ]).then(function() {
           // Tag the originating ticket so outbound cases are filterable in a View
-          // (mirrors the tsanet_inbound tag set on inbound ticket creation). POST is
-          // additive; never PUT here, which would replace and wipe the support
-          // ticket's own existing tags.
-          return client.request({
-            url: '/api/v2/tickets/' + ticketId + '/tags.json',
-            type: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify({ tags: ['tsanet_outbound'] })
-          });
+          // (mirrors the tsanet_inbound tag set on inbound ticket creation).
+          //
+          // This is a ticket the member already owned, so its tags are theirs. The
+          // comment that stood here reasoned correctly about the hazard and then
+          // picked the method that causes it: POST /tags.json is documented as "Add
+          // Tags" but replaces the whole set, so every outbound case opened from a
+          // support ticket wiped that ticket's tags (tsanetgit/Zendesk_App#165).
+          // addTicketTag writes the union under safe_update; see its comment.
+          return addTicketTag(ticketId, 'tsanet_outbound');
         }).then(function() {
           document.getElementById('new-collab-dialog').style.display = 'none';
           showSuccess('Collaboration request submitted!');
