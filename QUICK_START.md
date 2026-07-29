@@ -560,6 +560,8 @@ Tickets the integration creates or touches (tagged `tsanet_inbound` or `tsanet_o
 
 Retention is your responsibility as data controller. The full data map and the two supported removal recipes (whole-ticket deletion or selective redaction) are in [PII_Retention_and_Data_Handling.md](PII_Retention_and_Data_Handling.md).
 
+Those tags are also how the integration's own tickets are identified, so it is worth knowing that **app versions before v1.0.60 could remove them.** See *Recovering tags removed before v1.0.60* under Troubleshooting.
+
 ---
 
 ## Troubleshooting
@@ -578,6 +580,21 @@ Retention is your responsibility as data controller. The full data map and the t
 | Connection created but no `access_token` | The `verification_code` exchange was skipped. GET the `redirect_url` from the start response with the ZIS bearer |
 | A TSANet action fails with a generic 500 in the flow execution log | All TSANet actions send `Accept: application/json, application/problem+json`, so check the actual response body: it carries `title` and `detail` describing the real rejection. TSANet's `/v1` API returns 500 by default for business-rule and authz rejections unless that header is present. This is documented, permanent behaviour, not a bug (`tsanetgit/Connect-API-Code#122`) |
 | A flow stopped firing after a redeploy | Check the deploy screen's read-back for stale job specs from an older bundle generation. They still intercept events until uninstalled |
+| Tags have gone missing from a TSANet ticket, or **TSANet Status** is blank on a case that is still open | An app older than **v1.0.60** removed them. Update, then see *Recovering tags removed before v1.0.60* below |
+
+### Recovering tags removed before v1.0.60
+
+Versions before **v1.0.60** removed a ticket's other tags whenever the app added one of its own. It happened at two moments in ordinary use: the first time a case passed its response deadline and the app added `tsanet_sla_breached`, and every time an agent opened an outbound case from an existing ticket, when the app added `tsanet_outbound`. The cause was Zendesk's tag endpoint, which is named **Add Tags** and replaces the tag set rather than adding to it.
+
+Because Zendesk stores a dropdown field's value as a tag, the **TSANet Status** field was blanked along with the tags.
+
+Updating to v1.0.60 stops it. Updating cannot bring back tags already removed, so this is worth one pass over affected tickets.
+
+**The old tag set is still recorded.** Zendesk keeps the before-and-after of every tag change in the ticket's event history, and that history is not trimmed. Confirmed against tickets whose tags were replaced three weeks earlier: the entry still lists exactly what had been there.
+
+- **Which tickets to check.** Tickets carrying `tsanet_sla_breached` or `tsanet_outbound` that have fewer tags than you would expect, or whose **TSANet Status** is empty on a case that is still open.
+- **Where to look.** Open the ticket, switch to the events view, and find the tag change. The entry shows the list that was replaced.
+- **If you would rather script it.** `GET /api/v2/tickets/{id}/audits.json` returns events with `field_name: tags`, where `previous_value` holds the replaced list.
 
 ---
 

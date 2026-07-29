@@ -735,7 +735,11 @@ Full data map and recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_an
 ## Zendesk API Gotchas
 
 - **Trigger field names:** use `current_tags` (not `tags`) for tag conditions; `assignee_id` (not `assignee`) for recipient. Wrong values return "Invalid rule target."
-- **Tag POST is additive:** `POST /api/v2/tickets/{id}/tags.json` adds to existing tags. Use this — don't PUT (which replaces).
+- **Tag POST is NOT additive, whatever its name says.** Zendesk documents `POST /api/v2/tickets/{id}/tags.json` as **"Add Tags"** and it **replaces** the ticket's whole tag set. Probed 2026-07-29 on a scratch ticket carrying two tags, on an instance with no trigger or automation touching tags: a POST of one tag left exactly that tag, the response echoed only the posted tag, and the audit recorded `['a','b'] -> ['c']`. This entry previously asserted the opposite, and that is what shipped `tsanetgit/Zendesk_App#165` — the first SLA breach on a ticket, and every outbound case opened from a support ticket, deleted the member's own tags.
+  - **Tagger (dropdown) custom fields are stored as tags**, so replacing the tags also blanks those fields. That is how `TSANet Status` went empty on breached tickets.
+  - `additional_tags` is not the escape hatch: on the single-ticket update endpoint it returns **200 and writes nothing**, with no audit event.
+  - **What works:** read the ticket, then `PUT /api/v2/tickets/{id}.json` with `tags: existing.concat([tag])` plus `safe_update: true` and `updated_stamp: ticket.updated_at`. A stale stamp returns **409 UpdateConflict** and writes nothing, so a concurrent edit fails loudly rather than being clobbered. Shipped as `addTicketTag()` in v1.0.60.
+  - **Verify a tag write from the ticket audit, never from the API response.** Both failing calls above returned success.
 - **Ticket comments via PUT:** to post an internal comment programmatically: `PUT /api/v2/tickets/{id}.json` with `ticket.comment.public: false`. Do not use the Comments endpoint — it doesn't support the internal flag the same way.
 - **Views API custom columns:** silently ignored for custom fields. Manual configuration required.
 - **ZIS management endpoints:** reject standard API tokens (401/403/404 by endpoint); require a ZIS OAuth token. Registry create + bundle upload are the exceptions that accept admin basic auth, and bundle upload additionally accepts an admin session (which is how the app deploys it, v1.0.52+). Bundle upload is the only one that rejects OAuth outright. Expected behavior, not a bug.

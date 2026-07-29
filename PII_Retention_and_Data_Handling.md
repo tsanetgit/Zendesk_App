@@ -61,6 +61,26 @@ lives in comments, which redaction removes permanently. If your policy
 requires zero residual values including audit events, use Mode A (deletion);
 it is the only complete remedy.
 
+**The same retention is what makes tag loss recoverable, and it matters for
+these recipes.** App versions before **v1.0.60** removed a ticket's other tags
+whenever the app added one of its own, because Zendesk's tag endpoint is named
+*Add Tags* and replaces the set (`tsanetgit/Zendesk_App#165`). Two
+consequences for this guide:
+
+- **Every recipe here selects on `tsanet_inbound` or `tsanet_outbound`.** A
+  ticket that lost those tags is invisible to a sweep that keys on them, so a
+  retention pass run against an instance that used an older app can silently
+  miss tickets it was meant to cover. Before relying on a tag-scoped sweep for
+  a compliance obligation, confirm the instance is on v1.0.60 or later and
+  check for tickets carrying only `tsanet_sla_breached`, which is the
+  fingerprint of the loss.
+- **Recovery of the tags themselves** uses the audit history described above:
+  `GET /api/v2/tickets/{id}/audits.json`, events with `field_name: tags`, where
+  `previous_value` holds the replaced list. Verified against tickets whose tags
+  were replaced three weeks earlier. The property that makes audit history a
+  residual-data liability in the paragraph above is the same property that lets
+  you restore a selector you need.
+
 ---
 
 ## Mode A: whole-ticket retention (deletion)
