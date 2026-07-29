@@ -146,13 +146,18 @@ function getJwt() {
   });
 }
 
-function tsanetGet(path, retried, version) {
+// (path, version, retried): caller-facing arguments first, the internal retry
+// flag last, matching tsanetPost below and background.html's copy. The two
+// files disagreed for one release (tsanetgit/Zendesk_App#159) — both were
+// internally consistent, so a call copied between them bound `version` to a
+// boolean and silently fell back to v1 with nothing to catch it.
+function tsanetGet(path, version, retried) {
   return getJwt().then(function(jwt) {
     return fetch(baseUrl(version) + path, { headers: { Authorization: 'Bearer ' + jwt, Accept: 'application/json, application/problem+json' } });
   }).then(function(res) {
     // Re-login and retry a 401 once; a second 401 falls through to error
     // parsing (a fresh token that still 401s won't be fixed by another login).
-    if (res.status === 401 && !retried) { _jwt = null; return tsanetGet(path, true, version); }
+    if (res.status === 401 && !retried) { _jwt = null; return tsanetGet(path, version, true); }
     if (!res.ok) return res.json().catch(function() { return {}; }).then(function(errBody) {
       // Surface TSANet's actual error message (RFC 7807 detail/title, or legacy message)
       var msg = errBody.detail || errBody.title || errBody.message || errBody.error || ('TSANet GET failed: ' + res.status);
@@ -637,7 +642,7 @@ function syncInboundCases() {
   // 2027-01-01. The /list form is the one to use: it returns a plain array
   // like v1 did, where GET /v2/collaboration-requests wraps results in a
   // PagedResponse and would put pagination into a polling loop for no gain.
-  tsanetGet('/collaboration-requests/list?type=INBOUND', false, 'v2').then(function(cases) {
+  tsanetGet('/collaboration-requests/list?type=INBOUND', 'v2').then(function(cases) {
     var open = (cases || []).filter(function(c) {
       return c.status === 'OPEN' || c.status === 'INFORMATION';
     });
