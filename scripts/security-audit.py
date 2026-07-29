@@ -417,7 +417,15 @@ def check_deprecated_endpoints(root, today=None):
     # rewritten to fix. Hence `needs_v1_base`: a relative path counts only in a
     # file that also declares the v1 base, so migrating the base clears it.
     # Absolute references carry their own version and need no context.
-    v1_base = r"connect2\.tsanet\.(?:net|org)/v1"
+    # Two shapes, because tsanetgit/Zendesk_App#144 changed the second one.
+    # Originally the version was baked into the host literal
+    # ('https://connect2.tsanet.net/v1'); the migration moved it to a default
+    # parameter (host + '/' + (version || 'v1')) so individual calls can opt
+    # into v2. That edit alone made this check blind — the host literal no
+    # longer contained /v1, so needs_v1_base gated off and a reintroduced
+    # v1 call would not have been flagged. Demonstrated by injecting one and
+    # watching the check pass, which is the only reason it was caught.
+    v1_base = r"""connect2\.tsanet\.(?:net|org)/v1|\|\|\s*['"]v1['"]"""
     deprecated = [
         (r"/collaboration-requests\?", True, "GET /v1/collaboration-requests (list)",
          "2027-01-01", "GET /v2/collaboration-requests"),

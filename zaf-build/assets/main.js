@@ -92,10 +92,21 @@ if (typeof ZAFClient === 'undefined') {
 }
 
 // ── TSANet Auth ───────────────────────────────────────────────────────────────
-function baseUrl() {
-  return (settings.tsanet_env === 'PRODUCTION')
-    ? 'https://connect2.tsanet.org/v1'
-    : 'https://connect2.tsanet.net/v1';
+// The API version lives here rather than in each call site, which is how the
+// sunset on GET /v1/collaboration-requests stayed invisible for so long: the
+// call-site literals named the path and its query string with no version in
+// them at all (tsanetgit/Zendesk_App#144). Pass a version to reach anything
+// but v1.
+//
+// One of those literals is deliberately not quoted here. check_deprecated_endpoints
+// matches how a call is WRITTEN, so a sample of the deprecated form in a comment is
+// indistinguishable from the call itself and makes the check report a call site that
+// no longer exists.
+function baseUrl(version) {
+  var host = (settings.tsanet_env === 'PRODUCTION')
+    ? 'https://connect2.tsanet.org'
+    : 'https://connect2.tsanet.net';
+  return host + '/' + (version || 'v1');
 }
 
 function getJwt() {
@@ -135,13 +146,13 @@ function getJwt() {
   });
 }
 
-function tsanetGet(path, retried) {
+function tsanetGet(path, retried, version) {
   return getJwt().then(function(jwt) {
-    return fetch(baseUrl() + path, { headers: { Authorization: 'Bearer ' + jwt, Accept: 'application/json, application/problem+json' } });
+    return fetch(baseUrl(version) + path, { headers: { Authorization: 'Bearer ' + jwt, Accept: 'application/json, application/problem+json' } });
   }).then(function(res) {
     // Re-login and retry a 401 once; a second 401 falls through to error
     // parsing (a fresh token that still 401s won't be fixed by another login).
-    if (res.status === 401 && !retried) { _jwt = null; return tsanetGet(path, true); }
+    if (res.status === 401 && !retried) { _jwt = null; return tsanetGet(path, true, version); }
     if (!res.ok) return res.json().catch(function() { return {}; }).then(function(errBody) {
       // Surface TSANet's actual error message (RFC 7807 detail/title, or legacy message)
       var msg = errBody.detail || errBody.title || errBody.message || errBody.error || ('TSANet GET failed: ' + res.status);
@@ -622,7 +633,11 @@ function syncInboundCases() {
   // notes/status for what the agent is looking at, not only scan for new inbound.
   loadCollaborations();
 
-  tsanetGet('/collaboration-requests?type=INBOUND').then(function(cases) {
+  // v2 because GET /v1/collaboration-requests is deprecated with x-sunset
+  // 2027-01-01. The /list form is the one to use: it returns a plain array
+  // like v1 did, where GET /v2/collaboration-requests wraps results in a
+  // PagedResponse and would put pagination into a polling loop for no gain.
+  tsanetGet('/collaboration-requests/list?type=INBOUND', false, 'v2').then(function(cases) {
     var open = (cases || []).filter(function(c) {
       return c.status === 'OPEN' || c.status === 'INFORMATION';
     });
