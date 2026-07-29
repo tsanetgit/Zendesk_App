@@ -845,6 +845,15 @@ function renderCollabForm(formData) {
   addFormField(form, 'Problem Summary *', '<input type="text" id="form-summary" required />');
   addFormField(form, 'Problem Description *', '<textarea id="form-description" required></textarea>');
   (formData.customFields || []).forEach(function(f) {
+    var fid = safeFieldId(f.fieldId);
+    if (fid === null) {
+      // Rendered visibly rather than skipped: the field still exists on the
+      // partner's form, and an agent silently missing one is worse than an
+      // agent told this one could not be shown.
+      addFormField(form, f.label + (f.required ? ' *' : ''),
+                   '<em class="cf-unavailable">Unavailable: this partner form field has an unusable id.</em>');
+      return;
+    }
     if (f.type === 'SELECT') {
       // Picklist values: prefer the structured selections[] array (FieldMetadataDTO);
       // otherwise parse the options string. TSANet delimits options with newlines
@@ -860,9 +869,9 @@ function renderCollabForm(formData) {
       }
       var opts = optValues
         .map(function(o) { return '<option value="' + esc(o) + '">' + esc(o) + '</option>'; }).join('');
-      addFormField(form, f.label + (f.required ? ' *' : ''), '<select id="cf-' + f.fieldId + '"><option value="">Select...</option>' + opts + '</select>');
+      addFormField(form, f.label + (f.required ? ' *' : ''), '<select id="cf-' + fid + '"><option value="">Select...</option>' + opts + '</select>');
     } else {
-      addFormField(form, f.label + (f.required ? ' *' : ''), '<input type="text" id="cf-' + f.fieldId + '" />');
+      addFormField(form, f.label + (f.required ? ' *' : ''), '<input type="text" id="cf-' + fid + '" />');
     }
   });
   var actions = document.createElement('div'); actions.className = 'form-actions';
@@ -872,6 +881,23 @@ function renderCollabForm(formData) {
     document.getElementById('new-collab-dialog').style.display = 'none';
   };
   document.getElementById('btn-submit-collab').onclick = handleSubmit;
+}
+
+// A partner-supplied fieldId is interpolated into an id attribute that goes
+// through innerHTML, and is then read back with getElementById. Those two have
+// to agree, which is why this rejects rather than escapes: esc() output would
+// not match the raw value at lookup, and an id is not a safe place for
+// arbitrary text either way.
+//
+// FieldMetadataDTO.fieldId is typed integer/int64 in the TSANet spec. That is
+// the partner's promise about their own process form, not a local guarantee,
+// and every sibling value in this block is already escaped
+// (tsanetgit/Zendesk_App#154).
+function safeFieldId(v) {
+  var s = String(v == null ? '' : v).trim();
+  // Deliberately not parseInt: parseInt('12"><img>') returns 12 and would let
+  // a mismatched id through as if it had been validated.
+  return /^[0-9]+$/.test(s) ? s : null;
 }
 
 function addFormField(container, label, html) {
@@ -891,7 +917,10 @@ function handleSubmit() {
   btn.disabled = true; btn.textContent = 'Submitting...';
 
   var customFields = (currentForm && currentForm.customFields || []).map(function(f) {
-    var el = document.getElementById('cf-' + f.fieldId);
+    // Same validator as the render side, so the lookup can only ever ask for
+    // an id that was actually written.
+    var fid = safeFieldId(f.fieldId);
+    var el  = fid === null ? null : document.getElementById('cf-' + fid);
     return Object.assign({}, f, { value: el ? el.value : '' });
   });
 
