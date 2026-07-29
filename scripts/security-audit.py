@@ -450,16 +450,25 @@ def check_deprecated_endpoints(root, today=None):
         # tsanetGet('/webhooks') resolves to v1 through baseUrl's default and
         # counts, tsanetGet('/webhooks', 'v2') names its version and does not.
         # Without it the migrated call matches its own replacement pattern.
-        (r"""['"]/webhooks['"](?!\s*,\s*['"]v2['"])""", True,
+        #
+        # The quote class includes the backtick because these are .js and .html
+        # files, where a backtick is a template literal and tsanetGet(`/webhooks`)
+        # is an ordinary call. Omitting it left that form invisible to the scan.
+        (r"""['"`]/webhooks['"`](?!\s*,\s*['"`]v2['"`])""", True,
          "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
         # A URL expression joins the path to something without a space
         # (f"{ts}/v1/webhooks", "https://host/v1/webhooks"); prose puts a space
-        # or a backtick in front of it ("GET /v1/webhooks returned ..."). That
-        # is a shape rule, not a wording rule, which is why comments naming the
-        # endpoint no longer flag the file that calls it. Comments are NOT
-        # skipped wholesale, because commented-out code is worth flagging and a
+        # in front of it ("GET /v1/webhooks returned ..."). That is a shape
+        # rule, not a wording rule, which is why comments naming the endpoint
+        # do not flag the file that calls it. Comments are NOT skipped
+        # wholesale, because commented-out code is worth flagging and a
         # commented-out call keeps its call shape.
-        (r"(?<![\s`])/v1/webhooks", False,
+        #
+        # A backtick is deliberately NOT excluded here. It was, to spare prose
+        # written as `/v1/webhooks`, and that also excused fetch(`/v1/webhooks`)
+        # — real code, silently unscanned. Backticked prose flagging is the
+        # cheaper mistake of the two, and nothing in the tree writes it.
+        (r"(?<!\s)/v1/webhooks", False,
          "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
     ]
     found = []

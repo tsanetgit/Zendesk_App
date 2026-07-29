@@ -84,31 +84,33 @@
         tsanetGet('/webhooks', 'v2').catch(function() { return null; })
       ]).then(function(lists) {
         var reachable = lists.filter(function(l) { return Array.isArray(l); });
-
-        if (!reachable.length) {
-          // Neither answered, so we cannot tell. Fail CLOSED: assume push IS
-          // registered, which keeps the poller a fallback.
-          //
-          // The two errors are not symmetric. A missed inbound is recoverable
-          // — an agent clicks Sync Now, and the next poll picks it up once a
-          // probe succeeds. A duplicate ticket is member-visible and reaches
-          // the partner. Guessing "not registered" is what produced duplicates
-          // on installs where push was working fine.
-          _pushRegistered = true;
-          console.log('[TSANet BG] push-registration probe failed on both v1 ' +
-                      'and v2 — assuming push IS registered so the poller ' +
-                      'stays a fallback');
-          return;
-        }
-
+        var complete  = reachable.length === lists.length;
         var subs = reachable.reduce(function(all, l) { return all.concat(l); }, []);
-        _pushRegistered = subs.some(function(s) {
+        var found = subs.some(function(s) {
           return s && s.callbackAuthType && s.callbackAuthType !== 'NONE';
         });
+
+        // "Not registered" is only safe to conclude when EVERY collection
+        // answered. A member's subscription lives in exactly one of them, so a
+        // version that did not answer is a place the subscription may be
+        // sitting. Concluding not-registered from a partial view promotes the
+        // poller to primary, which is the duplicate-inbound-ticket condition
+        // this whole change exists to remove: today an unmigrated member has
+        // their subscription in v1 while v2 answers [], so a single transient
+        // failure on the v1 call would have been enough to trigger it.
+        //
+        // So anything short of a complete answer fails CLOSED: assume push IS
+        // registered and leave the poller a fallback. The two errors are not
+        // symmetric. A missed inbound is recoverable, and not only by hand —
+        // the poller still backfills it once PUSH_FALLBACK_GRACE_MS passes. A
+        // duplicate ticket is member-visible and reaches the partner.
+        _pushRegistered = found || !complete;
+
         console.log('[TSANet BG] ZIS push registered: ' + _pushRegistered +
-                    ' (checked ' + reachable.length + ' of 2 API versions, ' +
-                    subs.length + ' subscription(s); poller is ' +
-                    (_pushRegistered ? 'fallback' : 'primary') + ')');
+                    ' (' + reachable.length + ' of ' + lists.length +
+                    ' API versions answered, ' + subs.length + ' subscription(s)' +
+                    (!found && !complete ? ', incomplete so assuming registered' : '') +
+                    '; poller is ' + (_pushRegistered ? 'fallback' : 'primary') + ')');
       });
 
       // Run immediately on startup, then on POLL_INTERVAL_MS
