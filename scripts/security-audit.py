@@ -479,47 +479,89 @@ def _sunset_urgency(dates, today=None):
     return min(remaining) if remaining else None
 
 
-def _baseurl_default(body):
-    """The API version a file's baseUrl() falls back to, or None if unreadable.
+# Every way this codebase could declare baseUrl. Keyed on the shape of a
+# declaration rather than on one literal, for the same reason the fallback
+# below is parsed rather than pattern-matched: the first version of this fixed
+# the spelling of the DEFAULT and left the spelling of the DECLARATION matched
+# against `function baseUrl(`, so an arrow-function rewrite turned the gate off
+# and the assertion meant to catch that reported PASS (#163 review).
+BASEURL_DECL = re.compile(
+    r"(?:function\s+baseUrl\s*\("
+    r"|\bbaseUrl\s*=\s*(?:async\s+)?(?:function\s*\*?\s*\(|\([^)]*\)\s*=>|[\w$]+\s*=>))"
+)
 
-    Read out of the function body rather than off one spelling of the fallback.
-    The rule this replaces matched the literal text `|| 'v1'`, so rewriting it
-    as `(version ? version : 'v1')` or `(version ?? 'v1')` — same meaning, same
-    default — turned needs_v1_base off and made every relative v1 call in the
-    file invisible. Same blindness tsanetgit/Zendesk_App#148 was written to fix,
-    one refactor away (tsanetgit/Zendesk_App#158).
 
-    Returns None when the file has no baseUrl() at all, and also when it has one
-    whose default cannot be read. The caller treats those differently: no
-    baseUrl is ordinary, an unreadable one is a finding, because a gate that
-    cannot see its own anchor is not gating.
+def _baseurl_span(body):
+    """(start, end) of a baseUrl declaration including its parameter list.
+
+    The span starts at the declaration and ends at the close of its body, so
+    the caller reads the parameter list AND the body. Reading only the body
+    missed `function baseUrl(version = 'v1')`, which is the most idiomatic
+    modern spelling of this exact default and reported as unreadable while
+    sitting in plain sight (#163 review).
+
+    The parameter list is paren-matched before the body brace is located, so a
+    destructured parameter (`function baseUrl({ version } = {})`) does not put
+    the scan inside the wrong braces.
     """
-    i = body.find("function baseUrl(")
-    if i < 0:
+    m = BASEURL_DECL.search(body)
+    if not m:
         return None
-    open_brace = body.find("{", i)
+    cursor = m.start()
+    paren = body.find("(", cursor)
+    brace = body.find("{", cursor)
+    if paren != -1 and (brace == -1 or paren < brace):
+        depth = 0
+        for k in range(paren, len(body)):
+            if body[k] == "(":
+                depth += 1
+            elif body[k] == ")":
+                depth -= 1
+                if depth == 0:
+                    cursor = k
+                    break
+        else:
+            return None
+    open_brace = body.find("{", cursor)
     if open_brace < 0:
         return None
     depth = 0
-    end = None
     for k in range(open_brace, len(body)):
         if body[k] == "{":
             depth += 1
         elif body[k] == "}":
             depth -= 1
             if depth == 0:
-                end = k
-                break
-    if end is None:
+                return m.start(), k
+    return None
+
+
+def _baseurl_default(body):
+    """The API version a file's baseUrl() falls back to, or None if unreadable.
+
+    Read out of the declaration rather than off one spelling of the fallback.
+    The rule this replaces matched the literal text `|| 'v1'`, so rewriting it
+    as `(version ? version : 'v1')` or `(version ?? 'v1')` — same meaning, same
+    default — turned needs_v1_base off and made every relative v1 call in the
+    file invisible. Same blindness tsanetgit/Zendesk_App#148 was written to fix,
+    one refactor away (tsanetgit/Zendesk_App#158).
+
+    Returns None when the file has no baseUrl at all, and also when it has one
+    whose default cannot be read. The caller treats those differently: no
+    baseUrl is ordinary, an unreadable one is a finding, because a gate that
+    cannot see its own anchor is not gating.
+    """
+    span = _baseurl_span(body)
+    if span is None:
         return None
     # A quoted bare version token. The host literals in the same body are not
     # matched, because a quote has to sit immediately before the `v`.
-    m = re.search(r"""['"`](v\d+)['"`]""", body[open_brace:end])
+    m = re.search(r"""['"`](v\d+)['"`]""", body[span[0]:span[1]])
     return m.group(1) if m else None
 
 
 def _has_baseurl(body):
-    return "function baseUrl(" in body
+    return BASEURL_DECL.search(body) is not None
 
 
 def _matches_unmarked(lines, pat, key, date, used=None, marked=None, today=None):
