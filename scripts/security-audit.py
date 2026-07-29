@@ -446,7 +446,7 @@ SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 # date, which is why the date group is optional here and required below.
 ALLOW_MARKER = re.compile(
     r"(?:(?<!:)//|#|/\*|<!--)[^\n]*?audit-allow:\s*([\w.-]+)"
-    r"(?:\s+until\s+(\d{4}-\d{2}-\d{2}))?"
+    r"(?:\s+until\s+(\d{4}-\d{2}-\d{2})(?!\d))?"
 )
 
 
@@ -615,7 +615,8 @@ def check_deprecated_endpoints(root, today=None):
     hit_dates = []
     stale_markers = []
     bad_markers = []      # undated or expired: they excuse nothing
-    still_marked = []     # excused, but the call is still in the tree
+    still_marked = []     # excused, and the call is still in the tree
+    superseded = []       # marked, but the escalation window withdrew the excuse
     marked_dates = []
     for base, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in (".git", "dist", "node_modules")]
@@ -643,20 +644,43 @@ def check_deprecated_endpoints(root, today=None):
                 marked = []
                 unmarked = _matches_unmarked(
                     lines, pat, key, date, used, marked, today)
+                now = today or datetime.date.today()
                 for lineno, mkey, until in marked:
                     if not until:
                         bad_markers.append(
                             f"{rel}:{lineno}: audit-allow: {mkey} has no "
                             f"`until <YYYY-MM-DD>` expiry, so it excuses nothing")
-                    elif datetime.date.fromisoformat(until) < (
-                            today or datetime.date.today()):
+                        continue
+                    # ALLOW_MARKER only checks the SHAPE of the date, so an
+                    # ordinary typo like 2026-02-30 reaches this parse. Left
+                    # unguarded it raised out of the whole audit: exit 3, no
+                    # finding, no file, no line, and the other checks never ran.
+                    # _excuses already guarded the same call; this caller did
+                    # not (#159 review).
+                    try:
+                        expires = datetime.date.fromisoformat(until)
+                    except ValueError:
+                        bad_markers.append(
+                            f"{rel}:{lineno}: audit-allow: {mkey} has an expiry "
+                            f"of {until!r}, which is the right shape but not a "
+                            f"real date, so it excuses nothing")
+                        continue
+                    if expires < now:
                         bad_markers.append(
                             f"{rel}:{lineno}: audit-allow: {mkey} expired {until}")
-                    else:
-                        still_marked.append(
-                            f"{rel}:{lineno}: {label} (deliberate until {until}, "
-                            f"sunset {date}, use {repl})")
-                        marked_dates.append(date)
+                        continue
+                    # A marker inside the escalation window has stopped
+                    # excusing (condition 6), so its call is already a finding
+                    # below. Reporting it here as "deliberate" too would put two
+                    # lines about one call in the same run saying opposite
+                    # things (#159 review).
+                    if (datetime.date.fromisoformat(date) - now).days <= SUNSET_FAIL_WITHIN_DAYS:
+                        superseded.append(f"{rel}:{lineno}: audit-allow: {mkey}")
+                        continue
+                    still_marked.append(
+                        f"{rel}:{lineno}: {label} (deliberate until {until}, "
+                        f"sunset {date}, use {repl})")
+                    marked_dates.append(date)
                 if unmarked:
                     found.append(f"{rel}: {label} (sunset {date}, use {repl})")
                     hit_dates.append(date)
@@ -692,12 +716,19 @@ def check_deprecated_endpoints(root, today=None):
     # REPORTED. #151: without this the suite returned PASS at exit 0 with a
     # live v1 call in the shipped bundle, because the marked call left both
     # `found` and `hit_dates`.
-    if still_marked:
-        days = _sunset_urgency(marked_dates, today)
-        record("WARN", "no deliberate sunsetting calls remain",
-               f"{len(still_marked)} deliberate call(s) still in the tree, "
-               f"nearest sunset in {days} days: " + "; ".join(sorted(set(still_marked))),
-               cat)
+    if still_marked or superseded:
+        parts = []
+        if still_marked:
+            days = _sunset_urgency(marked_dates, today)
+            parts.append(
+                f"{len(still_marked)} deliberate call(s) still in the tree, "
+                f"nearest sunset in {days} days: " + "; ".join(sorted(set(still_marked))))
+        if superseded:
+            parts.append(
+                f"{len(superseded)} marker(s) no longer excusing, because the sunset "
+                f"is within {SUNSET_FAIL_WITHIN_DAYS} days; those calls are reported "
+                f"as findings rather than as deliberate: " + "; ".join(sorted(set(superseded))))
+        record("WARN", "no deliberate sunsetting calls remain", " | ".join(parts), cat)
     else:
         record("PASS", "no deliberate sunsetting calls remain",
                "no audit-allow-marked calls in the tree", cat)
