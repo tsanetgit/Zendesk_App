@@ -86,9 +86,14 @@
       // migration in tsanetgit/Zendesk_App#101. Do not read the fail-closed
       // behaviour below as covering the sunset; it is what produces this.
       Promise.all([
-        // Deliberate for the #101 transition: this call is expected to fail
-        // after 2027-01-01, and the v2 one below answers in its place.
-        tsanetGet('/webhooks').catch(function() { return null; }), // audit-allow: v1-webhooks until 2027-01-01
+        // Deliberate for the #101 transition, and it does NOT survive the
+        // sunset. An earlier comment here said the v2 call "answers in its
+        // place" once v1 is gone; that is false, and the block below says so
+        // fifteen lines up. Once v1 is removed `complete` is permanently false,
+        // so `found || !complete` is constant true and the v2 answer is
+        // discarded rather than used. Deleting this call is what ends it, and
+        // that is tsanetgit/Zendesk_App#153.
+        tsanetGet('/webhooks').catch(function() { return null; }), // audit-degrades: v1-webhooks until 2027-01-01 tracked-by tsanetgit/Zendesk_App#153
         tsanetGet('/webhooks', 'v2').catch(function() { return null; })
       ]).then(function(lists) {
         var reachable = lists.filter(function(l) { return Array.isArray(l); });
