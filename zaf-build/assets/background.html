@@ -64,32 +64,61 @@
 
       // One-time check: is ZIS push (an authenticated webhook) registered? If so,
       // the poller becomes a fallback that defers ticket creation to push (#30).
-      tsanetGet('/webhooks').then(function(subs) {
-        _pushRegistered = Array.isArray(subs) && subs.some(function(s) {
+      //
+      // BOTH collections are asked, because v1 and v2 webhook subscriptions are
+      // separate: probed on BETA 2026-07-28, GET /v1/webhooks listed the live
+      // subscription (id 55, BASIC, V1) while GET /v2/webhooks returned []. A
+      // member is on one or the other depending on whether they have been
+      // migrated (tsanetgit/Zendesk_App#101), and asking only v2 today would
+      // report push-not-registered for every existing install.
+      //
+      // The 2027-01-01 sunset is NOT handled here. Once GET /v1/webhooks is
+      // removed its call rejects on every run, so `complete` is never true and
+      // the predicate below collapses to a constant: EVERY install reads as
+      // push-registered, migrated or not. The poller stays a fallback for
+      // everyone, including members with no working push at all, whose inbound
+      // tickets then take the PUSH_FALLBACK_GRACE_MS path indefinitely.
+      // Nothing is lost, because the fallback still backfills, but nothing
+      // recovers either: there is no exit from that state without a code
+      // change.
+      //
+      // Deleting the v1 call is what ends it, and that belongs with the member
+      // migration in tsanetgit/Zendesk_App#101. Do not read the fail-closed
+      // behaviour below as covering the sunset; it is what produces this.
+      Promise.all([
+        // Deliberate for the #101 transition: this call is expected to fail
+        // after 2027-01-01, and the v2 one below answers in its place.
+        tsanetGet('/webhooks').catch(function() { return null; }), // audit-allow: v1-webhooks
+        tsanetGet('/webhooks', 'v2').catch(function() { return null; })
+      ]).then(function(lists) {
+        var reachable = lists.filter(function(l) { return Array.isArray(l); });
+        var complete  = reachable.length === lists.length;
+        var subs = reachable.reduce(function(all, l) { return all.concat(l); }, []);
+        var found = subs.some(function(s) {
           return s && s.callbackAuthType && s.callbackAuthType !== 'NONE';
         });
+
+        // "Not registered" is only safe to conclude when EVERY collection
+        // answered. A member's subscription lives in exactly one of them, so a
+        // version that did not answer is a place the subscription may be
+        // sitting. Concluding not-registered from a partial view promotes the
+        // poller to primary, which is the duplicate-inbound-ticket condition
+        // this whole change exists to remove: today an unmigrated member has
+        // their subscription in v1 while v2 answers [], so a single transient
+        // failure on the v1 call would have been enough to trigger it.
+        //
+        // So anything short of a complete answer fails CLOSED: assume push IS
+        // registered and leave the poller a fallback. The two errors are not
+        // symmetric. A missed inbound is recoverable, and not only by hand —
+        // the poller still backfills it once PUSH_FALLBACK_GRACE_MS passes. A
+        // duplicate ticket is member-visible and reaches the partner.
+        _pushRegistered = found || !complete;
+
         console.log('[TSANet BG] ZIS push registered: ' + _pushRegistered +
-                    ' (poller is ' + (_pushRegistered ? 'fallback' : 'primary') + ')');
-      }).catch(function() {
-        // Fail CLOSED: assume push IS registered when we cannot tell.
-        //
-        // This used to set false, which promotes the poller from fallback to
-        // primary — so on an install where push works, a transient failure
-        // here produced duplicate inbound tickets. The two errors are not
-        // symmetric: a missed inbound is recoverable (an agent clicks Sync
-        // Now, and the next poll picks it up once this probe succeeds), while
-        // a duplicate ticket is member-visible and reaches the partner.
-        //
-        // This matters more after 2027-01-01, when GET /v1/webhooks is
-        // removed and this probe fails permanently until it moves to v2.
-        // That move is deliberately NOT in this change: v1 and v2
-        // subscriptions are separate collections (probed on BETA 2026-07-28 —
-        // v1 listed the live subscription, v2 returned []), so switching
-        // before tsanetgit/Zendesk_App#101 migrates members would report
-        // push-not-registered for every existing install.
-        _pushRegistered = true;
-        console.log('[TSANet BG] push-registration probe failed — assuming ' +
-                    'push IS registered so the poller stays a fallback');
+                    ' (' + reachable.length + ' of ' + lists.length +
+                    ' API versions answered, ' + subs.length + ' subscription(s)' +
+                    (!found && !complete ? ', incomplete so assuming registered' : '') +
+                    '; poller is ' + (_pushRegistered ? 'fallback' : 'primary') + ')');
       });
 
       // Run immediately on startup, then on POLL_INTERVAL_MS

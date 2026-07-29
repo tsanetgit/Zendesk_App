@@ -389,6 +389,46 @@ SUNSET_FAIL_WITHIN_DAYS = 90
 # extend it whenever the bundle grows a new extension.
 SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 
+# How a call to a sunsetting endpoint declares that it is deliberate:
+#
+#     tsanetGet('/webhooks')   // audit-allow: v1-webhooks
+#
+# Every use is a claim that the call survives its sunset, reviewable in the
+# diff that adds it because it sits on the call rather than in a list
+# somewhere else. Four conditions keep it from becoming a way to quiet the
+# check, and each exists because the marker was found to over-clear without it:
+#
+#   1. It is read only on the line the call starts on.
+#   2. It must NAME the entry it excuses, so a marker granted for one endpoint
+#      does not cover a different sunsetting call sharing the line.
+#   3. It must sit in a COMMENT and BEGIN AFTER the call it excuses. The token
+#      inside a string literal, or in prose ahead of the call, is not a grant.
+#   4. It excuses a line carrying exactly ONE matching call. Two calls and one
+#      marker means the second was never granted anything, so the line flags;
+#      put the second call on its own line and mark it too if it is deliberate.
+#
+# Condition 3's comment openers cover the scanned languages except JSON, which
+# has no comment syntax and therefore cannot carry a marker. Nothing in a
+# scanned .json needs one today; if that changes, this is the line to revisit.
+#
+# `//` is qualified with (?<!:) so the one inside `https://` does not read as a
+# comment opener. Without it, a deliberate ABSOLUTE v1 call could not be marked
+# at all: the opener matched at the scheme, so the marker's start landed before
+# the call rather than after it, and the line emitted two contradictory
+# warnings — "this marker excused nothing" and "this call is unmarked" — with
+# no edit that satisfied both.
+#
+# That is a heuristic, not a parse. Whether a position is inside a comment is
+# not decidable by regex, and the same collision exists in principle for a `#`
+# in a URL fragment or a `/*` inside a string. Both fail CLOSED, the way this
+# one did, so they cost a false flag rather than an unearned clear. Neither is
+# reachable in the tree today, and neither is patched on speculation.
+#
+# Markers that excused nothing are reported by check_deprecated_endpoints
+# rather than ignored, so a typo'd key or one left behind by a call that moved
+# surfaces instead of sitting there looking like protection.
+ALLOW_MARKER = re.compile(r"(?:(?<!:)//|#|/\*|<!--)[^\n]*?audit-allow:\s*([\w.-]+)")
+
 
 def _sunset_urgency(dates, today=None):
     """Days until the nearest sunset in `dates`, or None if there are none.
@@ -399,6 +439,61 @@ def _sunset_urgency(dates, today=None):
     today = today or datetime.date.today()
     remaining = [(datetime.date.fromisoformat(d) - today).days for d in dates]
     return min(remaining) if remaining else None
+
+
+def _matches_unmarked(lines, pat, key, used=None):
+    """True when `pat` hits a call site that no `audit-allow: <key>` excuses.
+
+    Matching is per call site rather than per file, so a marker clears the call
+    it sits on and nothing else. `used` collects the (line, column) of every
+    marker that actually excused something, which is how the caller reports the
+    ones that excused nothing.
+
+    Two details make the per-line approach workable:
+
+    - The search runs against a two-line window, because a call can wrap and
+      put its version argument on the next physical line:
+
+          tsanetGet('/webhooks',
+                    'v2')
+
+      Judged one line at a time, the lookahead cannot see the `'v2'` and a
+      correctly migrated call reads as the deprecated form. The predictable
+      response to that false flag is to add a marker, which would assert the
+      call is a deliberate v1 one when it is not.
+
+      One window is enough for how these calls are actually written, including
+      a call opened on its own line, because the path and the version argument
+      still land on adjacent lines. What still misreads is a version argument
+      two or more lines below its path, which no signature here produces.
+    - A match must START on the line being judged, so each call is considered
+      once, and the marker is read from that line only. A marker on the
+      following line belongs to whatever sits there.
+
+    Every line is walked even after a hit, rather than returning early, so that
+    markers further down the file are still credited as used.
+    """
+    hit = False
+    for i, ln in enumerate(lines):
+        window = ln if i + 1 >= len(lines) else ln + "\n" + lines[i + 1]
+        starts_here = [m for m in re.finditer(pat, window) if m.start() < len(ln)]
+        if not starts_here:
+            continue
+        # One marker excuses one call. With two matching calls on a line the
+        # marker was granted for at most one of them, and which one is not
+        # knowable, so the line flags and the author splits it.
+        excuse = None
+        if len(starts_here) == 1:
+            for mk in ALLOW_MARKER.finditer(ln):
+                if mk.group(1) == key and mk.start() >= starts_here[0].end():
+                    excuse = mk
+                    break
+        if excuse is not None:
+            if used is not None:
+                used.add((i, excuse.start()))
+            continue
+        hit = True
+    return hit
 
 
 def check_deprecated_endpoints(root, today=None):
@@ -426,16 +521,49 @@ def check_deprecated_endpoints(root, today=None):
     # v1 call would not have been flagged. Demonstrated by injecting one and
     # watching the check pass, which is the only reason it was caught.
     v1_base = r"""connect2\.tsanet\.(?:net|org)/v1|\|\|\s*['"]v1['"]"""
+    # (pattern, needs_v1_base, key, label, sunset, replacement)
+    #
+    # `key` is the name an audit-allow marker must use to excuse this entry.
+    # The two webhook entries share one key on purpose: they are two spellings
+    # of the same endpoint, so one marker covers the call however it is written.
+    #
+    # A deliberate v1 call declares itself on its own line. It is not inferred
+    # from a v2 call elsewhere in the file: the probe below asks v1 AND v2 and
+    # unions the results, and a file-scoped rule reading "this file has a v2
+    # webhooks call, so its v1 webhooks calls are fine" would hide a NEW v1-only
+    # call added to that file later.
     deprecated = [
-        (r"/collaboration-requests\?", True, "GET /v1/collaboration-requests (list)",
+        (r"/collaboration-requests\?", True, "v1-collaboration-list",
+         "GET /v1/collaboration-requests (list)",
          "2027-01-01", "GET /v2/collaboration-requests"),
-        (r"""['"]/webhooks['"]""", True, "v1 webhook registration/list",
-         "2027-01-01", "/v2/webhooks"),
-        (r"/v1/webhooks", False, "v1 webhook registration/list",
-         "2027-01-01", "/v2/webhooks"),
+        # The lookahead is what makes a relative path readable as versioned:
+        # tsanetGet('/webhooks') resolves to v1 through baseUrl's default and
+        # counts, tsanetGet('/webhooks', 'v2') names its version and does not.
+        # Without it the migrated call matches its own replacement pattern.
+        #
+        # The quote class includes the backtick because these are .js and .html
+        # files, where a backtick is a template literal and tsanetGet(`/webhooks`)
+        # is an ordinary call. Omitting it left that form invisible to the scan.
+        (r"""['"`]/webhooks['"`](?!\s*,\s*['"`]v2['"`])""", True, "v1-webhooks",
+         "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
+        # A URL expression joins the path to something without a space
+        # (f"{ts}/v1/webhooks", "https://host/v1/webhooks"); prose puts a space
+        # in front of it ("GET /v1/webhooks returned ..."). That is a shape
+        # rule, not a wording rule, which is why comments naming the endpoint
+        # do not flag the file that calls it. Comments are NOT skipped
+        # wholesale, because commented-out code is worth flagging and a
+        # commented-out call keeps its call shape.
+        #
+        # A backtick is deliberately NOT excluded here. It was, to spare prose
+        # written as `/v1/webhooks`, and that also excused fetch(`/v1/webhooks`)
+        # — real code, silently unscanned. Backticked prose flagging is the
+        # cheaper mistake of the two, and nothing in the tree writes it.
+        (r"(?<!\s)/v1/webhooks", False, "v1-webhooks",
+         "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
     ]
     found = []
     hit_dates = []
+    stale_markers = []
     for base, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if d not in (".git", "dist", "node_modules")]
         for fn in files:
@@ -454,12 +582,31 @@ def check_deprecated_endpoints(root, today=None):
             except OSError:
                 continue
             on_v1_base = re.search(v1_base, body) is not None
-            for pat, needs_v1_base, label, date, repl in deprecated:
+            lines = body.splitlines()
+            used = set()
+            for pat, needs_v1_base, key, label, date, repl in deprecated:
                 if needs_v1_base and not on_v1_base:
                     continue
-                if re.search(pat, body):
+                if _matches_unmarked(lines, pat, key, used):
                     found.append(f"{rel}: {label} (sunset {date}, use {repl})")
                     hit_dates.append(date)
+            # A marker that excused nothing is not harmless. It reads in review
+            # as a considered exemption while protecting nothing, and it is what
+            # a typo'd key or a call that moved leaves behind.
+            for i, ln in enumerate(lines):
+                for mk in ALLOW_MARKER.finditer(ln):
+                    if (i, mk.start()) not in used:
+                        stale_markers.append(
+                            f"{rel}:{i + 1}: audit-allow: {mk.group(1)}")
+
+    if stale_markers:
+        record("WARN", "every audit-allow marker excuses a real call",
+               "marker excused nothing — stale, misspelled key, or the call it "
+               "named has moved: " + "; ".join(sorted(set(stale_markers))), cat)
+    else:
+        record("PASS", "every audit-allow marker excuses a real call",
+               "no unused audit-allow markers", cat)
+
     if not found:
         record("PASS", "no calls to sunsetting endpoints",
                "no known-deprecated endpoint usage found", cat)
