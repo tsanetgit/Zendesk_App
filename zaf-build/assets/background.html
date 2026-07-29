@@ -72,11 +72,19 @@
       // migrated (tsanetgit/Zendesk_App#101), and asking only v2 today would
       // report push-not-registered for every existing install.
       //
-      // This is also what makes the 2027-01-01 sunset a non-event here. After
-      // it, the v1 call fails and the v2 call answers: a member who migrated
-      // shows registered, and a member who did not shows unregistered — which
-      // is correct, because their v1 subscription is dead and push really has
-      // stopped for them.
+      // The 2027-01-01 sunset is NOT handled here. Once GET /v1/webhooks is
+      // removed its call rejects on every run, so `complete` is never true and
+      // the predicate below collapses to a constant: EVERY install reads as
+      // push-registered, migrated or not. The poller stays a fallback for
+      // everyone, including members with no working push at all, whose inbound
+      // tickets then take the PUSH_FALLBACK_GRACE_MS path indefinitely.
+      // Nothing is lost, because the fallback still backfills, but nothing
+      // recovers either: there is no exit from that state without a code
+      // change.
+      //
+      // Deleting the v1 call is what ends it, and that belongs with the member
+      // migration in tsanetgit/Zendesk_App#101. Do not read the fail-closed
+      // behaviour below as covering the sunset; it is what produces this.
       Promise.all([
         // Deliberate for the #101 transition: this call is expected to fail
         // after 2027-01-01, and the v2 one below answers in its place.
