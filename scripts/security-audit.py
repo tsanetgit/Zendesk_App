@@ -479,6 +479,91 @@ def _sunset_urgency(dates, today=None):
     return min(remaining) if remaining else None
 
 
+# Every way this codebase could declare baseUrl. Keyed on the shape of a
+# declaration rather than on one literal, for the same reason the fallback
+# below is parsed rather than pattern-matched: the first version of this fixed
+# the spelling of the DEFAULT and left the spelling of the DECLARATION matched
+# against `function baseUrl(`, so an arrow-function rewrite turned the gate off
+# and the assertion meant to catch that reported PASS (#163 review).
+BASEURL_DECL = re.compile(
+    r"(?:function\s+baseUrl\s*\("
+    r"|\bbaseUrl\s*=\s*(?:async\s+)?(?:function\s*\*?\s*\(|\([^)]*\)\s*=>|[\w$]+\s*=>))"
+)
+
+
+def _baseurl_span(body):
+    """(start, end) of a baseUrl declaration including its parameter list.
+
+    The span starts at the declaration and ends at the close of its body, so
+    the caller reads the parameter list AND the body. Reading only the body
+    missed `function baseUrl(version = 'v1')`, which is the most idiomatic
+    modern spelling of this exact default and reported as unreadable while
+    sitting in plain sight (#163 review).
+
+    The parameter list is paren-matched before the body brace is located, so a
+    destructured parameter (`function baseUrl({ version } = {})`) does not put
+    the scan inside the wrong braces.
+    """
+    m = BASEURL_DECL.search(body)
+    if not m:
+        return None
+    cursor = m.start()
+    paren = body.find("(", cursor)
+    brace = body.find("{", cursor)
+    if paren != -1 and (brace == -1 or paren < brace):
+        depth = 0
+        for k in range(paren, len(body)):
+            if body[k] == "(":
+                depth += 1
+            elif body[k] == ")":
+                depth -= 1
+                if depth == 0:
+                    cursor = k
+                    break
+        else:
+            return None
+    open_brace = body.find("{", cursor)
+    if open_brace < 0:
+        return None
+    depth = 0
+    for k in range(open_brace, len(body)):
+        if body[k] == "{":
+            depth += 1
+        elif body[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return m.start(), k
+    return None
+
+
+def _baseurl_default(body):
+    """The API version a file's baseUrl() falls back to, or None if unreadable.
+
+    Read out of the declaration rather than off one spelling of the fallback.
+    The rule this replaces matched the literal text `|| 'v1'`, so rewriting it
+    as `(version ? version : 'v1')` or `(version ?? 'v1')` — same meaning, same
+    default — turned needs_v1_base off and made every relative v1 call in the
+    file invisible. Same blindness tsanetgit/Zendesk_App#148 was written to fix,
+    one refactor away (tsanetgit/Zendesk_App#158).
+
+    Returns None when the file has no baseUrl at all, and also when it has one
+    whose default cannot be read. The caller treats those differently: no
+    baseUrl is ordinary, an unreadable one is a finding, because a gate that
+    cannot see its own anchor is not gating.
+    """
+    span = _baseurl_span(body)
+    if span is None:
+        return None
+    # A quoted bare version token. The host literals in the same body are not
+    # matched, because a quote has to sit immediately before the `v`.
+    m = re.search(r"""['"`](v\d+)['"`]""", body[span[0]:span[1]])
+    return m.group(1) if m else None
+
+
+def _has_baseurl(body):
+    return BASEURL_DECL.search(body) is not None
+
+
 def _matches_unmarked(lines, pat, key, date, used=None, marked=None, today=None):
     """True when `pat` hits a call site that no `audit-allow: <key>` excuses.
 
@@ -634,6 +719,7 @@ def check_deprecated_endpoints(root, today=None):
     ]
     found = []
     hit_dates = []
+    unreadable_anchor = []
     stale_markers = []
     bad_markers = []      # undated or expired: they excuse nothing
     still_marked = []     # excused, and the call is still in the tree
@@ -657,7 +743,14 @@ def check_deprecated_endpoints(root, today=None):
                 body = read(root, rel)
             except OSError:
                 continue
-            on_v1_base = re.search(v1_base, body) is not None
+            # Two readings, because either alone has a hole. The regex catches
+            # the old inline-host shape ('https://connect2.tsanet.net/v1'); the
+            # parsed default catches every spelling of the parameterised one.
+            default = _baseurl_default(body)
+            on_v1_base = re.search(v1_base, body) is not None or default == "v1"
+            if (rel.startswith("zaf-build" + os.sep) and _has_baseurl(body)
+                    and default is None and not on_v1_base):
+                unreadable_anchor.append(rel)
             lines = body.splitlines()
             used = set()
             for pat, needs_v1_base, key, label, date, repl in deprecated:
@@ -740,6 +833,19 @@ def check_deprecated_endpoints(root, today=None):
                     if (i, mk.start()) not in used:
                         stale_markers.append(
                             f"{rel}:{i + 1}: audit-allow: {mk.group(1)}")
+
+    # Assert the anchor rather than inferring it. needs_v1_base decides whether
+    # a relative path counts as a v1 call, so a baseUrl() whose default cannot
+    # be read silently switches that gating off for the whole file and every
+    # relative v1 call in it goes unreported (tsanetgit/Zendesk_App#158).
+    if unreadable_anchor:
+        record("FAIL", "the v1-base anchor is readable in every bundle file",
+               "baseUrl() present but its default version could not be read, so "
+               "relative-path deprecation checks are silently disabled for: "
+               + "; ".join(sorted(set(unreadable_anchor))), cat)
+    else:
+        record("PASS", "the v1-base anchor is readable in every bundle file",
+               "every bundle baseUrl() declares a readable default version", cat)
 
     if stale_markers:
         record("WARN", "every audit-allow marker excuses a real call",
