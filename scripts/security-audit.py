@@ -457,14 +457,25 @@ SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 # `found || !complete` collapses to a constant once it does, so the v2 answer is
 # discarded rather than used in its place. A marker whose contract reads "every
 # use is a claim that the call survives its sunset" cannot honestly cover that.
+# NAMED groups, not numbered. #162 added the `kind` group and renumbered every
+# group after it; four of the five consumers were updated and line 835 was not,
+# so the stale-marker WARN reported the marker's KIND where it meant its KEY, on
+# a check whose whole purpose is naming a typo'd key (#168). A numbered group is
+# a positional contract whose consumers scatter away from the edit, and the
+# comment that documented the numbering here went stale in the same commit: it
+# still said "group 2 is a well-formed date" after the date had become group 3.
+#
+# `mk.group('key')` cannot silently become the kind, so this deletes the class
+# rather than fixing this instance of it. Names also make the comment redundant,
+# which is the point: the numbering no longer has to be documented to be read.
+#
+# `malformed` catches whatever else was written after `until`, so a malformed
+# expiry is reported as one instead of collapsing into "no expiry" on a line that
+# visibly says `until` (#159 review).
 ALLOW_MARKER = re.compile(
-    r"(?:(?<!:)//|#|/\*|<!--)[^\n]*?audit-(allow|degrades):\s*([\w.-]+)"
-    # Group 2 is a well-formed date; group 3 catches whatever else was
-    # written after `until`, so a malformed expiry can be reported as one
-    # instead of collapsing into "no expiry" on a line that visibly says
-    # `until` (#159 review).
-    r"(?:\s+until\s+(?:(\d{4}-\d{2}-\d{2})(?!\d)|(\S+)))?"
-    r"(?:\s+tracked-by\s+(\S+))?"
+    r"(?:(?<!:)//|#|/\*|<!--)[^\n]*?audit-(?P<kind>allow|degrades):\s*(?P<key>[\w.-]+)"
+    r"(?:\s+until\s+(?:(?P<date>\d{4}-\d{2}-\d{2})(?!\d)|(?P<malformed>\S+)))?"
+    r"(?:\s+tracked-by\s+(?P<tracker>\S+))?"
 )
 
 
@@ -610,7 +621,7 @@ def _matches_unmarked(lines, pat, key, date, used=None, marked=None, today=None)
         excuse = None
         if len(starts_here) == 1:
             for mk in ALLOW_MARKER.finditer(ln):
-                if mk.group(2) == key and mk.start() >= starts_here[0].end():
+                if mk.group("key") == key and mk.start() >= starts_here[0].end():
                     excuse = mk
                     break
         if excuse is not None:
@@ -621,8 +632,9 @@ def _matches_unmarked(lines, pat, key, date, used=None, marked=None, today=None)
             if used is not None:
                 used.add((i, excuse.start()))
             if marked is not None:
-                marked.append((i + 1, excuse.group(1), excuse.group(2),
-                               excuse.group(3), excuse.group(4), excuse.group(5)))
+                marked.append((i + 1, excuse.group("kind"), excuse.group("key"),
+                               excuse.group("date"), excuse.group("malformed"),
+                               excuse.group("tracker")))
             if _excuses(excuse, key, date, today):
                 continue
         hit = True
@@ -639,17 +651,145 @@ def _excuses(marker, key, sunset, today=None):
     """
     # Only audit-allow clears. audit-degrades is an annotation: it says the call
     # is deliberate AND that it does not survive, so the call keeps reporting.
-    if marker.group(1) != "allow" or marker.group(2) != key or not marker.group(3):
+    if (marker.group("kind") != "allow" or marker.group("key") != key
+            or not marker.group("date")):
         return False
     today = today or datetime.date.today()
     try:
-        until = datetime.date.fromisoformat(marker.group(3))
+        until = datetime.date.fromisoformat(marker.group("date"))
     except ValueError:
         return False
     if until < today:
         return False
     days = (datetime.date.fromisoformat(sunset) - today).days
     return days > SUNSET_FAIL_WITHIN_DAYS
+
+
+# The bundle has no module system: main.js and background.html each carry their
+# own copy of the helpers they share. Some copies are contractually identical and
+# some legitimately diverge, and the difference has to be recorded somewhere a
+# machine reads. A comment cannot do it: addTicketTag shipped in #167 with the
+# comment "Keep them identical; the two files have already drifted once on a
+# shared helper's argument order", which is an acknowledged hazard controlled by
+# prose (#168, Coder defect pattern 7).
+#
+# Classified rather than allowlisted. Every name defined in BOTH files must appear
+# here, so a NEW duplicated helper fails until someone decides which class it is
+# in; an allowlist of names to compare would only ever check the ones already
+# thought of, which is how this class keeps reopening.
+SHARED_HELPERS = {
+    # name: (must_match, why)
+    "addTicketTag": (True, "one tag-write contract; drift is how #165 came back"),
+    "baseUrl": (True, "the v1-base anchor is read out of this, per #158/#163"),
+    "getJwt": (False, "main.js surfaces login failure in the sidebar UI, "
+                      "background.html logs it"),
+    "tsanetGet": (False, "same signature since #161, but main.js reports errors "
+                         "to the agent and background.html to the console"),
+}
+SHARED_HELPER_FILES = ("zaf-build/assets/main.js", "zaf-build/assets/background.html")
+# If the extractor finds nothing it must FAIL, not pass. An empty intersection
+# would otherwise satisfy every comparison vacuously — the same
+# wrong-but-well-formed failure #160 records for a PASS line that reads
+# "nothing found" while something is in the tree.
+SHARED_HELPER_SENTINEL = "addTicketTag"
+
+
+def _js_functions(text):
+    """Map `function name(...) {...}` to its source span, brace-matched.
+
+    Deliberately only handles the declaration form the bundle actually uses. A
+    helper written as an arrow assignment would not be found, which is why the
+    sentinel below exists: the check reports its own blindness instead of
+    reporting clean.
+    """
+    out = {}
+    for m in re.finditer(r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\(", text):
+        open_brace = text.find("{", m.end() - 1)
+        if open_brace < 0:
+            continue
+        depth = 0
+        for j in range(open_brace, len(text)):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    out[m.group(1)] = text[m.start():j + 1]
+                    break
+    return out
+
+
+def _norm_js(src):
+    """Compare behaviour, not layout: strip comments, collapse whitespace.
+
+    `(?<!:)` on the line-comment branch for the same reason ALLOW_MARKER carries
+    it: without it the `//` in a URL literal starts a "comment" that swallows the
+    rest of the line. Probed on this tree before the guard was added, changing
+    `https://connect2.tsanet.org` to another host in one copy of baseUrl() read as
+    IDENTICAL, because both sides normalised to `? 'https: : 'https:`. baseUrl is
+    required to match and is where the v1-base anchor is read from, so the strip
+    was blinding the check on the one line it most needs to see.
+    """
+    no_comments = re.sub(r"(?<!:)//[^\n]*|/\*.*?\*/", "", src, flags=re.S)
+    return " ".join(no_comments.split())
+
+
+def check_shared_helper_drift(root):
+    cat = "supply-chain"
+    name = "duplicated bundle helpers stay identical"
+    try:
+        defs = [_js_functions(read(root, f)) for f in SHARED_HELPER_FILES]
+    except OSError as e:
+        record("FAIL", name, str(e), cat)
+        return
+
+    shared = set(defs[0]) & set(defs[1])
+    if SHARED_HELPER_SENTINEL not in shared:
+        record("FAIL", name,
+               f"the extractor did not find {SHARED_HELPER_SENTINEL}() in both "
+               f"files, so it cannot be trusted to have found anything; a passing "
+               f"comparison here would be vacuous", cat)
+        return
+
+    unclassified = sorted(shared - set(SHARED_HELPERS))
+    # The other direction, which is not symmetric with the one above. A helper
+    # required to match that stops being FOUND in both files drops out of
+    # `shared` and would otherwise be silently unmonitored: rewriting baseUrl as
+    # an arrow assignment in one file is itself drift, and _js_functions only
+    # reads the declaration form. Classified-but-absent is therefore a finding,
+    # not a pass.
+    stale_class = sorted(n for n, (must, _) in SHARED_HELPERS.items()
+                         if must and n not in shared)
+    drifted = sorted(n for n in shared
+                     if SHARED_HELPERS.get(n, (False,))[0]
+                     and _norm_js(defs[0][n]) != _norm_js(defs[1][n]))
+
+    if stale_class:
+        record("FAIL", name,
+               f"helper(s) required to stay identical are no longer found in both "
+               f"files: {', '.join(stale_class)}. Either the declaration form "
+               f"changed, which this check cannot read, or the helper moved; "
+               f"neither is a pass", cat)
+        return
+    if unclassified:
+        record("FAIL", name,
+               f"helper(s) defined in both bundle files and classified in "
+               f"neither direction: {', '.join(unclassified)}. Add each to "
+               f"SHARED_HELPERS as identical or deliberately divergent, with the "
+               f"reason", cat)
+        return
+    if drifted:
+        record("FAIL", name,
+               f"{len(drifted)} helper(s) declared identical have drifted between "
+               f"{' and '.join(SHARED_HELPER_FILES)}: {', '.join(drifted)}", cat)
+        return
+
+    must = [n for n in sorted(shared) if SHARED_HELPERS[n][0]]
+    may = [n for n in sorted(shared) if not SHARED_HELPERS[n][0]]
+    record("PASS", name,
+           f"{len(must)} helper(s) required identical and identical "
+           f"({', '.join(must)}); {len(may)} deliberately divergent "
+           f"({', '.join(may) or 'none'})", cat)
 
 
 def check_deprecated_endpoints(root, today=None):
@@ -831,8 +971,15 @@ def check_deprecated_endpoints(root, today=None):
             for i, ln in enumerate(lines):
                 for mk in ALLOW_MARKER.finditer(ln):
                     if (i, mk.start()) not in used:
+                        # The key is what the author needs in order to find the
+                        # typo, and the kind is what this reported instead until
+                        # #168. Both are named now, and the prefix is derived
+                        # from the match rather than hardcoded to `audit-allow`,
+                        # so a stale `audit-degrades:` marker is not reported
+                        # under the other vocabulary's name.
                         stale_markers.append(
-                            f"{rel}:{i + 1}: audit-allow: {mk.group(1)}")
+                            f"{rel}:{i + 1}: audit-{mk.group('kind')}: "
+                            f"{mk.group('key')}")
 
     # Assert the anchor rather than inferring it. needs_v1_base decides whether
     # a relative path counts as a v1 call, so a baseUrl() whose default cannot
@@ -934,6 +1081,7 @@ def main():
         check_sdk_sri(root, network=not args.no_network)
         check_no_embedded_secrets(root)
         check_secure_settings(root)
+        check_shared_helper_drift(root)
         check_deprecated_endpoints(root)
     except Exception as e:  # noqa: BLE001 - an audit that crashes must not read as a pass
         print(f"error: audit aborted: {e}", file=sys.stderr)
