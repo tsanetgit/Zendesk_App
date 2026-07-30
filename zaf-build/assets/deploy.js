@@ -107,6 +107,12 @@
   var CONN_PLACEHOLDER = 'tsanet_oauth';
   var EMAIL_PLACEHOLDER = 'YOUR_TSANET_API_EMAIL';
 
+  // Where the app's own releases are published (#171). Public and unauthenticated, so
+  // this is read with cors:true — see checkLatestRelease. A repo rename would not break
+  // it: the GitHub API 301-redirects renamed repositories.
+  var GITHUB_LATEST_RELEASE =
+    'https://api.github.com/repos/tsanetgit/Zendesk_App/releases/latest';
+
   // "Optional: Native Field Actions and One-Click Macros" in the Installation
   // Guide. The TSANet Action / Action Text ticket fields are created AFTER the
   // bundle is deployed — the guide's optional section sits ~110 lines below the
@@ -191,7 +197,16 @@
   }
 
   var state = { settings: null, bundleText: null, bundle: null, steps: [],
-                preflightOk: false, detected: null, installationId: null };
+                preflightOk: false, detected: null, installationId: null,
+                appId: null, appVersion: null, latestTag: null };
+
+  // Rows of the Current state card, keyed by lane so each resolves independently.
+  var STATUS_LABEL = { bundle: 'Bundle', app: 'App version', release: 'Latest release' };
+  var status = {
+    bundle:  { ok: null, name: 'Bundle: checking…' },
+    app:     { ok: null, name: 'App version: checking…' },
+    release: { ok: null, name: 'Latest release: checking…' }
+  };
 
   // ---------------------------------------------------------------- helpers
 
@@ -573,6 +588,362 @@
     });
   }
 
+  // ------------------------------------------------------------- current state
+  //
+  // #171. This screen used to say nothing about what was already on the instance, so
+  // the only way to find out whether a deploy was needed was to deploy. That is a bad
+  // default: an upload orphans the installed job specs before the new ones go in, so a
+  // needless deploy is a small outage (hence the warn banner above the button).
+  //
+  // The recommendation is driven by BUNDLE CONTENT, never by a version number. Between
+  // v1.0.54 and v1.0.60 there were six releases and the bundle did not change once, so
+  // a version compare would have told every member to redeploy six times for nothing.
+  // The app and release rows are reference only and never gate the Deploy button.
+  //
+  // Comparing content is exact rather than approximate. `substitute()` reproduces the
+  // running bundle byte-for-byte once key order is canonicalised: probed against a test
+  // instance, all 18 resources matched. So this needs no version stamp inside the
+  // bundle, and it works on instances deployed long before this code shipped.
+
+  // Order-insensitive serialisation. ZIS was observed not to reorder what it stores,
+  // but nothing promises key order survives a round trip, so never compare raw JSON
+  // text.
+  function canon(v) {
+    if (v === null || typeof v !== 'object') { return JSON.stringify(v); }
+    if (Object.prototype.toString.call(v) === '[object Array]') {
+      return '[' + v.map(canon).join(',') + ']';
+    }
+    return '{' + Object.keys(v).sort().map(function (k) {
+      return JSON.stringify(k) + ':' + canon(v[k]);
+    }).join(',') + '}';
+  }
+
+  var RE_META = /[.*+?^${}()|[\]\\]/g;
+  function reEsc(s) { return String(s).replace(RE_META, '\\$&'); }
+
+  function hasPlaceholder(s) {
+    if (s.indexOf(HOST_PLACEHOLDER) !== -1 || s.indexOf(EMAIL_PLACEHOLDER) !== -1) { return true; }
+    var found = false;
+    Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) {
+      if (s.indexOf(ph) !== -1) { found = true; }
+    });
+    return found;
+  }
+
+  // A pristine string leaf becomes a matcher with each substitution site wildcarded.
+  // Needed because placeholders also live inside a jq expression string
+  // (flow_field_action's Extract step), which no structural walk can reach.
+  function shapePattern(s) {
+    var out = reEsc(s);
+    Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) { out = out.split(ph).join('\\d+'); });
+    out = out.split(reEsc(HOST_PLACEHOLDER)).join('connect2\\.tsanet\\.(?:org|net)');
+    out = out.split(EMAIL_PLACEHOLDER).join('[^"]*');
+    return new RegExp('^' + out + '$');
+  }
+
+  // Does the running bundle have the same SHAPE as the pristine one — same keys, same
+  // definitions, with only the per-instance substitution sites allowed to differ?
+  //
+  // This deliberately takes no settings. Reverse-substituting the running side back to
+  // placeholders was the first design and it is unsound: that needs the values that were
+  // live AT DEPLOY TIME, and in the settings-drift case those are exactly what we do not
+  // have. It would report every settings change as a new bundle generation. Wildcarding
+  // the pristine side instead means the shape answer holds even on an instance whose
+  // settings are missing or malformed.
+  function shapeEq(pris, live) {
+    if (pris === null || typeof pris !== 'object') {
+      if (typeof pris === 'number') {
+        // A field-id placeholder stands for whatever id this instance uses. Every other
+        // number is part of the definition and must match exactly.
+        if (Object.prototype.hasOwnProperty.call(FIELD_PLACEHOLDERS, String(pris))) {
+          return typeof live === 'number';
+        }
+        return pris === live;
+      }
+      if (typeof pris === 'string') {
+        // connectionName is the only per-instance bare string, and `tsanet_oauth`
+        // occurs nowhere else in the bundle (checked), so this needs no key context.
+        if (pris === CONN_PLACEHOLDER) { return typeof live === 'string'; }
+        if (hasPlaceholder(pris)) {
+          return typeof live === 'string' && shapePattern(pris).test(live);
+        }
+      }
+      return pris === live;
+    }
+    if (live === null || typeof live !== 'object') { return false; }
+    var pArr = Object.prototype.toString.call(pris) === '[object Array]';
+    if (pArr !== (Object.prototype.toString.call(live) === '[object Array]')) { return false; }
+    if (pArr) {
+      if (pris.length !== live.length) { return false; }
+      for (var i = 0; i < pris.length; i++) {
+        if (!shapeEq(pris[i], live[i])) { return false; }
+      }
+      return true;
+    }
+    var pk = Object.keys(pris).sort(), lk = Object.keys(live).sort();
+    if (pk.length !== lk.length) { return false; }
+    for (var j = 0; j < pk.length; j++) {
+      // Element-wise, not a joined compare: any separator can itself occur inside a
+      // JSON key. The first attempt here joined on a NUL byte, which made `file`
+      // report this asset as binary and made grep skip it silently by default.
+      if (pk[j] !== lk[j]) { return false; }
+      if (!shapeEq(pris[pk[j]], live[pk[j]])) { return false; }
+    }
+    return true;
+  }
+
+  // Classify one running bundle against what this app would deploy right now.
+  // Returns { verdict, detail } where verdict is one of:
+  //   insync | settings | mode | generation | shapeonly
+  function compareBundle(runningRes) {
+    var sub = substitute(state.bundleText, state.settings);
+    var pristineRes = (state.bundle && state.bundle.resources) || {};
+    var expected = Object.keys(pristineRes);
+    if (sub.mode === 'off') {
+      expected = expected.filter(function (n) { return FIELD_ACTION_RESOURCES.indexOf(n) === -1; });
+    }
+    var running = Object.keys(runningRes);
+
+    // 1. resource set. A difference confined to the field-action resources is a mode
+    //    change, not a new generation — reporting "newer bundle available" for someone
+    //    who simply cleared two field ids would be alarming and wrong. The pre-flight
+    //    downgrade guard already covers the orphan consequence at deploy time.
+    var delta = expected.filter(function (n) { return running.indexOf(n) === -1; })
+      .concat(running.filter(function (n) { return expected.indexOf(n) === -1; }));
+    var modeOnly = delta.length > 0 &&
+      delta.every(function (n) { return FIELD_ACTION_RESOURCES.indexOf(n) !== -1; });
+    if (delta.length && !modeOnly) {
+      return { verdict: 'generation', detail: 'Resource set differs: ' + delta.sort().join(', ') };
+    }
+
+    // 2. shape, over the resources both sides carry. This runs even when the only set
+    //    difference is the field-action mode, because a bundle can be BOTH an older
+    //    generation AND a mode change. Returning 'mode' before checking shape would
+    //    print "not a new bundle" without having established it.
+    var common = expected.filter(function (n) { return running.indexOf(n) !== -1; });
+    var badShape = common.filter(function (n) { return !shapeEq(pristineRes[n], runningRes[n]); });
+    if (badShape.length) {
+      return { verdict: 'generation', detail: 'Definitions differ: ' + badShape.join(', ') };
+    }
+    if (modeOnly) {
+      return { verdict: 'mode', detail: 'Field-action resources differ: ' + delta.sort().join(', ') +
+               '. Everything both sides carry is otherwise identical, so this is the optional ' +
+               'field-driven feature going on or off, not a new bundle.' };
+    }
+
+    // 3. values. Only meaningful when the substitution is clean; otherwise the shape
+    //    answer above is all that can honestly be claimed.
+    if (sub.missing.length || sub.invalid.length || sub.leftovers.length || sub.parseError) {
+      return { verdict: 'shapeonly',
+               detail: 'The deployed bundle is the generation this app ships. Whether its ' +
+                       'per-instance values are current cannot be checked until app settings ' +
+                       'are complete — see Pre-flight below.' };
+    }
+    var subRes = JSON.parse(sub.text).resources;
+    var badVal = common.filter(function (n) { return canon(subRes[n]) !== canon(runningRes[n]); });
+    if (badVal.length) {
+      return { verdict: 'settings', detail: 'Same bundle generation, but the values baked into it ' +
+               'no longer match current app settings: ' + badVal.join(', ') +
+               '. Deploy to apply the current settings.' };
+    }
+    return { verdict: 'insync', detail: common.length + ' of ' + common.length +
+             ' resources match what this app would deploy.' };
+  }
+
+  // "matches what this app would deploy" and deliberately NOT "no deploy needed": this
+  // compares the REGISTERED BUNDLE'S CONTENT and establishes nothing about whether its
+  // job specs are installed. A deploy interrupted between the upload and the job-spec
+  // installs — the orphaning the warn banner above the button describes — leaves the
+  // registry matching while the integration processes no events at all. Claiming "no
+  // deploy needed" there would be actively wrong in the one failure this card exists to
+  // catch. Installed-state lives in Pre-flight and in the post-deploy verify.
+  var BUNDLE_ROW = {
+    insync:     { ok: true,  name: 'Bundle: matches what this app would deploy' },
+    settings:   { ok: false, name: 'Bundle: app settings changed since it was deployed' },
+    mode:       { ok: null,  name: 'Bundle: field-action mode differs from app settings' },
+    generation: { ok: false, name: 'Bundle: older than the one this app ships — deploy recommended' },
+    shapeonly:  { ok: null,  name: 'Bundle: right generation, values unverified' }
+  };
+
+  // GET /bundles lists metadata only (uuid, name, description, zis_template_version —
+  // no timestamp and no version), so the content comes from GET /bundles/{uuid}, which
+  // returns the bundle unwrapped with `resources` at the top level.
+  function checkBundle() {
+    return req({ url: REGISTRY + '/bundles', type: 'GET' }).then(function (r) {
+      if (!r.ok) {
+        // A fresh install has no integration yet, so this 404s. That is a real answer,
+        // not a failure, and the screen never said it before.
+        status.bundle = (r.status === 404)
+          ? { ok: null, name: 'Bundle: not deployed yet',
+              detail: 'This instance has no TSANet bundle. Deploy to install it.' }
+          : { ok: null, name: 'Bundle: could not check',
+              detail: 'HTTP ' + r.status + ' ' + r.body };
+        return;
+      }
+      var list = (r.data && r.data.bundles) || [];
+      if (!list.length) {
+        status.bundle = { ok: null, name: 'Bundle: not deployed yet',
+                          detail: 'The integration exists but carries no bundle. Deploy to install it.' };
+        return;
+      }
+      // zis/README.md records that an upload REPLACES the installed bundle, and a test
+      // instance that has been redeployed carries exactly one. Rather than depend on
+      // that, treat "in sync" as "any registered bundle matches" and say how many are
+      // registered — correct whether upload replaces or appends.
+      var cap = 5;
+      var read = list.slice(0, cap);
+      var best = null;
+      return read.reduce(function (chain, b) {
+        return chain.then(function () {
+          if (best && best.verdict === 'insync') { return; }   // stop at the first match
+          return req({ url: REGISTRY + '/bundles/' + encodeURIComponent(b.uuid), type: 'GET' })
+            .then(function (r2) {
+              if (!r2.ok) {
+                if (!best) {
+                  best = { verdict: null, detail: 'Could not read the deployed bundle: HTTP ' +
+                                                  r2.status + ' ' + r2.body };
+                }
+                return;
+              }
+              var res = (r2.data && r2.data.resources) || {};
+              var v = compareBundle(res);
+              // `!best.verdict` matters: a failed read above parks a verdict-less
+              // placeholder in `best`, and without this a later bundle's definitive
+              // answer would be discarded in favour of "could not check".
+              if (!best || !best.verdict || v.verdict === 'insync') { best = v; }
+            });
+        });
+      }, Promise.resolve()).then(function () {
+        if (!best || !best.verdict) {
+          status.bundle = { ok: null, name: 'Bundle: could not check',
+                            detail: (best && best.detail) || 'No readable bundle.' };
+          return;
+        }
+        var row = BUNDLE_ROW[best.verdict];
+        var extra = (list.length > 1)
+          ? ' ' + list.length + ' bundles are registered for this integration' +
+            (list.length > cap ? ', of which the first ' + cap + ' were checked' : '') + '.'
+          : '';
+        status.bundle = { ok: row.ok, name: row.name, detail: best.detail + extra };
+      });
+    });
+  }
+
+  // The installed version comes from the platform, never from a constant in this file:
+  // a hardcoded copy drifts the moment a release does not touch this file. Keyed on the
+  // app id from metadata() and never on the app's name — the registered name on the
+  // instance this was probed against ("TSANet Connect ZAF") is not the manifest name, so
+  // a name match would silently miss. The response is unwrapped, with `version` on top.
+  function checkAppVersion() {
+    if (!state.appId) {
+      status.app = { ok: null, name: 'App version: unavailable',
+                     detail: 'Zendesk supplied no app id for this installation.' };
+      return Promise.resolve();
+    }
+    return req({ url: '/api/v2/apps/' + encodeURIComponent(state.appId) + '.json', type: 'GET' })
+      .then(function (r) {
+        var v = r.ok && r.data && r.data.version;
+        if (!v) {
+          status.app = { ok: null, name: 'App version: could not read',
+                         detail: r.ok ? 'No version on the app record.' : ('HTTP ' + r.status + ' ' + r.body) };
+          return;
+        }
+        state.appVersion = String(v);
+        status.app = { ok: true, name: 'App version: ' + state.appVersion + ' installed here' };
+      });
+  }
+
+  // Compare dot-separated numeric versions. A lexical compare would call 1.0.9 newer
+  // than 1.0.60, and this project ships both one- and two-digit patch numbers. Returns
+  // null when either side does not parse, so the row can decline to make a claim rather
+  // than guess a direction.
+  function cmpVersion(a, b) {
+    var pa = String(a).split('.'), pb = String(b).split('.');
+    var n = Math.max(pa.length, pb.length);
+    for (var i = 0; i < n; i++) {
+      var na = parseInt(pa[i] || '0', 10), nb = parseInt(pb[i] || '0', 10);
+      if (isNaN(na) || isNaN(nb)) { return null; }
+      if (na !== nb) { return na < nb ? -1 : 1; }
+    }
+    return 0;
+  }
+
+  // cors:true runs this in the admin's own browser instead of the Zendesk proxy. Two
+  // reasons: no domainWhitelist entry is needed (that property governs secure settings,
+  // and nothing secret goes to GitHub), and GitHub's unauthenticated 60/hour limit then
+  // applies per admin rather than to a shared Zendesk egress address every customer
+  // would be sharing. Elsewhere in this app proxy mode is required precisely because a
+  // secure setting is involved; that reason does not apply here.
+  //
+  // Advisory only. Offline, corporate egress block, 403 rate limit, changed payload:
+  // every failure leaves this row as an honest "unknown" and none of them touches the
+  // Deploy button.
+  function checkLatestRelease() {
+    return req({ url: GITHUB_LATEST_RELEASE, type: 'GET', cors: true,
+                 headers: { Accept: 'application/vnd.github+json' } }).then(function (r) {
+      var tag = r.ok && r.data && r.data.tag_name;
+      if (!tag) {
+        status.release = { ok: null, name: 'Latest release: could not check',
+                           detail: 'GitHub was not reachable from this browser' +
+                                   (r.ok ? '.' : ' (HTTP ' + r.status + ').') +
+                                   ' This is informational only and does not affect deploying.' };
+        return;
+      }
+      state.latestTag = String(tag);
+      var link = (r.data && r.data.html_url) ? ' ' + r.data.html_url : '';
+      if (!state.appVersion) {
+        status.release = { ok: null, name: 'Latest release: ' + state.latestTag,
+                           detail: link.replace(/^ /, '') };
+        return;
+      }
+      var c = cmpVersion(state.appVersion, String(tag).replace(/^v/, ''));
+      if (c === 0) {
+        status.release = { ok: true, name: 'Latest release: ' + state.latestTag + ' — this app is current' };
+      } else if (c === -1) {
+        status.release = { ok: null, name: 'Latest release: ' + state.latestTag + ' — a newer app is available',
+                           detail: 'Installed here: ' + state.appVersion + '. Upgrading the app is separate ' +
+                                   'from deploying the bundle, and the Bundle row above is what says whether ' +
+                                   'a deploy is needed.' + link };
+      } else if (c === 1) {
+        // Ahead of the published latest. A custom build (see ZAF_Custom_Build_Guide.md)
+        // legitimately lands here, and telling that admin to "upgrade" would be wrong.
+        status.release = { ok: null, name: 'Latest release: ' + state.latestTag,
+                           detail: 'This instance runs ' + state.appVersion +
+                                   ', which is not behind the latest published release.' + link };
+      } else {
+        // cmpVersion returned null: one side does not parse as a dotted numeric version.
+        // Report both and claim NO direction — any ordering here would be invented.
+        status.release = { ok: null, name: 'Latest release: ' + state.latestTag,
+                           detail: 'Installed here: ' + state.appVersion +
+                                   '. These cannot be compared automatically.' + link };
+      }
+    });
+  }
+
+  function renderStatus() {
+    renderSteps('status-rows', [status.bundle, status.app, status.release]);
+  }
+
+  // Nothing in this card may reject. The global unhandledrejection handler at the top of
+  // this file paints #gate and unhides it, so one stray throw in here would splash an
+  // error banner across a screen that is otherwise working. req() never rejects, but the
+  // parsing and comparison code above can, so every lane's failure becomes a row state.
+  function guard(lane, fn) {
+    return Promise.resolve().then(fn).then(null, function (e) {
+      status[lane] = { ok: null, name: STATUS_LABEL[lane] + ': could not check',
+                       detail: String((e && e.message) || e).slice(0, 200) };
+    }).then(renderStatus);
+  }
+
+  // Rows land at different times and each render resizes, so they appear as they resolve.
+  // The release row needs the app version, so those two are a chain rather than parallel.
+  function loadStatus() {
+    return Promise.all([
+      guard('bundle', checkBundle),
+      guard('app', checkAppVersion).then(function () { return guard('release', checkLatestRelease); })
+    ]).then(null, function () { /* guard() already rendered the failure */ });
+  }
+
   // ---------------------------------------------------------------- pre-flight
 
   function renderSteps(ulId, steps) {
@@ -887,7 +1258,14 @@
       'integration: ' + integrationName(s),
       'env:         ' + (s.tsanet_env || '?'),
       'connection:  ' + connName(s),
-      'bundle:      ' + (state.bundle && state.bundle.name) + ' / ' + (state.bundle && state.bundle.zis_template_version),
+      // zis_template_version is Zendesk's ZIS template schema constant and is the same
+      // for every bundle on the platform. It used to be printed here as though it were a
+      // bundle version, which it is not, so it is now labelled as what it is (#171).
+      'bundle:      ' + (state.bundle && state.bundle.name) +
+                        ' (ZIS template ' + (state.bundle && state.bundle.zis_template_version) + ')',
+      'app version: ' + (state.appVersion || '?') +
+                        ' (latest release ' + (state.latestTag || '?') + ')',
+      'deployed:    ' + (status.bundle && status.bundle.name),
       ''
     ];
     state.steps.forEach(function (st) {
@@ -920,10 +1298,18 @@
         // Needed to write settings back from Apply. If Zendesk ever stops
         // supplying it, detection still works and only Apply is unavailable.
         state.installationId = (md && md.installationId) || null;
+        // Used only to look this app's installed version up. Absent means the App
+        // version row degrades; nothing else depends on it.
+        state.appId = (md && md.appId) || null;
         if (!state.installationId) {
           el('detect-note').textContent = ' (detect only — no installation id, save manually)';
         }
         show('main', true);
+        // Paint the placeholder rows, then fill them in. Deliberately NOT awaited: the
+        // card is reference material and must never delay pre-flight or the Deploy
+        // button, and every lane inside is guarded so this cannot reject.
+        renderStatus();
+        loadStatus();
         return preflight();
       });
     }).catch(function (e) {
