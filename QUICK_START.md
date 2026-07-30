@@ -98,7 +98,9 @@ curl -s -w "\nHTTP %{http_code}\n" -X POST \
   -d '{"description": "TSANet Connect integration"}'
 ```
 
-The integration name (`tsanet_connect`) goes in the **URL path**; the body carries only the description. It is case-sensitive, so it must be exactly `tsanet_connect`. `HTTP 200` confirms it was created, and `HTTP 409` means it already exists, which is fine. (The app also ensures this container exists when you deploy in Step 4, but Step 2 needs it to be there first.)
+The integration name (`tsanet_connect`) goes in the **URL path**; the body carries only the description. It is case-sensitive. `HTTP 200` confirms it was created, and `HTTP 409` means it already exists, which is fine. (The app also ensures this container exists when you deploy in Step 4, but Step 2 needs it to be there first.)
+
+> **If you get `400 the integration: tsanet_connect is not available for upsert by this account`,** that name is taken in a namespace wider than your account and no permission change will free it. Pick your own, for example `yourcompany_tsanet_connect`, and register that instead. Lowercase letters, digits, underscore and hyphen only, starting with a letter, 64 characters maximum. Then **use your name everywhere `tsanet_connect` appears in this guide**, including the connection calls in Steps 2 and 4a and the webhook call in Step 4d, and enter it in the app's `tsanet_integration_name` setting in Step 3c so the bundle is built for your container. Requires app **v1.0.61 or later** (`tsanetgit/Zendesk_App#174`).
 
 > **Do not continue until you see 200 or 409.** This is the one step whose failure surfaces later and in a form that points somewhere else: with no container, Step 2b returns `401 Authorization failed due to integration mismatch`, which reads like a bad Entra credential rather than a missing container. The usual cause is permissions. ZIS registry endpoints are admin-only, and a `client_credentials` token acts as the user its OAuth client was created under, so a non-admin mints tokens successfully in Step 1a and is refused only here. If that is what happened, recreate the Step 1a client while signed in as an administrator and mint the setup token again.
 
@@ -254,6 +256,7 @@ Zendesk validates the package and shows the installation settings screen.
 | **TSANet environment** | `BETA` or `PRODUCTION` | Yes |
 | **All field ID settings** | **Leave blank.** Step 3d fills them in | No |
 | **Allowed action roles** | Comma-separated Zendesk role names permitted to invoke TSANet actions, for example `admin, Support Lead`. Empty means all agents | No |
+| **TSANet integration name** | **Leave as `tsanet_connect`** unless Step 1b forced you onto a different name, in which case enter the exact name you registered | No |
 
 `BETA` maps to `connect2.tsanet.net` and `PRODUCTION` to `connect2.tsanet.org`. Set it to match where your account is provisioned.
 
