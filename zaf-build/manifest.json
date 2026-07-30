@@ -127,7 +127,7 @@
       "secure": false,
       "required": false,
       "default": "tsanet_connect",
-      "description": "Name of the ZIS integration container this instance registered. Leave as tsanet_connect unless Zendesk refused that name for your account, in which case enter the name you registered instead. Lowercase letters, digits, underscore and hyphen only, starting with a letter, 64 characters maximum."
+      "description": "Name of the ZIS integration container this instance registered. Leave as tsanet_connect unless Zendesk refused that name for your account, in which case enter the name you registered instead. Lowercase letters, digits, underscore and hyphen, 1-64 characters, per Zendesk's documented rule for ZIS integration names."
     },
     {
       "name": "tsanet_engineer_email",

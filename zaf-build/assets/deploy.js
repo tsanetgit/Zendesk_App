@@ -274,19 +274,25 @@
     // integration pass after it would rewrite the value that was supposed to
     // ship. That is #127 from the other side.
     //
-    // Running first means later passes scan text containing the inserted name,
-    // which is exactly why the validation below is stricter than "does not break
-    // JSON". A name of `1234567890` is well-formed, passes a digits-allowed
-    // charset, and lands as `zis:1234567890:` — where the colons are word
-    // boundaries, so the field-id pass's \b alternation matches it and rewrites
-    // our integration name into a field id. Same for a name merely CONTAINING a
-    // placeholder token next to a hyphen (`edb-1234567890`). Hence: must start
-    // with a letter, and must not contain any placeholder token anywhere.
+    // The charset is Zendesk's, matched exactly rather than guessed at:
+    // "Integration names support the following characters: lower-case letters
+    // (a-z), numbers, hyphens (-), and underscores (_)" and "can be up to 64
+    // characters long". Being stricter than that would refuse a name ZIS accepts,
+    // and the refusal would come from us with no way for the member to tell.
+    //
+    // The charset is NOT what closes the substitution hazard, though. Running
+    // first means later passes scan text containing the inserted name, and a name
+    // of `1234567890` is charset-legal, lands as `zis:1234567890:` — where the
+    // colons are word boundaries — so the field-id pass's \b alternation matches
+    // it and rewrites our integration name into a field id. A name merely
+    // CONTAINING a token does the same (`edb-1234567890`). The token exclusion
+    // below is the load-bearing check; it reads FIELD_PLACEHOLDERS directly, so a
+    // placeholder added later is covered without anyone remembering to come here.
     var integration = integrationName(s);
-    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(integration)) {
-      invalid.push('tsanet_integration_name must start with a lowercase letter and contain only ' +
-                   'lowercase letters, digits, underscore or hyphen (max 64 characters). A name ' +
-                   'carrying a colon would silently re-segment every ZIS resource ARN while ' +
+    if (!/^[a-z0-9_-]{1,64}$/.test(integration)) {
+      invalid.push('tsanet_integration_name must be 1-64 characters of lowercase letters, digits, ' +
+                   'underscore or hyphen — the set Zendesk documents for ZIS integration names. ' +
+                   'A name carrying a colon would silently re-segment every ZIS resource ARN while ' +
                    'staying valid JSON, so it is rejected here');
     } else if (Object.keys(FIELD_PLACEHOLDERS).some(function (ph) { return integration.indexOf(ph) !== -1; })) {
       invalid.push('tsanet_integration_name must not contain a field-id placeholder token (' +
