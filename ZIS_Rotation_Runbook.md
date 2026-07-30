@@ -145,7 +145,7 @@ platform gives no overlap window:
 
 ```bash
 export ZENDESK_SUBDOMAIN=yoursubdomain
-export SETUP_TOKEN=...   # admin OAuth bearer (Quick Start Step 1b)
+export SETUP_TOKEN=...   # admin OAuth bearer (Quick Start Step 1a)
 export ZIS_TOKEN=...     # ZIS OAuth bearer
 
 # Preview (read-only):

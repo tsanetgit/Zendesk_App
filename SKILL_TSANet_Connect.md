@@ -587,10 +587,14 @@ curl -X POST \
 ```
 The integration name goes in the URL path under `/registry/` (the ZIS Registry API create-integration endpoint), not the request body. 409 Conflict = already exists, proceed.
 
-### Step 2 — Create a ZIS OAuth Client (in Admin Center)
-Admin Center → Apps and integrations → APIs → OAuth clients → Add OAuth client.
-- Name: `tsanet_zis_client`
-- Copy the Client ID — needed for token refresh job
+### Step 2 — Use the OAuth client ZIS created for the integration
+**Do not create one in Admin Center.** The registry create in Step 1 returns a
+`zendesk_oauth_client` object (`identifier: zis_<integration-name>`); its numeric
+`id` is what mints the ZIS token. A hand-created client is refused on every ZIS
+management endpoint with `401 Authorization failed due to integration mismatch` —
+see the ZIS auth-failure bullet under **Zendesk API Gotchas**. Earlier revisions of
+this skill and of QUICK_START told members to create `tsanet_zis_client` by hand;
+that never worked, and it blocked a member onboarding in July 2026.
 
 ### Step 3 — Install GitHub Actions Workflow
 **Legacy, retired.** The refresh-token job that kept this bearer connection alive is retired along with the connection itself — do not build it for a new installation.
@@ -744,10 +748,11 @@ Full data map and recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_an
 - **Views API custom columns:** silently ignored for custom fields. Manual configuration required.
 - **ZIS management endpoints:** reject standard API tokens (401/403/404 by endpoint); require a ZIS OAuth token. Registry create + bundle upload are the exceptions that accept admin basic auth, and bundle upload additionally accepts an admin session (which is how the app deploys it, v1.0.52+). Bundle upload is the only one that rejects OAuth outright. Expected behavior, not a bug.
 - **ZIS auth failures discriminate cleanly — read the exact string, don't infer.** Three different causes, three distinct plain-text bodies (probed live on a ZIS instance 2026-07-30):
-  - `401 Authorization failed due to integration mismatch` — the integration name in the URL **path** is not registered on that Zendesk account, or is capitalized differently (`TSANet_Connect` fails; the name is case-sensitive). **The credential is valid.** This is the misleading one: it first appears on the OAuth-client registration call, so it reads as a bad Entra secret or scope when the real cause is that the registry create (`POST /api/services/zis/registry/{integration}`) never landed. Confirm with `GET /api/services/zis/registry/{integration}/job_specs` — 200 means the container exists.
+  - `401 Authorization failed due to integration mismatch` — **the credential is valid**, and there are two causes. **(1) The token was minted from the wrong OAuth client.** A ZIS token is bound to exactly one integration, and the binding comes from the client that minted it: only `zis_<integration-name>`, which ZIS auto-creates on registry create and returns as `zendesk_oauth_client`, works. Verified on d3v: a token from `zis_tsanet_connect` returns 200 on `tsanet_connect` and mismatch on a second integration, while a token from an ordinary confidential admin client returns mismatch on both. List clients with `GET /api/v2/oauth/clients.json` and mint from the `zis_*` entry's numeric id (the secret is not needed). **(2) The integration in the URL path is not registered** on that account, or is capitalized differently (`TSANet_Connect` fails). Confirm with `GET /api/services/zis/registry/{integration}/job_specs` — 200 means the container exists.
   - `401 Authentication failed` — the bearer is missing, empty, malformed, or expired. This is what an unset `$ZIS_TOKEN` produces, so seeing the mismatch string instead **rules the token out**.
   - `403 API token is not supported` — a Zendesk API token was sent where a ZIS OAuth token is required.
 - **Registry create is admin-only, and `client_credentials` tokens act as the user their OAuth client was created under.** A client created by a non-admin still mints setup and ZIS tokens successfully, so the first failure is the registry create itself. Create the OAuth client while signed in as an administrator.
+- **ZIS integration names are not freely claimable.** `POST /api/services/zis/registry/{name}` can return `400 {"message":"the integration: <name> is not available for upsert by this account"}` on a clean account, first call, with full admin rights. It means the name is spoken for outside that account, not that the caller lacks permission — a different name registers cleanly and stays stable. This is not a per-account misconfiguration to debug on the member's side. Consequence for this connector: the bundle hardcodes `tsanet_connect` in its `name` and in every `zis:tsanet_connect:action|flow:*` URN, and `deploy.js` pins `var INTEGRATION = 'tsanet_connect'`, so a member who cannot claim the name cannot deploy the shipped bundle under any container name. Tracked in `tsanetgit/Zendesk_App#174`.
 
 ---
 

@@ -50,7 +50,7 @@ The Entra secret is the opaque **Value** (it looks like `xxx~xxxx...`), not a GU
 
 ### The five steps at a glance
 
-1. **Register Zendesk with ZIS.** Create the OAuth clients and the integration container that ZIS needs to manage itself.
+1. **Register Zendesk with ZIS.** Create the OAuth client and the integration container that ZIS needs to manage itself.
 2. **Connect ZIS to TSANet.** Register the Entra client-credentials connection so ZIS can call the TSANet API without handling authentication itself.
 3. **Install the ZAF sidebar app.** The panel agents use, and the tool that deploys the bundle in Step 4.
 4. **Deploy the ZIS flow bundle.** This is what actually creates and updates tickets. Steps 1 and 2 only build the plumbing it runs on.
@@ -60,7 +60,7 @@ The Entra secret is the opaque **Value** (it looks like `xxx~xxxx...`), not a GU
 
 ## Step 1: Register Zendesk with ZIS
 
-Three pieces of one-time Zendesk-side setup.
+Two pieces of one-time Zendesk-side setup. You create one OAuth client; ZIS creates the second one for you.
 
 ### 1a. Create the integration's OAuth client and a setup token
 
@@ -86,20 +86,7 @@ SETUP_TOKEN=$(curl -s -X POST "https://YOURSUBDOMAIN.zendesk.com/oauth/tokens" \
   | jq -r '.access_token')
 ```
 
-### 1b. Create a ZIS OAuth client
-
-A separate client from the one above. ZIS uses it to issue the short-lived tokens that manage its own connections and flows.
-
-**Apps and integrations > APIs > OAuth clients > Add OAuth client**:
-
-- **Client name:** `tsanet_zis_client`
-- **Description:** TSANet ZIS integration OAuth client
-- **Company:** TSANet
-- **Redirect URLs:** `https://YOURSUBDOMAIN.zendesk.com` (placeholder, not used)
-
-Click **Save** and copy the **Client ID**.
-
-### 1c. Create the ZIS integration container
+### 1b. Create the ZIS integration container
 
 A named bucket inside Zendesk's ZIS platform that holds all TSANet resources: connections, the flow bundle, and webhooks.
 
@@ -113,16 +100,32 @@ curl -s -w "\nHTTP %{http_code}\n" -X POST \
 
 The integration name (`tsanet_connect`) goes in the **URL path**; the body carries only the description. It is case-sensitive, so it must be exactly `tsanet_connect`. `HTTP 200` confirms it was created, and `HTTP 409` means it already exists, which is fine. (The app also ensures this container exists when you deploy in Step 4, but Step 2 needs it to be there first.)
 
-> **Do not continue until you see 200 or 409.** This is the one step whose failure surfaces later and in a form that points somewhere else: with no container, Step 2b returns `401 Authorization failed due to integration mismatch`, which reads like a bad Entra credential rather than a missing container. The usual cause is permissions. ZIS registry endpoints are admin-only, and a `client_credentials` token acts as the user its OAuth client was created under, so a non-admin mints tokens successfully in Step 1a and is refused only here. If that is what happened, recreate the Step 1a client while signed in as an administrator and mint both tokens again.
+> **Do not continue until you see 200 or 409.** This is the one step whose failure surfaces later and in a form that points somewhere else: with no container, Step 2b returns `401 Authorization failed due to integration mismatch`, which reads like a bad Entra credential rather than a missing container. The usual cause is permissions. ZIS registry endpoints are admin-only, and a `client_credentials` token acts as the user its OAuth client was created under, so a non-admin mints tokens successfully in Step 1a and is refused only here. If that is what happened, recreate the Step 1a client while signed in as an administrator and mint the setup token again.
 
-Finally, mint the ZIS token used by every ZIS management call in Steps 2 and 4:
+Creating the container also creates an OAuth client for it, named `zis_tsanet_connect`. The 200 response carries it as `zendesk_oauth_client`. **This is the client the ZIS token must come from**, and it is the only one that will work:
+
+```json
+"zendesk_oauth_client": { "id": 1234567890123, "identifier": "zis_tsanet_connect", "secret": "..." }
+```
+
+> **A client you create yourself cannot authenticate a ZIS call.** A ZIS token is bound to exactly one integration, and the binding comes from the client that minted it. A token from any other client, however much access that client has, is refused with `401 Authorization failed due to integration mismatch` on every ZIS management endpoint. Only `zis_<integration-name>` works.
+
+Finally, mint the ZIS token used by every ZIS management call in Steps 2 and 4. Pass the numeric `id` from `zendesk_oauth_client` above, not the identifier string, and not the client from Step 1a:
 
 ```bash
 ZIS_TOKEN=$(curl -s -X POST \
   "https://YOURSUBDOMAIN.zendesk.com/api/v2/oauth/tokens" \
   -H "Authorization: Bearer $SETUP_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"token":{"client_id":"YOUR_ZIS_CLIENT_ID","scopes":["read","write"]}}' | jq -r '.token.full_token')
+  -d '{"token":{"client_id":ZIS_CLIENT_NUMERIC_ID,"scopes":["read","write"]}}' | jq -r '.token.full_token')
+```
+
+The mint needs only the numeric id, not the client's secret, so if you did not keep the create response you can look the id up at any time. Find the entry whose `identifier` is `zis_tsanet_connect`:
+
+```bash
+curl -s -H "Authorization: Bearer $SETUP_TOKEN" \
+  "https://YOURSUBDOMAIN.zendesk.com/api/v2/oauth/clients.json" \
+  | jq '.clients[] | {id, identifier}'
 ```
 
 ---
@@ -176,7 +179,7 @@ Where each value comes from:
 | `TENANT_ID` | TSANet's Entra tenant ID (a GUID), used in the token URL | TSANet |
 | `AUDIENCE` | The client ID of the TSANet Connect app registration for your environment. The scope is `AUDIENCE/.default` | TSANet |
 | `client_id` / `client_secret` | Your member-specific app registration in TSANet's Entra tenant | TSANet |
-| `$ZIS_TOKEN` | A ZIS OAuth bearer token for **your own** Zendesk instance (Step 1c) | You |
+| `$ZIS_TOKEN` | A ZIS OAuth bearer token for **your own** Zendesk instance (Step 1b) | You |
 
 Per-environment API hosts: BETA is `connect2.tsanet.net`, PRODUCTION is `connect2.tsanet.org`. `TENANT_ID` and `AUDIENCE` are provided by TSANet at onboarding and differ per environment.
 
@@ -548,7 +551,7 @@ An install whose Zendesk-side ZIS connection still uses an API token loses inbou
 
 ```bash
 export ZENDESK_SUBDOMAIN=yoursubdomain
-export ZIS_TOKEN=...   # from Step 1c
+export ZIS_TOKEN=...   # from Step 1b
 python3 scripts/audit-connection-auth.py
 ```
 
@@ -577,7 +580,7 @@ Those tags are also how the integration's own tickets are identified, so it is w
 | New Collaboration search returns no results | The partner may not be in TSANet. Check connect.tsanet.org for their membership |
 | SLA countdown missing on an OPEN case | `respondBy` may be null. TSANet sets it from your group SLA configuration |
 | Background poller not creating tickets | Check the browser console for the `[TSANet BG]` prefix, and confirm credentials are set and TSANet has INBOUND cases |
-| A ZIS call returns `401 Authorization failed due to integration mismatch` | The `tsanet_connect` container does not exist on your instance, or the name in the URL is capitalized differently. This is not a credential problem: an invalid or unset `$ZIS_TOKEN` returns `401 Authentication failed` instead, and a Zendesk API token returns `403 API token is not supported`. Re-run Step 1c and confirm it returns 200 or 409. Check with `curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $ZIS_TOKEN" "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/registry/tsanet_connect/job_specs"` |
+| A ZIS call returns `401 Authorization failed due to integration mismatch` | Two causes, in order of likelihood. **First, `$ZIS_TOKEN` was minted from the wrong OAuth client.** It must come from `zis_tsanet_connect`, which ZIS created for you in Step 1b; a client you made yourself is refused on every ZIS endpoint. Check with `curl -s -H "Authorization: Bearer $SETUP_TOKEN" "https://YOURSUBDOMAIN.zendesk.com/api/v2/oauth/clients.json" \| jq '.clients[] \| {id, identifier}'` and re-mint from the `zis_tsanet_connect` id. **Second, the container does not exist**, or the name in the URL is capitalized differently. Check with `curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $ZIS_TOKEN" "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/registry/tsanet_connect/job_specs"`, and re-run Step 1b if it is not 200. Neither is a credential problem in the usual sense: an invalid or unset token returns `401 Authentication failed` instead, and a Zendesk API token returns `403 API token is not supported` |
 | ZIS reports `AADSTS7000215` but the same secret works elsewhere | The stored value is corrupted (paste artifact, trimmed leading punctuation). Re-send it verbatim via `PATCH /api/services/zis/connections/oauth/clients/tsanet_connect/{uuid}` |
 | Updating the OAuth client returns 405 | Use `PATCH`, not `PUT`, on the client endpoint |
 | Connection created but no `access_token` | The `verification_code` exchange was skipped. GET the `redirect_url` from the start response with the ZIS bearer |

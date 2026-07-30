@@ -193,7 +193,7 @@ Integration"), not a real person's account, because:
 
 The ZIS connections endpoint requires a **ZIS OAuth bearer token** (API-token basic
 auth returns 403 "API token is not supported"). Mint one per
-[QUICK_START.md](QUICK_START.md) Step 1c, then:
+[QUICK_START.md](QUICK_START.md) Step 1b, then:
 
 ```bash
 curl -s "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/integrations/tsanet_connect/connections/all" \
