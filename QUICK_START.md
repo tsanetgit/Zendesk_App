@@ -104,14 +104,16 @@ Click **Save** and copy the **Client ID**.
 A named bucket inside Zendesk's ZIS platform that holds all TSANet resources: connections, the flow bundle, and webhooks.
 
 ```bash
-curl -s -X POST \
+curl -s -w "\nHTTP %{http_code}\n" -X POST \
   "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/registry/tsanet_connect" \
   -H "Authorization: Bearer $SETUP_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"description": "TSANet Connect integration"}'
 ```
 
-The integration name (`tsanet_connect`) goes in the **URL path**; the body carries only the description. `200 OK` confirms it was created, and `409 Conflict` means it already exists, which is fine. (The app also ensures this container exists when you deploy in Step 4, but Step 2 needs it to be there first.)
+The integration name (`tsanet_connect`) goes in the **URL path**; the body carries only the description. It is case-sensitive, so it must be exactly `tsanet_connect`. `HTTP 200` confirms it was created, and `HTTP 409` means it already exists, which is fine. (The app also ensures this container exists when you deploy in Step 4, but Step 2 needs it to be there first.)
+
+> **Do not continue until you see 200 or 409.** This is the one step whose failure surfaces later and in a form that points somewhere else: with no container, Step 2b returns `401 Authorization failed due to integration mismatch`, which reads like a bad Entra credential rather than a missing container. The usual cause is permissions. ZIS registry endpoints are admin-only, and a `client_credentials` token acts as the user its OAuth client was created under, so a non-admin mints tokens successfully in Step 1a and is refused only here. If that is what happened, recreate the Step 1a client while signed in as an administrator and mint both tokens again.
 
 Finally, mint the ZIS token used by every ZIS management call in Steps 2 and 4:
 
@@ -575,6 +577,7 @@ Those tags are also how the integration's own tickets are identified, so it is w
 | New Collaboration search returns no results | The partner may not be in TSANet. Check connect.tsanet.org for their membership |
 | SLA countdown missing on an OPEN case | `respondBy` may be null. TSANet sets it from your group SLA configuration |
 | Background poller not creating tickets | Check the browser console for the `[TSANet BG]` prefix, and confirm credentials are set and TSANet has INBOUND cases |
+| A ZIS call returns `401 Authorization failed due to integration mismatch` | The `tsanet_connect` container does not exist on your instance, or the name in the URL is capitalized differently. This is not a credential problem: an invalid or unset `$ZIS_TOKEN` returns `401 Authentication failed` instead, and a Zendesk API token returns `403 API token is not supported`. Re-run Step 1c and confirm it returns 200 or 409. Check with `curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $ZIS_TOKEN" "https://YOURSUBDOMAIN.zendesk.com/api/services/zis/registry/tsanet_connect/job_specs"` |
 | ZIS reports `AADSTS7000215` but the same secret works elsewhere | The stored value is corrupted (paste artifact, trimmed leading punctuation). Re-send it verbatim via `PATCH /api/services/zis/connections/oauth/clients/tsanet_connect/{uuid}` |
 | Updating the OAuth client returns 405 | Use `PATCH`, not `PUT`, on the client endpoint |
 | Connection created but no `access_token` | The `verification_code` exchange was skipped. GET the `redirect_url` from the start response with the ZIS bearer |
