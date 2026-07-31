@@ -118,6 +118,7 @@ Only three settings are entered by hand. The Zendesk install dialog blocks insta
 | `field_id_action_text` | **Detect field IDs** | TSANet Action Text. Optional; pairs with `field_id_action` |
 | `allowed_action_roles` | you, if wanted | Comma-separated Zendesk role names allowed to invoke TSANet actions. Empty = all agents. Defense in depth only; the TSANet API is the real authorization boundary |
 | `tsanet_connection_name` | leave as-is | Name of the ZIS OAuth connection (default: `tsanet_oauth`) |
+| `tsanet_integration_name` | leave as-is | Name of the ZIS integration container (default: `tsanet_connect`). Change it only if Zendesk refused that name for your account, which it does when the name is already registered by someone else: ZIS integration names are globally unique across all Zendesk accounts. Lowercase letters, digits, underscore and hyphen, 1-64 characters |
 | `tsanet_engineer_email` | you, if using field actions | Address used as `engineerEmail` on Accept calls. Must be on your member company's registered domain. Not a ticket field, so it cannot be detected |
 
 **Do not copy field IDs out of Admin Center URLs.** Create the custom fields, then open TSANet Connect from the left nav bar, click **Detect field IDs**, and click **Apply**. The app matches your fields by title, shows you every mapping before writing anything, and refuses to guess when two fields share a title or a field has the wrong type.

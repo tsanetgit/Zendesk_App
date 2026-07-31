@@ -9,6 +9,18 @@ Entra client secret** behind the TSANet connection (rotated in coordination
 with TSANet). Closing sections cover credential handling and
 transmission, scheduling, and monitoring for credential abuse.
 
+> **If your instance uses a non-default integration name, every command here needs it.**
+> Webhooks and connections are both scoped to the ZIS integration, so the name is
+> embedded in the URLs below (`.../inbound_webhooks/generic/tsanet_connect/...` and
+> `.../connections/oauth/clients/tsanet_connect`) and it is what the scripts fall back
+> to. `rotate-inbound-webhook.py`, `rotate-zendesk-oauth-secret.py` and
+> `audit-connection-auth.py` all accept **`--integration <name>`**. Pass it on every
+> invocation, including the scheduled ones under *Scheduling*, and substitute your name
+> in the raw curl examples. Omitting it fails loudly rather than quietly: the audit
+> exits 3 with `connections/all returned HTTP <code>` rather than reporting a clean
+> result. Background on why the name is per-instance: [QUICK_START.md](QUICK_START.md)
+> Step 1b and issue [#174](https://github.com/tsanetgit/Zendesk_App/issues/174).
+
 **When to rotate:**
 - On a schedule (quarterly is a reasonable default).
 - Immediately on suspected compromise, or when anyone with access to the

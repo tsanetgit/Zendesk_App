@@ -67,8 +67,10 @@
   // register it at all: POST /registry/tsanet_connect returned 400 "the
   // integration: tsanet_connect is not available for upsert by this account" on
   // a clean Enterprise account with full admin, while a different name
-  // registered cleanly. ZIS integration names are a namespace wider than one
-  // account, so the name cannot be a constant we choose for everyone.
+  // registered cleanly. Zendesk documents this: "the name you choose has to be
+  // globally unique and can be up to 64 characters long" — globally across every
+  // Zendesk account, not per account — so the name cannot be a constant we
+  // choose on every member's behalf.
   //
   // It stays the DEFAULT, and it is also the placeholder the shipped bundle
   // carries — exactly like tsanet_oauth. A synthetic __INTEGRATION__ token would
@@ -83,7 +85,10 @@
   function integrationName(s) {
     return ((s && s.tsanet_integration_name) || '').trim() || DEFAULT_INTEGRATION;
   }
-  function registryPath(s) { return '/api/services/zis/registry/' + integrationName(s); }
+  // encodeURIComponent is a no-op for the documented charset (all URL-unreserved).
+  // It is here because pre-flight records an invalid name and then keeps going, so a
+  // name carrying / ? or % would otherwise reach a request URL after being rejected.
+  function registryPath(s) { return '/api/services/zis/registry/' + encodeURIComponent(integrationName(s)); }
   function jobSpecPrefix(s) { return 'zis:' + integrationName(s) + ':job_spec:'; }
 
   // Bundle placeholder -> app setting holding the real value.
@@ -653,7 +658,7 @@
         // 3. the TSANet OAuth connection the bundle references. Advisory only:
         //    the bundle deploys without it, but every TSANet action then fails auth.
         var conn = connName(s);
-        return req({ url: '/api/services/zis/connections/' + integrationName(s) + '?name=' + encodeURIComponent(conn), type: 'GET' })
+        return req({ url: '/api/services/zis/connections/' + encodeURIComponent(integrationName(s)) + '?name=' + encodeURIComponent(conn), type: 'GET' })
           .then(function (r) {
             if (r.ok) { steps.push({ ok: true, name: 'TSANet connection "' + conn + '" exists' }); }
             else {
@@ -857,7 +862,7 @@
     var lines = [
       'TSANet Connect — ZIS deploy report',
       'when:        ' + new Date().toISOString(),
-      'integration: ' + integrationName(state.settings),
+      'integration: ' + integrationName(s),
       'env:         ' + (s.tsanet_env || '?'),
       'connection:  ' + connName(s),
       'bundle:      ' + (state.bundle && state.bundle.name) + ' / ' + (state.bundle && state.bundle.zis_template_version),
