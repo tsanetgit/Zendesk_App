@@ -21,7 +21,7 @@
       }
     }
   },
-  "version": "1.0.61",
+  "version": "1.0.62",
   "icon": "assets/logo.png",
   "frameworkVersion": "2.0",
   "parameters": [
