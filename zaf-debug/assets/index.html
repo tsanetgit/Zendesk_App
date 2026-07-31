@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>TSANet Connect — Diagnostics</title>
+<script src="https://static.zdassets.com/zendesk_app_framework_sdk/2.0/zaf_sdk.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0d1117; color: #e6edf3;
+       padding: 16px; font-size: 12px; }
+
+h1 { font-family: system-ui, sans-serif; font-size: 15px; font-weight: 700;
+     color: #58a6ff; margin-bottom: 2px; }
+.subtitle { font-size: 11px; color: #8b949e; margin-bottom: 16px; }
+
+/* ── Status banner ── */
+#load-status { font-size: 11px; padding: 8px 10px; border-radius: 4px; margin-bottom: 14px;
+               background: #1f3a5f; color: #79c0ff; display: none; }
+#load-status.ok   { background: #1a3a2a; color: #3fb950; }
+#load-status.warn { background: #3a2a1a; color: #e3b341; }
+
+/* ── Config ── */
+.config-section { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+                  padding: 12px; margin-bottom: 12px; }
+.config-section h2 { font-family: system-ui, sans-serif; font-size: 11px; font-weight: 600;
+                     color: #8b949e; text-transform: uppercase; letter-spacing:.06em;
+                     margin-bottom: 10px; }
+.cfg-row { margin-bottom: 8px; }
+label { font-size: 10px; color: #8b949e; display: block; margin-bottom: 2px; }
+input[type=text], input[type=password] {
+  width: 100%; background: #0d1117; border: 1px solid #30363d; border-radius: 4px;
+  padding: 5px 8px; color: #e6edf3; font-family: inherit; font-size: 11px;
+}
+input:focus { outline: none; border-color: #58a6ff; }
+.cfg-note { font-size: 10px; color: #8b949e; margin-top: 8px; }
+
+/* ── Options ── */
+.opts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.opt { display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer; }
+.opt input { accent-color: #58a6ff; width: 13px; height: 13px; }
+
+/* ── Buttons ── */
+.btn-row { display: flex; gap: 8px; margin-bottom: 16px; }
+button#run { flex: 1; background: #238636; color: #fff; border: none; border-radius: 6px;
+             padding: 9px; font-size: 13px; font-weight: 600; cursor: pointer; }
+button#run:hover { background: #2ea043; }
+button#run:disabled { background: #21262d; color: #8b949e; cursor: not-allowed; }
+button#export { background: #21262d; color: #8b949e; border: 1px solid #30363d;
+                border-radius: 6px; padding: 9px 12px; font-size: 11px; font-weight: 600;
+                cursor: pointer; display: none; }
+button#export:hover { background: #30363d; color: #e6edf3; }
+
+/* ── Summary ── */
+#summary { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+           padding: 12px; margin-bottom: 14px; display: none; }
+#summary h2 { font-family: system-ui, sans-serif; font-size: 11px; color: #8b949e;
+              text-transform: uppercase; letter-spacing:.06em; margin-bottom: 8px; }
+.sum-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 6px; }
+.sum-card { background: #0d1117; border-radius: 4px; padding: 8px; text-align: center; }
+.sum-card .num { font-size: 22px; font-weight: 700; }
+.sum-card .lbl { font-size: 10px; color: #8b949e; margin-top: 2px; }
+.ok-n { color: #3fb950; } .fail-n { color: #f85149; }
+.warn-n { color: #e3b341; } .skip-n { color: #484f58; }
+
+/* ── Section headers ── */
+.sec-hdr { font-family: system-ui, sans-serif; font-size: 10px; font-weight: 700;
+           color: #8b949e; text-transform: uppercase; letter-spacing:.08em;
+           padding: 6px 0 4px; display: flex; align-items: center; gap: 6px; }
+.sec-hdr::after { content:''; flex:1; height:1px; background:#21262d; }
+
+/* ── Test cards ── */
+.test { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+        margin-bottom: 6px; overflow: hidden; }
+.test-hdr { display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+            border-bottom: 1px solid #21262d; cursor: pointer; }
+.test-hdr:hover { background: #1c2128; }
+.test-id { font-size: 10px; color: #484f58; min-width: 24px; }
+.test-name { font-size: 11px; font-weight: 600; flex: 1; line-height: 1.3; }
+.badge { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 3px;
+         white-space: nowrap; }
+.badge-pending { background:#21262d; color:#8b949e; }
+.badge-running { background:#1f3a5f; color:#79c0ff; }
+.badge-ok      { background:#1a3a2a; color:#3fb950; }
+.badge-warn    { background:#3a2a1a; color:#e3b341; }
+.badge-fail    { background:#3a1a1a; color:#f85149; }
+.badge-skip    { background:#1c2128; color:#484f58; }
+.test-body { padding: 10px; font-size: 11px; line-height: 1.7; display: none; }
+.test-body.open { display: block; }
+pre { background:#0d1117; border:1px solid #21262d; border-radius:3px; padding:8px;
+      overflow-x:auto; font-size:10px; white-space:pre-wrap; word-break:break-all;
+      margin-top:4px; }
+.fl { display:flex; gap:6px; margin-bottom:1px; }
+.fk { color:#8b949e; min-width:140px; flex-shrink:0; font-size:10px; }
+.fv { color:#e6edf3; }
+.fv.ok   { color:#3fb950; } .fv.fail { color:#f85149; }
+.fv.warn { color:#e3b341; } .fv.dim  { color:#8b949e; }
+.div { height:1px; background:#21262d; margin:6px 0; }
+</style>
+</head>
+<body>
+
+<h1>🔬 TSANet Diagnostics</h1>
+<p class="subtitle">Runs inside Zendesk — no proxy server required</p>
+
+<div id="load-status">Loading TSANet Connect settings…</div>
+
+<!-- ── TSANet config ── -->
+<div class="config-section">
+  <h2>TSANet API</h2>
+  <div class="cfg-row">
+    <label>Username</label>
+    <input type="text" id="tsanet_user"/>
+  </div>
+  <div class="cfg-row">
+    <label>Password</label>
+    <input type="password" id="tsanet_pass"/>
+  </div>
+  <div class="cfg-row">
+    <label>Environment URL</label>
+    <input type="text" id="tsanet_env" value="https://connect2.tsanet.net/v1"/>
+  </div>
+  <div class="cfg-row">
+    <label>Collaboration Token (optional)</label>
+    <input type="text" id="collab_token" placeholder="for case tests"/>
+  </div>
+  <div class="cfg-row">
+    <label>Partner Search Term</label>
+    <input type="text" id="partner_search" value="cisco"/>
+  </div>
+</div>
+
+<!-- ── Zendesk field IDs ── -->
+<div class="config-section">
+  <h2>Zendesk Field IDs</h2>
+  <div class="cfg-row"><label>TSANet Token</label><input type="text" id="fid_token"/></div>
+  <div class="cfg-row"><label>TSANet Status</label><input type="text" id="fid_status"/></div>
+  <div class="cfg-row"><label>TSANet Partner</label><input type="text" id="fid_partner"/></div>
+  <div class="cfg-row"><label>TSANet Respond By</label><input type="text" id="fid_respond_by"/></div>
+  <div class="cfg-row"><label>TSANet Tokens Multi</label><input type="text" id="fid_tokens_multi"/></div>
+  <div class="cfg-row"><label>ZIS Integration Name</label>
+    <input type="text" id="zis_name" value="tsanet_connect"/></div>
+  <p class="cfg-note">Auto-populated from TSANet Connect app settings. Edit if needed.</p>
+</div>
+
+<!-- ── Options ── -->
+<div class="opts">
+  <label class="opt"><input type="checkbox" id="opt_write" checked/>
+    Include write test (add diagnostic note)</label>
+  <label class="opt"><input type="checkbox" id="opt_response"/>
+    Test response endpoints (⚠ mutates case status)</label>
+</div>
+
+<div class="btn-row">
+  <button id="run" onclick="runAll()">▶ Run Diagnostics</button>
+  <button id="export" onclick="exportResults()">⧉ Copy</button>
+</div>
+
+<div id="summary"></div>
+<div id="tests"></div>
+
+<script>
+// ── ZAF init ─────────────────────────────────────────────────────────────────
+const client = ZAFClient.init();
+client.invoke('resize', { width: '480px', height: '700px' });
+
+let jwt = null;
+let zdSubdomain = '';
+let results = [];
+
+// ── Auto-load on ready ───────────────────────────────────────────────────────
+client.on('app.registered', function() {
+  setStatus('loading', 'Detecting Zendesk instance…');
+
+  // Get the real subdomain from ZAF context — window.location is the CDN iframe domain, not Zendesk
+  client.context().then(function(ctx) {
+    zdSubdomain = (ctx.account && ctx.account.subdomain) ? ctx.account.subdomain
+                  : window.location.hostname.split('.')[0];
+  });
+
+  client.get('currentUser').then(function(data) {
+    const user = data['currentUser'] || {};
+
+    setStatus('loading', 'Loading TSANet Connect settings…');
+
+    // Read TSANet Connect app's settings from the installations API
+    zdReq('GET', '/api/v2/apps/installations.json').then(function(r) {
+      if (r.status !== 200) {
+        setStatus('warn', 'Could not load app settings (HTTP ' + r.status + ') — enter credentials manually');
+        return;
+      }
+      const installs = r.body.installations || [];
+      const tsaApp = installs.find(function(i) {
+        return i.app && i.app.name === 'TSANet Connect';
+      });
+      if (!tsaApp) {
+        setStatus('warn', 'TSANet Connect app not found on this instance — enter credentials manually');
+        return;
+      }
+      const s = tsaApp.settings || {};
+      if (s.tsanet_username)  sv('tsanet_user',    s.tsanet_username);
+      if (s.tsanet_password)  sv('tsanet_pass',    s.tsanet_password);
+      if (s.tsanet_env)       sv('tsanet_env',     envUrl(s.tsanet_env));
+      if (s.field_id_token)       sv('fid_token',      s.field_id_token);
+      if (s.field_id_status)      sv('fid_status',     s.field_id_status);
+      if (s.field_id_partner)     sv('fid_partner',    s.field_id_partner);
+      if (s.field_id_respond_by)  sv('fid_respond_by', s.field_id_respond_by);
+      if (s.field_id_tokens_multi) sv('fid_tokens_multi', s.field_id_tokens_multi);
+      setStatus('ok', '✓ Settings loaded from TSANet Connect v' + (tsaApp.app.version || '?'));
+    }).catch(function(e) {
+      setStatus('warn', 'Could not load app settings — enter credentials manually');
+    });
+  });
+});
+
+function envUrl(env) {
+  if (!env) return 'https://connect2.tsanet.net/v1';
+  if (env === 'BETA')       return 'https://connect2.tsanet.net/v1';
+  if (env === 'PRODUCTION') return 'https://connect2.tsanet.org/v1';
+  return env;  // already a URL
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function v(id)  { return document.getElementById(id).value.trim(); }
+function sv(id, val) { document.getElementById(id).value = val; }
+function chk(id) { return document.getElementById(id).checked; }
+
+function setStatus(type, msg) {
+  const el = document.getElementById('load-status');
+  el.textContent = msg;
+  el.className = type === 'ok' ? 'ok' : type === 'warn' ? 'warn' : '';
+  el.style.display = 'block';
+}
+
+function addSecHdr(label) {
+  const d = document.createElement('div');
+  d.className = 'sec-hdr'; d.textContent = label;
+  document.getElementById('tests').appendChild(d);
+}
+
+function mkTest(id, name) {
+  const d = document.createElement('div');
+  d.className = 'test'; d.id = 'test-' + id;
+  d.innerHTML = `<div class="test-hdr" onclick="toggleBody('${id}')">
+    <span class="test-id">${id}</span>
+    <span class="test-name">${name}</span>
+    <span class="badge badge-pending" id="badge-${id}">PENDING</span>
+  </div><div class="test-body" id="body-${id}"></div>`;
+  document.getElementById('tests').appendChild(d);
+}
+
+function toggleBody(id) {
+  document.getElementById('body-' + id).classList.toggle('open');
+}
+function openBody(id) {
+  document.getElementById('body-' + id).classList.add('open');
+}
+function setBadge(id, cls, text) {
+  const b = document.getElementById('badge-' + id);
+  b.className = 'badge badge-' + cls; b.textContent = text;
+}
+function setBody(id, html) {
+  document.getElementById('body-' + id).innerHTML = html;
+}
+
+function f(key, val, cls) {
+  return `<div class="fl"><span class="fk">${key}</span><span class="fv ${cls||''}">${val||''}</span></div>`;
+}
+function httpCls(s) {
+  return s >= 200 && s < 300 ? 'ok' : s >= 400 && s < 500 ? 'warn' : 'fail';
+}
+function rec(id, name, status, detail) {
+  results.push({ id, name, status, detail });
+}
+
+// ── API wrappers ─────────────────────────────────────────────────────────────
+
+// Zendesk API — relative path; ZAF prepends the instance URL and authenticates via user session
+function zdReq(method, path, body) {
+  const opts = {
+    url: path,
+    type: method,
+    dataType: 'json'
+  };
+  if (body) { opts.contentType = 'application/json'; opts.data = JSON.stringify(body); }
+  return client.request(opts).then(function(data) {
+    return { status: 200, body: data };
+  }).catch(function(err) {
+    let b = {};
+    try { b = JSON.parse(err.responseText || '{}'); } catch(e) {}
+    return { status: err.status || 0, body: b };
+  });
+}
+
+// TSANet API — routed through ZAF proxy (domain is in domainWhitelist)
+function tsaReq(method, path, body) {
+  const base = v('tsanet_env') || 'https://connect2.tsanet.net/v1';
+  const opts = {
+    url: base + path,
+    type: method,
+    dataType: 'json',
+    headers: jwt ? { 'Authorization': 'Bearer ' + jwt } : {}
+  };
+  if (body) { opts.contentType = 'application/json'; opts.data = JSON.stringify(body); }
+  return client.request(opts).then(function(data) {
+    return { status: 200, body: data };
+  }).catch(function(err) {
+    let b = {};
+    try { b = JSON.parse(err.responseText || '{}'); } catch(e) {}
+    return { status: err.status || 0, body: b };
+  });
+}
+
+// ── Tests — TSANet ───────────────────────────────────────────────────────────
+
+async function testTsaAuth() {
+  const id = 'A1', name = 'POST /login — Authentication';
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await tsaReq('POST', '/login', { username: v('tsanet_user'), password: v('tsanet_pass') });
+  jwt = r.body.accessToken || null;
+  if (r.status === 200 && jwt) {
+    setBadge(id,'ok','PASS 200');
+    setBody(id, f('JWT obtained','✓ ' + jwt.substring(0,20)+'…','ok') +
+      f('Token type', r.body.tokenType||'Bearer') + f('Expires in', (r.body.expiresIn||'?')+' sec'));
+    rec(id, name, 'PASS', 'JWT obtained, expires '+r.body.expiresIn+'s');
+    return true;
+  } else {
+    setBadge(id,'fail','FAIL '+r.status);
+    setBody(id, f('HTTP status', r.status,'fail') + '<pre>'+JSON.stringify(r.body,null,2)+'</pre>');
+    openBody(id);
+    rec(id, name, 'FAIL', 'HTTP '+r.status);
+    return false;
+  }
+}
+
+async function testTsaIdentity() {
+  const id = 'A2', name = 'GET /me — User Identity & Company';
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await tsaReq('GET', '/me');
+  const u = r.body.user||{}, c = r.body.company||{};
+  const ok = r.status === 200;
+  setBadge(id, ok?'ok':'fail', (ok?'PASS':'FAIL')+' '+r.status);
+  if (ok) {
+    setBody(id, f('Username', u.username||u.email||'?') + f('Company', (c.name||'?')+' (id:'+c.id+')') +
+      f('Domain', c.domain||'?'));
+    rec(id, name, 'PASS', (u.username||u.email||'?')+' @ '+(c.name||'?'));
+  } else {
+    setBody(id, f('HTTP status', r.status,'fail')+'<pre>'+JSON.stringify(r.body,null,2)+'</pre>');
+    openBody(id);
+    rec(id, name, 'FAIL', 'HTTP '+r.status);
+  }
+}
+
+async function testPartnerSearch() {
+  const id = 'A3', name = 'GET /partners/{term} — Partner Search';
+  const term = v('partner_search')||'cisco';
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await tsaReq('GET', '/partners/'+encodeURIComponent(term));
+  const ok = r.status === 200;
+  const arr = Array.isArray(r.body) ? r.body : [];
+  setBadge(id, ok?'ok':'fail', (ok?'PASS':'FAIL')+' '+r.status);
+  if (ok) {
+    const hits = arr.slice(0,3).map(p =>
+      f('  '+( p.companyName||'?'), (p.departmentName?'dept:'+p.departmentName+' ':'')+' id:'+p.companyId,'dim')
+    ).join('');
+    setBody(id, f('Results for','"'+term+'"') + f('Matches',arr.length, arr.length?'ok':'warn') +
+      (arr.length?'<div class="div"></div>'+hits:''));
+    rec(id, name, 'PASS', arr.length+' partners for "'+term+'"');
+  } else {
+    setBody(id, f('HTTP status',r.status,'fail')+'<pre>'+JSON.stringify(r.body,null,2)+'</pre>');
+    openBody(id); rec(id, name, 'FAIL', 'HTTP '+r.status);
+  }
+}
+
+async function testInboundList() {
+  const id = 'A4', name = 'GET /collaboration-requests — Inbound OPEN list';
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await tsaReq('GET', '/collaboration-requests?type=INBOUND&status=OPEN&size=5');
+  const ok = r.status === 200;
+  const arr = Array.isArray(r.body) ? r.body : (r.body.content||[]);
+  setBadge(id, ok?'ok':'fail', (ok?'PASS':'FAIL')+' '+r.status);
+  if (ok) {
+    setBody(id, f('Open inbound cases', arr.length, arr.length?'warn':'ok') +
+      (arr.length===0 ? f('Note','No pending inbound cases','dim') : '') +
+      arr.slice(0,3).map(c => f('  '+c.token.substring(0,12)+'…', c.submitCompanyName+' / '+c.priority,'dim')).join(''));
+    rec(id, name, 'PASS', arr.length+' open inbound cases');
+  } else {
+    setBody(id, f('HTTP status',r.status,'fail'));
+    openBody(id); rec(id, name, 'FAIL', 'HTTP '+r.status);
+  }
+}
+
+async function testCaseState(token) {
+  const id = 'B1', name = 'GET /collaboration-requests/{token} — Case State';
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await tsaReq('GET', '/collaboration-requests/'+token);
+  const ok = r.status === 200;
+  const c = r.body;
+  setBadge(id, ok?'ok':'fail', (ok?'PASS':'FAIL')+' '+r.status);
+  if (ok) {
+    let slaHtml = '';
+    if (c.respondBy && c.responded === false) {
+      const diff = Math.round((new Date(c.respondBy).getTime() - Date.now()) / 60000);
+      const cls = diff < 0 ? 'fail' : diff < 30 ? 'fail' : diff < 60 ? 'warn' : 'ok';
+      const label = diff < 0 ? '⚠ BREACHED ('+Math.abs(diff)+' min ago)' :
+                    diff < 30 ? '🔴 '+diff+' min remaining' :
+                    diff < 60 ? '🟡 '+diff+' min remaining' :
+                    '🟢 '+Math.round(diff/60)+'h '+(diff%60)+'m remaining';
+      slaHtml = f('SLA state', label, cls);
+    } else if (c.responded) {
+      slaHtml = f('SLA state','N/A — already acknowledged','dim');
+    }
+    setBody(id, f('Status',c.status) + f('Direction',c.direction) + f('Priority',c.priority) +
+      f('Responded',String(c.responded)) + '<div class="div"></div>' + slaHtml);
+    rec(id, name, 'PASS', 'status='+c.status+' responded='+c.responded);
+  } else {
+    setBody(id, f('HTTP status',r.status,'fail') +
+      (r.status===404?f('Cause','Token not found','warn'):'') +
+      (r.status===403?f('Cause','Access denied — different member?','warn'):''));
+    openBody(id); rec(id, name, 'FAIL', 'HTTP '+r.status);
+  }
+}
+
+async function testCaseNotes(token) {
+  const id = 'B2', name = 'GET /notes — Notes Access';
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await tsaReq('GET', '/collaboration-requests/'+token+'/notes');
+  const ok = r.status === 200;
+  const arr = Array.isArray(r.body) ? r.body : [];
+  setBadge(id, ok?'ok':'fail', (ok?'PASS':'FAIL')+' '+r.status);
+  setBody(id, f('Notes on case', arr.length));
+  if (!ok) openBody(id);
+  rec(id, name, ok?'PASS':'FAIL', ok?arr.length+' notes':'HTTP '+r.status);
+}
+
+async function testWriteNote(token) {
+  const id = 'B3', name = 'POST /notes — Write Access';
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await tsaReq('POST', '/collaboration-requests/'+token+'/notes', {
+    summary: 'TSANet Diagnostics — write test',
+    description: 'Automated write-access check from ZAF diagnostics app. '+new Date().toISOString()
+  });
+  const ok = r.status === 200 || r.status === 201;
+  setBadge(id, ok?'ok':'fail', (ok?'PASS':'FAIL')+' '+r.status);
+  setBody(id, f('Write access', ok?'✓ Confirmed':'✗ Failed', ok?'ok':'fail') +
+    (ok ? f('Note ID', r.body.id||'n/a') : f('Error',JSON.stringify(r.body).substring(0,120),'fail')));
+  if (!ok) openBody(id);
+  rec(id, name, ok?'PASS':'FAIL', ok?'Note ID '+r.body.id:'HTTP '+r.status);
+}
+
+async function testApproval(token) {
+  const id = 'B4', name = 'POST /approval — ⚠ mutates case status';
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await tsaReq('POST', '/collaboration-requests/'+token+'/approval', {
+    caseNumber:'DIAG-TEST', engineerName:'Diagnostics App',
+    engineerEmail: v('tsanet_user'), nextSteps:'Diagnostic test — disregard'
+  });
+  const cls = httpCls(r.status);
+  setBadge(id, cls==='ok'?'ok':cls==='warn'?'warn':'fail', (cls==='ok'?'PASS':'WARN')+' '+r.status);
+  setBody(id, f('HTTP status',r.status,cls) + f('Response',JSON.stringify(r.body).substring(0,120)));
+  if (cls!=='ok') openBody(id);
+  rec(id, name, cls==='ok'?'PASS':'WARN', 'HTTP '+r.status);
+}
+
+// ── Tests — Zendesk ──────────────────────────────────────────────────────────
+
+async function testZdAuth() {
+  const id = 'C1', name = 'GET /api/v2/users/me — Zendesk Auth';
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await zdReq('GET', '/api/v2/users/me.json');
+  const ok = r.status === 200;
+  const u = r.body.user||{};
+  setBadge(id, ok?'ok':'fail', (ok?'PASS':'FAIL')+' '+r.status);
+  if (ok) {
+    const isAdmin = u.role === 'admin';
+    setBody(id, f('Name',u.name||'?') + f('Email',u.email||'?') +
+      f('Role',u.role||'?', isAdmin?'ok':'warn') +
+      (!isAdmin?f('⚠','Admin role required for field + ZIS checks','fail'):''));
+    rec(id, name, 'PASS', (u.email||'?')+' role='+u.role);
+  } else {
+    setBody(id, f('HTTP status',r.status,'fail')+'<pre>'+JSON.stringify(r.body,null,2)+'</pre>');
+    openBody(id); rec(id, name, 'FAIL', 'HTTP '+r.status);
+  }
+  return ok;
+}
+
+async function testZdField(testId, label, fieldIdInput, expectedType) {
+  const fieldId = v(fieldIdInput);
+  mkTest(testId, 'Field: '+label+(fieldId?' (id:'+fieldId+')':' — not set'));
+  if (!fieldId) {
+    setBadge(testId,'skip','SKIP');
+    setBody(testId, f('Reason','Field ID not configured','dim'));
+    rec(testId, 'Field: '+label, 'SKIP', 'not configured');
+    return;
+  }
+  setBadge(testId,'running','RUNNING');
+  const r = await zdReq('GET', '/api/v2/ticket_fields/'+fieldId+'.json');
+  const ok = r.status === 200;
+  const fd = r.body.ticket_field||{};
+  setBadge(testId, ok?'ok':'fail', (ok?'PASS':'FAIL')+' '+r.status);
+  if (ok) {
+    const typeMatch = !expectedType || fd.type === expectedType;
+    setBody(testId,
+      f('Title', fd.title||fd.raw_title||'?') +
+      f('Type', fd.type||'?', typeMatch?'ok':'fail') +
+      f('Active', String(fd.active), fd.active?'ok':'warn') +
+      (!typeMatch?f('⚠ Type mismatch','Expected "'+expectedType+'" got "'+fd.type+'"','fail'):'') +
+      (!fd.active?f('⚠ Inactive','App cannot read/write this field','fail'):''));
+    rec(testId, 'Field: '+label, typeMatch&&fd.active?'PASS':'WARN',
+      fd.title+' type='+fd.type+' active='+fd.active);
+  } else {
+    setBody(testId, f('HTTP status',r.status,'fail') +
+      (r.status===404?f('Cause','Field ID '+fieldId+' not found on this instance','fail'):''));
+    openBody(testId);
+    rec(testId, 'Field: '+label, 'FAIL', 'HTTP '+r.status);
+  }
+}
+
+async function testZdTokenSearch(collabToken) {
+  const id = 'D1', name = 'Search ticket by TSANet token';
+  const fieldId = v('fid_token');
+  mkTest(id, name);
+  if (!fieldId) { setBadge(id,'skip','SKIP'); rec(id,name,'SKIP','no field ID'); return; }
+  setBadge(id,'running','RUNNING');
+  const query = 'custom_field_'+fieldId+':'+collabToken+' type:ticket';
+  const r = await zdReq('GET', '/api/v2/search.json?query='+encodeURIComponent(query));
+  const ok = r.status === 200;
+  const hits = r.body.results||[];
+  setBadge(id, ok?'ok':'fail', (ok?'PASS':'FAIL')+' '+r.status);
+  if (ok) {
+    const t = hits[0];
+    setBody(id, f('Query',query,'dim') + f('Tickets found',hits.length, hits.length?'ok':'warn') +
+      (t?f('Ticket #'+t.id, t.subject||'(no subject)'):'') +
+      (t?f('Tags',(t.tags||[]).join(', ')||'(none)','dim'):'') +
+      (!hits.length?f('Note','No ticket found with this token in the TSANet Token field','warn'):''));
+    rec(id, name, hits.length?'PASS':'WARN', hits.length?'Ticket #'+hits[0].id:'no ticket found');
+  } else {
+    openBody(id); rec(id, name, 'FAIL', 'HTTP '+r.status);
+  }
+}
+
+async function testZisIntegration() {
+  const id = 'E1', name = 'GET /api/services/zis/integrations/{name}';
+  const zisName = v('zis_name');
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await zdReq('GET', '/api/services/zis/integrations/'+zisName);
+  if (r.status === 200) {
+    const intg = r.body.integration||r.body;
+    setBadge(id,'ok','PASS 200');
+    setBody(id, f('Integration',intg.name||zisName,'ok') + f('Description',intg.description||'(none)'));
+    rec(id, name, 'PASS', 'integration "'+zisName+'" found');
+    return true;
+  } else {
+    // ZIS management endpoints always require ZIS OAuth scope — both API tokens and ZAF session
+    // cookies return 404 (not 401/403) regardless of whether the integration exists.
+    // The reliable verification method is GitHub Actions: if "Refresh ZIS Bearer Token" is ✓,
+    // the integration and connection are confirmed healthy.
+    setBadge(id,'warn','MANUAL CHECK');
+    setBody(id,
+      f('HTTP status', r.status,'warn') +
+      f('Why','ZIS endpoints require ZIS OAuth scope; API tokens and session cookies return '+r.status+' even when the integration exists','dim') +
+      f('✓ Verify via GitHub Actions','If "Refresh ZIS Bearer Token" job shows ✓, integration is healthy','ok') +
+      f('Or verify in UI','Admin Center → Apps & Integrations → Integrations → ZIS','warn') +
+      f('Look for','"'+zisName+'" integration in the list','warn'));
+    openBody(id);
+    rec(id, name, 'WARN', 'HTTP '+r.status+' — ZIS OAuth required; verify via GitHub Actions or Admin Center');
+    return false;
+  }
+}
+
+async function testZisConnection() {
+  const id = 'E2', name = 'ZIS Bearer Connection — tsanet_api';
+  const zisName = v('zis_name');
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await zdReq('GET', '/api/services/zis/integrations/'+zisName+'/connections');
+  if (r.status === 200) {
+    const conns = r.body.connections||(Array.isArray(r.body)?r.body:[]);
+    const bearer = conns.find(function(c) { return c.name==='tsanet_api'||c.type==='bearer_token'; });
+    setBadge(id, bearer?'ok':'warn', bearer?'PASS 200':'WARN 200');
+    setBody(id, f('Connections found',conns.length) +
+      f('tsanet_api bearer', bearer?'✓ Present':'✗ Not found', bearer?'ok':'fail') +
+      (bearer?f('Allowed domain',bearer.allowed_domain||bearer.domain||'?'):'') +
+      (!bearer?f('Fix','Run GitHub Actions "TSANet Maintenance" → refresh-token job','warn'):''));
+    if (!bearer) openBody(id);
+    rec(id, name, bearer?'PASS':'WARN', bearer?'bearer connection active':'no bearer connection');
+  } else {
+    setBadge(id,'warn','MANUAL CHECK');
+    setBody(id,
+      f('HTTP status',r.status,'warn') +
+      f('Why','ZIS connection endpoints require ZIS OAuth scope; session auth returns '+r.status+' even when the connection is healthy','dim') +
+      f('✓ Verify via GitHub Actions','If "Refresh ZIS Bearer Token" last run shows ✓ with a 201 status, connection is active','ok') +
+      f('Repo','github.com/shawnbray205/tsanet-connect-zendesk-zaf → Actions → TSANet Maintenance','warn') +
+      f('Or verify in UI','Admin Center → Apps & Integrations → Integrations → ZIS → '+zisName+' → Connections','warn'));
+    openBody(id);
+    rec(id, name, 'WARN', 'HTTP '+r.status+' — ZIS OAuth required; verify via GitHub Actions or Admin Center');
+  }
+}
+
+async function testSlaTrigger() {
+  const id = 'E3', name = 'SLA Breach Trigger — tsanet_sla_breached';
+  mkTest(id, name); setBadge(id,'running','RUNNING');
+  const r = await zdReq('GET', '/api/v2/triggers.json?per_page=100');
+  const ok = r.status === 200;
+  if (!ok) {
+    setBadge(id,'fail','FAIL '+r.status);
+    setBody(id, f('HTTP status',r.status,'fail'));
+    openBody(id); rec(id, name, 'FAIL', 'HTTP '+r.status);
+    return;
+  }
+  const all = r.body.triggers||[];
+  const match = all.filter(function(t) {
+    return JSON.stringify(t).toLowerCase().includes('tsanet_sla_breached');
+  });
+  setBadge(id, match.length?'ok':'warn', match.length?'PASS':'WARN');
+  setBody(id, f('Triggers scanned',all.length) +
+    f('SLA breach triggers',match.length, match.length?'ok':'warn') +
+    match.map(function(t) {
+      return f('  → '+t.id, t.title+(t.active===false?' ⚠ INACTIVE':''), t.active!==false?'ok':'fail');
+    }).join('') +
+    (!match.length?f('Fix','Create SLA breach trigger — see ZAF Quick Start Step 5','warn'):''));
+  if (!match.length) openBody(id);
+  rec(id, name, match.length?'PASS':'WARN',
+    match.length?match.map(function(t){return t.title+'(id:'+t.id+')'}).join(';'):'0 found');
+}
+
+// ── Orchestrator ─────────────────────────────────────────────────────────────
+async function runAll() {
+  jwt = null; results = [];
+  const btn = document.getElementById('run');
+  btn.disabled = true; btn.textContent = '⏳ Running…';
+  document.getElementById('tests').innerHTML = '';
+  document.getElementById('summary').style.display = 'none';
+  document.getElementById('export').style.display = 'none';
+
+  const collabToken = v('collab_token');
+  const runWrite   = chk('opt_write');
+  const runResp    = chk('opt_response');
+
+  // Section A — TSANet Auth & API
+  addSecHdr('A — TSANet Authentication & API');
+  const authOk = await testTsaAuth();
+  if (!authOk) { renderSummary(); btn.disabled=false; btn.textContent='▶ Run Diagnostics'; return; }
+  await testTsaIdentity();
+  await testPartnerSearch();
+  await testInboundList();
+
+  // Section B — Case (if token provided)
+  if (collabToken) {
+    addSecHdr('B — Collaboration Case');
+    await testCaseState(collabToken);
+    await testCaseNotes(collabToken);
+    if (runWrite) await testWriteNote(collabToken);
+    if (runResp)  await testApproval(collabToken);
+  }
+
+  // Section C — Zendesk Auth
+  addSecHdr('C — Zendesk');
+  const zdOk = await testZdAuth();
+  if (zdOk) {
+    addSecHdr('D — Custom Fields');
+    await testZdField('D1','TSANet Token',      'fid_token',      'text');
+    await testZdField('D2','TSANet Status',     'fid_status',     'tagger');
+    await testZdField('D3','TSANet Partner',    'fid_partner',    'text');
+    await testZdField('D4','TSANet Respond By', 'fid_respond_by', 'date');
+    await testZdField('D5','TSANet Tokens Multi','fid_tokens_multi','text');
+    if (collabToken) {
+      addSecHdr('D — Token Lookup');
+      await testZdTokenSearch(collabToken);
+    }
+    addSecHdr('E — ZIS & Alerting');
+    await testZisIntegration();
+    await testZisConnection();
+    await testSlaTrigger();
+  }
+
+  renderSummary();
+  btn.disabled=false; btn.textContent='▶ Run Again';
+  document.getElementById('export').style.display='block';
+}
+
+function renderSummary() {
+  let p=0, f=0, w=0, s=0;
+  results.forEach(function(r) {
+    if (r.status==='PASS') p++;
+    else if (r.status==='FAIL') f++;
+    else if (r.status==='WARN') w++;
+    else s++;
+  });
+  const el = document.getElementById('summary');
+  el.style.display = 'block';
+  el.innerHTML = '<h2>Results — '+(p+f+w+s)+' tests</h2>' +
+    '<div class="sum-grid">' +
+    '<div class="sum-card"><div class="num ok-n">'+p+'</div><div class="lbl">PASSED</div></div>' +
+    '<div class="sum-card"><div class="num fail-n">'+f+'</div><div class="lbl">FAILED</div></div>' +
+    '<div class="sum-card"><div class="num warn-n">'+w+'</div><div class="lbl">WARNINGS</div></div>' +
+    '<div class="sum-card"><div class="num skip-n">'+s+'</div><div class="lbl">SKIPPED</div></div>' +
+    '</div>';
+}
+
+function exportResults() {
+  let out = '=== TSANet Connect — ZAF Diagnostics Report ===\n';
+  out += 'Generated: '+new Date().toISOString()+'\n';
+  out += 'Zendesk:   '+zdSubdomain+'.zendesk.com\n';
+  out += 'TSANet:    '+(v('tsanet_env').includes('tsanet.org')?'PRODUCTION':'BETA')+'\n\n';
+  results.forEach(function(r) {
+    out += '['+( r.status+'      ').substring(0,6)+'] '+r.id+'  '+r.name+'\n';
+    if (r.detail) out += '         '+r.detail+'\n';
+  });
+  navigator.clipboard.writeText(out).then(function() {
+    const btn = document.getElementById('export');
+    btn.textContent = '✓ Copied!';
+    setTimeout(function(){ btn.textContent='⧉ Copy'; }, 2000);
+  });
+}
+</script>
+</body>
+</html>

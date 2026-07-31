@@ -1,0 +1,26 @@
+{
+  "name": "TSANet Connect — Diagnostics",
+  "id": "tsanet_connect_debug",
+  "author": {
+    "name": "TSANet",
+    "email": "membership@tsanet.org",
+    "url": "https://www.tsanet.org"
+  },
+  "defaultLocale": "en",
+  "private": true,
+  "location": {
+    "support": {
+      "nav_bar": {
+        "url": "assets/index.html",
+        "flexible_height": true
+      }
+    }
+  },
+  "version": "0.1.0",
+  "icon": "assets/logo.png",
+  "frameworkVersion": "2.0",
+  "domainWhitelist": [
+    "connect2.tsanet.net",
+    "connect2.tsanet.org"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "app": {
+    "name": "TSANet Connect — Diagnostics",
+    "description": "Integration health check tool for TSANet Connect Zendesk integration.",
+    "short_description": "TSANet diagnostics"
+  }
+}
