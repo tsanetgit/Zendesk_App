@@ -22,7 +22,9 @@
  *   therefore idempotent, job spec installs are all attempted rather than
  *   aborting on the first failure, and success is judged by READING BACK the
  *   registry, never by trusting the POST responses.
- * - Expected-installed is derived from the embedded bundle. A job spec that is
+ * - Expected-installed is derived from the SUBSTITUTED bundle that was actually
+ *   uploaded, not from the embedded source. Those diverge whenever field actions
+ *   are off. A job spec that is
  *   installed but absent from the bundle is a stale orphan from an older
  *   generation and still intercepts events (see zis/README.md), so it is
  *   surfaced as a warning instead of being ignored or silently removed.
@@ -753,6 +755,25 @@
     }
     record('Substitute bundle', true, 'All per-instance values applied.');
 
+    // The job specs present in the text we are about to upload — which is NOT the
+    // same set as the embedded bundle's whenever field actions are off, because
+    // stripFieldActions has removed jobspec_field_action with the eight resources
+    // it owns. Deriving from state.bundle asked ZIS to install a spec the upload
+    // did not contain; ZIS answered 400 "one or more requested job specs is
+    // invalid", verify() read the same wrong list and called it missing, and a
+    // deploy that had in fact succeeded reported "Integration NOT operational".
+    // Field actions off is the DEFAULT for a first-time installer (#132), so this
+    // fired on essentially every fresh install; our own instance has them on,
+    // which is why an end-to-end run never showed it.
+    //
+    // Parsed from sub.text rather than recomputed, so there is exactly one
+    // derivation and it cannot drift from the artifact. Safe here: the gate above
+    // has already returned on sub.parseError. Kept as a local rather than on
+    // state: reportText() should keep describing the shipped bundle, preflight()
+    // re-runs substitute() freely, and a local cannot go stale across a failed
+    // re-deploy.
+    var deployedNames = bundleJobSpecNames(JSON.parse(sub.text));
+
     // 1. integration must exist before the bundle can be uploaded. Idempotent:
     //    an existing integration returns 200, a duplicate returns 409.
     return req({
@@ -788,7 +809,7 @@
 
       // 3. install EVERY job spec. Uploading orphaned them, so a spec skipped
       //    here stays dead. Attempt all, never abort on the first failure.
-      var names = bundleJobSpecNames(state.bundle);
+      var names = deployedNames;
       return names.reduce(function (chain, name) {
         return chain.then(function () {
           return req({
@@ -801,16 +822,17 @@
         });
       }, Promise.resolve());
     }).then(function () {
-      return verify();
+      return verify(deployedNames);
     }).catch(function () {
-      return verify();   // still read back: a partial state must be reported accurately
+      // deployedNames is a closure variable, so it is in scope even when the chain
+      // failed before the install loop.
+      return verify(deployedNames);   // still read back: a partial state must be reported accurately
     }).then(finish);
   }
 
   // Truth comes from the registry, not from the POST responses above.
-  function verify() {
+  function verify(expected) {
     var s = state.settings;
-    var expected = bundleJobSpecNames(state.bundle);
     return req({ url: registryPath(s) + '/job_specs', type: 'GET' }).then(function (r) {
       if (!r.ok) {
         record('Verify installed job specs', false,
@@ -829,7 +851,7 @@
       // stale generations still intercept events (zis/README.md)
       var orphans = Object.keys(installed).filter(function (n) { return expected.indexOf(n) === -1; });
       if (orphans.length) {
-        state.steps.push({ ok: null, name: 'Stale job specs installed from an older bundle',
+        state.steps.push({ ok: null, name: 'Stale job specs installed from an older bundle or a dropped feature',
                            detail: orphans.join(', ') + '. These still intercept events. ' +
                                    'Uninstall them with DELETE /api/services/zis/registry/job_specs/install' +
                                    '?job_spec_name=' + jobSpecPrefix(s) + '<name>' });
