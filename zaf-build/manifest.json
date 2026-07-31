@@ -21,7 +21,7 @@
       }
     }
   },
-  "version": "1.0.60",
+  "version": "1.0.61",
   "icon": "assets/logo.png",
   "frameworkVersion": "2.0",
   "parameters": [
@@ -120,6 +120,14 @@
       "required": false,
       "default": "tsanet_oauth",
       "description": "Name of the ZIS OAuth connection used for TSANet API calls. Leave as tsanet_oauth unless your instance registered it under a different name."
+    },
+    {
+      "name": "tsanet_integration_name",
+      "type": "text",
+      "secure": false,
+      "required": false,
+      "default": "tsanet_connect",
+      "description": "Name of the ZIS integration container this instance registered. Leave as tsanet_connect unless Zendesk refused that name for your account, in which case enter the name you registered instead. Lowercase letters, digits, underscore and hyphen, 1-64 characters, per Zendesk's documented rule for ZIS integration names."
     },
     {
       "name": "tsanet_engineer_email",

@@ -63,15 +63,33 @@
 
   var client = ZAFClient.init();
 
-  // Fixed constant, not per-instance: it is embedded in 18 ZIS resource ARNs
-  // inside the bundle (zis:tsanet_connect:action:*, :flow:*), hardcoded
-  // throughout ZIS_Quick_Start.md, and absent from the per-instance
-  // substitution table in zis/README.md. Making it per-instance would require
-  // rewriting every ARN too.
-  var INTEGRATION = 'tsanet_connect';
+  // Per-instance since #174. It was fixed until a member's account refused to
+  // register it at all: POST /registry/tsanet_connect returned 400 "the
+  // integration: tsanet_connect is not available for upsert by this account" on
+  // a clean Enterprise account with full admin, while a different name
+  // registered cleanly. Zendesk documents this: "the name you choose has to be
+  // globally unique and can be up to 64 characters long" — globally across every
+  // Zendesk account, not per account — so the name cannot be a constant we
+  // choose on every member's behalf.
+  //
+  // It stays the DEFAULT, and it is also the placeholder the shipped bundle
+  // carries — exactly like tsanet_oauth. A synthetic __INTEGRATION__ token would
+  // break the embedded-copy check and the documented curl path for the accounts
+  // where this name still works.
+  var DEFAULT_INTEGRATION = 'tsanet_connect';
+  var ARN_PREFIX = 'zis:' + DEFAULT_INTEGRATION + ':';
 
-  var REGISTRY = '/api/services/zis/registry/' + INTEGRATION;
-  var JOB_SPEC_PREFIX = 'zis:' + INTEGRATION + ':job_spec:';
+  // These were module-level constants, evaluated before settings exist. They are
+  // functions now because the name they are built from arrives with the
+  // settings, not with the file.
+  function integrationName(s) {
+    return ((s && s.tsanet_integration_name) || '').trim() || DEFAULT_INTEGRATION;
+  }
+  // encodeURIComponent is a no-op for the documented charset (all URL-unreserved).
+  // It is here because pre-flight records an invalid name and then keeps going, so a
+  // name carrying / ? or % would otherwise reach a request URL after being rejected.
+  function registryPath(s) { return '/api/services/zis/registry/' + encodeURIComponent(integrationName(s)); }
+  function jobSpecPrefix(s) { return 'zis:' + integrationName(s) + ':job_spec:'; }
 
   // Bundle placeholder -> app setting holding the real value.
   var FIELD_PLACEHOLDERS = {
@@ -253,6 +271,77 @@
     var missing = [];
     var invalid = [];
 
+    // The integration name runs FIRST, before every other pass, for two reasons.
+    //
+    // It cannot run last: the connection pass below documents "nothing
+    // substitutes after this point", and a connection name of
+    // "zis:tsanet_connect:" is legal under that pass's validation, so an
+    // integration pass after it would rewrite the value that was supposed to
+    // ship. That is #127 from the other side.
+    //
+    // The charset is Zendesk's, matched exactly rather than guessed at:
+    // "Integration names support the following characters: lower-case letters
+    // (a-z), numbers, hyphens (-), and underscores (_)" and "can be up to 64
+    // characters long". Being stricter than that would refuse a name ZIS accepts,
+    // and the refusal would come from us with no way for the member to tell.
+    //
+    // The charset is NOT what closes the substitution hazard, though. Running
+    // first means later passes scan text containing the inserted name, and a name
+    // of `1234567890` is charset-legal, lands as `zis:1234567890:` — where the
+    // colons are word boundaries — so the field-id pass's \b alternation matches
+    // it and rewrites our integration name into a field id. A name merely
+    // CONTAINING a token does the same (`edb-1234567890`). The token exclusion
+    // below is the load-bearing check; it reads FIELD_PLACEHOLDERS directly, so a
+    // placeholder added later is covered without anyone remembering to come here.
+    var integration = integrationName(s);
+    if (!/^[a-z0-9_-]{1,64}$/.test(integration)) {
+      invalid.push('tsanet_integration_name must be 1-64 characters of lowercase letters, digits, ' +
+                   'underscore or hyphen — the set Zendesk documents for ZIS integration names. ' +
+                   'A name carrying a colon would silently re-segment every ZIS resource ARN while ' +
+                   'staying valid JSON, so it is rejected here');
+    } else if (Object.keys(FIELD_PLACEHOLDERS).some(function (ph) { return integration.indexOf(ph) !== -1; })) {
+      invalid.push('tsanet_integration_name must not contain a field-id placeholder token (' +
+                   Object.keys(FIELD_PLACEHOLDERS).join(', ') + '); the field-id pass would rewrite it');
+    } else if (integration !== DEFAULT_INTEGRATION) {
+      // Top-level bundle name: structural. A textual match on
+      // `"name": "tsanet_connect"` cannot prove that no resource ever carries the
+      // same key and value; setting the parsed property can. The file already
+      // parses and re-stringifies here (stripFieldActions), so this costs nothing
+      // new.
+      // Drift guard, on the INPUT rather than the output. This pass knows two
+      // shapes: the top-level name, and the ARN prefix. If the bundle ever gains
+      // a THIRD place carrying the bare name — an `event_source`, say — renaming
+      // would rewrite the two it knows, deploy clean, install every spec, and
+      // then receive nothing, because the webhook emits under the new name while
+      // the spec still listens on the old one. Silent total failure, on exactly
+      // the accounts this setting exists for, and invisible to an end-to-end run
+      // under the default name.
+      //
+      // Counting the shipped bundle's own occurrences cannot false-positive on a
+      // member's chosen name (a name like `my-tsanet_connect` would defeat a
+      // \btsanet_connect\b check on the output). Today: 18 ARNs + 1 name = 19.
+      var totalOld = (out.match(/tsanet_connect/g) || []).length;
+      var arnOld = (out.match(/zis:tsanet_connect:/g) || []).length;
+      if (totalOld !== arnOld + 1) {
+        invalid.push('the embedded bundle carries the default integration name in ' +
+                     (totalOld - arnOld - 1) + ' place(s) this substitution does not know about. ' +
+                     'Renaming would rewrite only some of them, so nothing is uploaded');
+      } else {
+        try {
+          var parsed = JSON.parse(out);
+          parsed.name = integration;
+          out = JSON.stringify(parsed, null, 2);
+          // The 18 resource ARNs: textual, anchored on the trailing colon. Nothing
+          // else in the bundle starts with `zis:tsanet_connect:`, and split/join
+          // never rescans inserted text. Inside the try so a parse failure cannot
+          // leave `out` half-substituted for the passes that follow.
+          out = out.split(ARN_PREFIX).join('zis:' + integration + ':');
+        } catch (e) {
+          invalid.push('embedded bundle is not valid JSON: ' + String(e.message || e).slice(0, 120));
+        }
+      }
+    }
+
     // Decide the field-action mode first: it determines which resources ship and
     // therefore which settings are required at all.
     var mode = fieldActionMode(s);
@@ -347,6 +436,13 @@
       if (new RegExp('\\b' + ph + '\\b').test(out)) { leftovers.push(ph); }
     });
     if (out.indexOf(EMAIL_PLACEHOLDER) !== -1) { leftovers.push(EMAIL_PLACEHOLDER); }
+    // A renamed instance must carry no trace of the default name. If one survives,
+    // the bundle gained an ARN shape this pass does not know about, and half the
+    // resources would deploy under a registry the other half does not reference.
+    // Fail closed like every other placeholder rather than upload a split bundle.
+    if (integration !== DEFAULT_INTEGRATION && out.indexOf(ARN_PREFIX) !== -1) {
+      leftovers.push(ARN_PREFIX);
+    }
 
     // Nothing malformed leaves the browser.
     var parseError = '';
@@ -562,13 +658,22 @@
         // 3. the TSANet OAuth connection the bundle references. Advisory only:
         //    the bundle deploys without it, but every TSANet action then fails auth.
         var conn = connName(s);
-        return req({ url: '/api/services/zis/connections/' + INTEGRATION + '?name=' + encodeURIComponent(conn), type: 'GET' })
+        return req({ url: '/api/services/zis/connections/' + encodeURIComponent(integrationName(s)) + '?name=' + encodeURIComponent(conn), type: 'GET' })
           .then(function (r) {
             if (r.ok) { steps.push({ ok: true, name: 'TSANet connection "' + conn + '" exists' }); }
             else {
+              // ZIS connections are integration-scoped — the URL above embeds the
+              // integration name. So on a renamed instance this is not "missing",
+              // it is "exists, under the old name, and does not carry over". Say
+              // which one it is, because the fix differs: create vs re-create.
+              var renamed = integrationName(s) !== DEFAULT_INTEGRATION;
               steps.push({ ok: null, name: 'TSANet connection "' + conn + '" not confirmed',
                            detail: 'HTTP ' + r.status + '. The bundle will deploy, but TSANet actions fail auth ' +
-                                   'if this connection is missing. Not blocking.' });
+                                   'if this connection is missing. Not blocking.' +
+                                   (renamed ? ' This instance uses a non-default integration name (' +
+                                    integrationName(s) + '), and connections do not move between ' +
+                                    'integrations: a connection created under "' + DEFAULT_INTEGRATION +
+                                    '" has to be created again under this one.' : '') });
             }
           });
       })
@@ -579,7 +684,7 @@
         //    so before the deploy, not after, because this is usually a mistake:
         //    someone cleared the settings without meaning to turn the feature off.
         if (sub.mode !== 'off') { return; }
-        return req({ url: REGISTRY + '/job_specs', type: 'GET' }).then(function (r) {
+        return req({ url: registryPath(s) + '/job_specs', type: 'GET' }).then(function (r) {
           if (!r.ok) { return; }   // advisory only; never block on a failed read
           var live = (r.data && r.data.job_specs) || [];
           var on = live.some(function (j) { return j.installed && j.name === 'jobspec_field_action'; });
@@ -590,9 +695,32 @@
                                  'ticket.CustomFieldChanged, with its flow gone. If you meant to keep ' +
                                  'field actions, set the two field IDs and Re-check. If you meant to ' +
                                  'remove them, uninstall it with DELETE /api/services/zis/registry/' +
-                                 'job_specs/install?job_spec_name=' + JOB_SPEC_PREFIX + 'jobspec_field_action' });
+                                 'job_specs/install?job_spec_name=' + jobSpecPrefix(s) + 'jobspec_field_action' });
           }
         });
+      })
+      .then(function () {
+        // 5. rename guard. Renaming does not retire the old integration: its job
+        //    specs stay installed, its flows stay present, and it keeps receiving
+        //    the same events — so both integrations process every inbound ping and
+        //    the member gets duplicate tickets. verify() reads only the NEW
+        //    registry, so it structurally cannot see this. Advisory, and only
+        //    meaningful when the name is non-default; a rename from one custom
+        //    name to another is undetectable from here (noted in zis/README.md).
+        if (integrationName(s) === DEFAULT_INTEGRATION) { return; }
+        return req({ url: '/api/services/zis/registry/' + DEFAULT_INTEGRATION + '/job_specs', type: 'GET' })
+          .then(function (r) {
+            if (!r.ok) { return; }   // advisory only; never block on a failed read
+            var installed = ((r.data && r.data.job_specs) || []).filter(function (j) { return j.installed; });
+            if (!installed.length) { return; }
+            steps.push({ ok: null, name: 'The previous integration "' + DEFAULT_INTEGRATION + '" is still live',
+                         detail: installed.length + ' job spec(s) are still installed under it (' +
+                                 installed.map(function (j) { return j.name; }).join(', ') + '). They keep ' +
+                                 'intercepting the same events, so both integrations will act on every ' +
+                                 'inbound collaboration and tickets will be created twice. Uninstall each ' +
+                                 'with DELETE /api/services/zis/registry/job_specs/install?job_spec_name=' +
+                                 'zis:' + DEFAULT_INTEGRATION + ':job_spec:<name>. Not blocking.' });
+          });
       })
       .then(function () {
         state.preflightOk = ok;
@@ -628,16 +756,32 @@
     // 1. integration must exist before the bundle can be uploaded. Idempotent:
     //    an existing integration returns 200, a duplicate returns 409.
     return req({
-      url: REGISTRY, type: 'POST', contentType: 'application/json',
+      url: registryPath(s), type: 'POST', contentType: 'application/json',
       data: JSON.stringify({ description: 'TSANet Connect' })
     }).then(function (r) {
       var ok = r.ok || r.status === 409;
-      record('Ensure ZIS integration "' + INTEGRATION + '"', ok,
-             ok ? (r.status === 409 ? 'Already existed.' : 'Present.') : ('HTTP ' + r.status + ' ' + r.body));
+      // The third case, and the one that produced #174. A 400 here does not mean
+      // the request was malformed: ZIS returns it when the name belongs to a
+      // namespace this account cannot write to, which no amount of permission
+      // fixes. Say what to do at the point it happens, because the next failure
+      // downstream is a 401 "integration mismatch" that reads like a credential
+      // problem and sent a member debugging Entra for two days.
+      var detail;
+      if (ok) {
+        detail = (r.status === 409 ? 'Already existed.' : 'Present.');
+      } else if (r.status === 400 && /not available for upsert/i.test(String(r.body || ''))) {
+        detail = 'HTTP 400 — the name "' + integrationName(s) + '" is not available to this Zendesk ' +
+                 'account. It is not a permissions problem and retrying will not help. Pick a unique ' +
+                 'name, register it once with POST /api/services/zis/registry/<name>, put the same ' +
+                 'name in the app setting tsanet_integration_name, then Re-check.';
+      } else {
+        detail = 'HTTP ' + r.status + ' ' + r.body;
+      }
+      record('Ensure ZIS integration "' + integrationName(s) + '"', ok, detail);
       if (!ok) { throw new Error('integration'); }
 
       // 2. upload the substituted bundle
-      return req({ url: REGISTRY + '/bundles', type: 'POST', contentType: 'application/json', data: sub.text });
+      return req({ url: registryPath(s) + '/bundles', type: 'POST', contentType: 'application/json', data: sub.text });
     }).then(function (r) {
       record('Upload bundle', r.ok, r.ok ? 'Accepted.' : ('HTTP ' + r.status + ' ' + r.body));
       if (!r.ok) { throw new Error('upload'); }
@@ -649,7 +793,7 @@
         return chain.then(function () {
           return req({
             url: '/api/services/zis/registry/job_specs/install?job_spec_name=' +
-                 encodeURIComponent(JOB_SPEC_PREFIX + name),
+                 encodeURIComponent(jobSpecPrefix(s) + name),
             type: 'POST', contentType: 'application/json'
           }).then(function (r2) {
             record('Install job spec ' + name, r2.ok, r2.ok ? '' : ('HTTP ' + r2.status + ' ' + r2.body));
@@ -665,8 +809,9 @@
 
   // Truth comes from the registry, not from the POST responses above.
   function verify() {
+    var s = state.settings;
     var expected = bundleJobSpecNames(state.bundle);
-    return req({ url: REGISTRY + '/job_specs', type: 'GET' }).then(function (r) {
+    return req({ url: registryPath(s) + '/job_specs', type: 'GET' }).then(function (r) {
       if (!r.ok) {
         record('Verify installed job specs', false,
                'HTTP ' + r.status + ' ' + r.body + ' — could not confirm state. Treat as NOT deployed.');
@@ -687,7 +832,7 @@
         state.steps.push({ ok: null, name: 'Stale job specs installed from an older bundle',
                            detail: orphans.join(', ') + '. These still intercept events. ' +
                                    'Uninstall them with DELETE /api/services/zis/registry/job_specs/install' +
-                                   '?job_spec_name=' + JOB_SPEC_PREFIX + '<name>' });
+                                   '?job_spec_name=' + jobSpecPrefix(s) + '<name>' });
       }
     });
   }
@@ -717,7 +862,7 @@
     var lines = [
       'TSANet Connect — ZIS deploy report',
       'when:        ' + new Date().toISOString(),
-      'integration: ' + INTEGRATION,
+      'integration: ' + integrationName(s),
       'env:         ' + (s.tsanet_env || '?'),
       'connection:  ' + connName(s),
       'bundle:      ' + (state.bundle && state.bundle.name) + ' / ' + (state.bundle && state.bundle.zis_template_version),
