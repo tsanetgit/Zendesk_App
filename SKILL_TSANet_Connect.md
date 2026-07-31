@@ -758,6 +758,9 @@ Full data map and recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_an
 
 ## TSANet API Gotchas
 
+- **Inbound push registration is TWO calls, and the endpoint version matters.** Members read "send TSANet the ingest URL" as an email; it is not. (1) `POST /api/services/zis/inbound_webhooks/generic/{integration}` on **Zendesk** returns the ingest URL, Basic credentials and `uuid`, all shown once. (2) `POST /v1/webhooks` on **TSANet** with `{"callbackUrl": <ingest URL>, "callbackAuth": {"type":"BASIC","username":..,"password":..}}` subscribes TSANet to it. Omit `eventTypes` — the default is both `collaboration-request.created` and `note.created`, which is what the bundle wants. Save the response `id` (for later management) and `secret` (HMAC key, creation-only).
+  - **`/v2/webhooks` silently breaks the bundle.** Both endpoints accept a subscription. `/v2/` delivers CloudEvents with prefixed type strings (`org.tsanet.connect.collaboration-request.created`); `flow_handle_ping`'s `GuardCreate` matches the bare `collaboration-request.created` and defaults to `NoOp`, so every delivery returns 200 and creates nothing, with no error anywhere. Verified against the shipped bundle: zero occurrences of `org.tsanet.connect`.
+  - `POST /v1/webhooks` and `GET /v1/webhooks` are `deprecated` with `x-sunset: 2027-01-01` in the spec. The CloudEvents migration is `tsanetgit/Zendesk_App#101` (open). Until it ships, v1 is correct and v2 is wrong.
 - **`documentId` is required on case submission** — get it fresh from the form endpoint every time. Do not cache long-term; vendors update their forms.
 - **Partner search returns an array** — a company with multiple departments returns multiple results. Use `departmentId` for precise routing when available.
 - **Test submissions:** set `testSubmission: true` on POST to submit without creating real SLA timers or notifications.

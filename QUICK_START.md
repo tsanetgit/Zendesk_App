@@ -354,9 +354,16 @@ The app substitutes your per-instance values, uploads the bundle, **installs eve
 
 > **Job specs no longer need a manual install.** Earlier revisions of this guide had you `POST .../job_specs/install` for `jobspec_handle_ping` by hand, and repeat it after every upload. The app now installs every job spec the bundle declares, on every deploy, and confirms it. Skip any older instructions that ask you to do it with curl.
 
-### 4d. Create the inbound webhook
+### 4d. Create the inbound webhook, then subscribe TSANet to it
 
-This is the address TSANet uses to reach you when something happens on one of your collaborations:
+This is **two API calls, both made by you.** Nothing here is an email to TSANet, and nobody at TSANet does anything on your behalf.
+
+1. **Zendesk** creates the address TSANet will post to, and hands you a credential guarding it.
+2. **TSANet** is told to post to that address, using that credential.
+
+The second call simply carries across the values the first one returned.
+
+#### Call 1: create the ingest URL (to Zendesk)
 
 ```bash
 curl -s -X POST \
@@ -367,7 +374,29 @@ curl -s -X POST \
 
 > **Save all three returned values immediately: the ingest URL, the Basic credentials, and the `uuid`.** They are shown only once. There is no list API, so a lost `uuid` is unrecoverable and you will not be able to rotate the credential later. See [ZIS_Rotation_Runbook.md](ZIS_Rotation_Runbook.md).
 
-Then send TSANet the ingest URL and Basic credentials so deliveries can start: register the webhook subscription with `callbackUrl` set to the ingest URL and a `callbackAuth` of type `BASIC` carrying those credentials.
+#### Call 2: register the subscription (to TSANet)
+
+Authenticate with your TSANet API account, the same one the sidebar app uses. Get a token from `POST /v1/login`, then:
+
+```bash
+curl -s -X POST "https://connect2.tsanet.net/v1/webhooks" \
+  -H "Authorization: Bearer YOUR_TSANET_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "callbackUrl": "THE_INGEST_URL_FROM_CALL_1",
+    "callbackAuth": {
+      "type": "BASIC",
+      "username": "THE_BASIC_USERNAME_FROM_CALL_1",
+      "password": "THE_BASIC_PASSWORD_FROM_CALL_1"
+    }
+  }'
+```
+
+`connect2.tsanet.net` is Beta; Production is `connect2.tsanet.org`. Leave `eventTypes` out: omitted means both `collaboration-request.created` and `note.created`, which is what the flow bundle expects.
+
+Save the `id` from the response, which is what you need to inspect or remove the subscription later. The response also carries `secret`, the HMAC signing key, and it is returned only on creation.
+
+> **Use `/v1/webhooks`, not `/v2/webhooks`.** Both endpoints exist and both will accept your subscription, which makes this easy to get wrong and hard to notice. `/v2/` delivers CloudEvents, whose event type strings are prefixed (`org.tsanet.connect.collaboration-request.created`). The flow bundle matches the unprefixed V1 name, so on a `/v2/` subscription every delivery is accepted, returns 200, and then falls through to a no-op: **no ticket is ever created and nothing reports an error.** `/v1/webhooks` is deprecated with a sunset of 2027-01-01; migrating the flow and existing subscriptions to CloudEvents is tracked in `tsanetgit/Zendesk_App#101` and will ship with a future app release. Until then `/v1/` is the correct choice.
 
 > **Inbound push is live.** TSANet to ZIS delivery uses the `callbackAuth` capability (`tsanetgit/Zendesk_App#2`), delivered in Connect API **v3.1.0** and validated on Beta: authenticated deliveries return 200 and create exactly one ticket per case. You can also exercise the pipeline manually by POSTing a `WebhookPayload`-shaped body to the ingest URL with its Basic credentials.
 
