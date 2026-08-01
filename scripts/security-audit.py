@@ -508,36 +508,81 @@ def check_sdk_sri(root, network):
 
 # ── Category 2/3: credentials and authorization ─────────────────────────
 
-def check_no_embedded_secrets(root):
+def check_no_embedded_secrets(root, scan):
+    """No credential-shaped literal anywhere in the repository.
+
+    THE WHOLE TREE, not just zaf-build/. This walked
+    os.path.join(root, "zaf-build") and read three suffixes, so `scripts/`
+    was never looked at — in a repository that is PUBLIC
+    (`gh api repos/tsanetgit/Zendesk_App -q .visibility`) and whose scripts/
+    holds the credential-rotation tooling: rotate-inbound-webhook.py,
+    rotate-zendesk-oauth-secret.py, audit-connection-auth.py. Proved with a
+    control rather than argued: identical `password:` and `ghp_` literals
+    planted in zaf-build/assets/ FAILed and the same literals in scripts/
+    PASSed.
+
+    The old name said "in shipped bundle", so it was honest about its scope
+    while that scope was wrong. Widening the scan means the name has to move
+    with it, or the next reader trusts a narrower thing than they are getting.
+
+    No suffix allowlist. The previous three-suffix filter is the failure mode
+    SCANNED_SUFFIXES documents for the deprecation scan: a list nobody
+    remembers to extend, silently not covering whatever is added next. Every
+    enumerated file is read instead, and what cannot be decoded as text is
+    skipped, which needs no maintenance as the tree grows new file types.
+    """
     cat = "credentials"
-    # Long base64/hex runs and obvious credential assignments in shipped files.
+    name = "no embedded credentials anywhere in the repository"
+    # Long base64/hex runs and obvious credential assignments.
     patterns = [
         (re.compile(r"(?i)(client_secret|api[_-]?token|password)\s*[:=]\s*[\"'][^\"'{}$][^\"']{12,}"), "credential-shaped assignment"),
         (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "Slack token"),
         (re.compile(r"ghp_[A-Za-z0-9]{20,}"), "GitHub PAT"),
     ]
     hits = []
-    for base, _, files in os.walk(os.path.join(root, "zaf-build")):
-        for fn in files:
-            if not fn.endswith((".js", ".json", ".html")):
-                continue
-            rel = os.path.relpath(os.path.join(base, fn), root)
-            try:
-                body = read(root, rel)
-            except OSError:
-                continue
-            for pat, label in patterns:
-                for m in pat.finditer(body):
-                    # {{setting.x}} placeholders are the correct pattern
-                    if "{{" in m.group(0) or "settings." in m.group(0):
-                        continue
-                    hits.append(f"{rel}: {label}")
-    if hits:
-        record("FAIL", "no embedded credentials in shipped bundle",
-               "; ".join(sorted(set(hits))), cat)
+    scanned = 0
+    skipped = 0
+    for rel in scan.paths:
+        try:
+            body = read(root, rel)
+        except OSError:
+            continue
+        except UnicodeDecodeError:
+            skipped += 1
+            # Not text, so not scanned. Named separately rather than folded
+            # into the OSError catch, because the two mean different things
+            # and only this one is a deliberate blind spot: a credential-shaped
+            # LITERAL is a text artefact, and running these patterns over the
+            # tracked .png/.zip/.docx would yield noise, not findings.
+            #
+            # It also has to be caught at all. UnicodeDecodeError is a
+            # ValueError, NOT an OSError, so the existing catch does not cover
+            # it; widening the scan to every file without this line crashes the
+            # audit on the first tracked image (exit 3, every later check
+            # unrun).
+            continue
+        scanned += 1
+        for pat, label in patterns:
+            for m in pat.finditer(body):
+                # {{setting.x}} placeholders are the correct pattern
+                if "{{" in m.group(0) or "settings." in m.group(0):
+                    continue
+                hits.append(f"{rel}: {label}")
+    # Report the skip count, not just the read count. It makes the blind spot
+    # visible at runtime rather than only in this docstring, and it separates
+    # two different vacuity failures that would otherwise read alike: "0 read,
+    # 6 skipped" means the scope somehow became all-binary, while "0 read, 0
+    # skipped" means the enumeration itself is empty.
+    if not scanned:
+        record("FAIL", name,
+               f"nothing readable in scope ({skipped} skipped as non-text) — "
+               f"the check could not run, which is not a pass", cat)
+    elif hits:
+        record("FAIL", name, "; ".join(sorted(set(hits))), cat)
     else:
-        record("PASS", "no embedded credentials in shipped bundle",
-               "no credential-shaped literals in zaf-build/", cat)
+        record("PASS", name,
+               f"no credential-shaped literals in {scanned} readable file(s); "
+               f"{skipped} skipped as non-text", cat)
 
 
 def check_secure_settings(root):
@@ -1288,7 +1333,7 @@ def main():
         check_workflow_expression_injection(root)
         check_action_pinning(root)
         check_sdk_sri(root, network=not args.no_network)
-        check_no_embedded_secrets(root)
+        check_no_embedded_secrets(root, scan)
         check_secure_settings(root)
         check_shared_helper_drift(root)
         check_scanned_tree(root, scan)
