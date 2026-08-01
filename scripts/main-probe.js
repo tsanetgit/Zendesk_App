@@ -39,7 +39,16 @@ if (!SRC.endsWith(IIFE_END) && SRC.indexOf(IIFE_END) === -1) {
 function instrument(src) {
   const at = src.lastIndexOf(IIFE_END);
   return src.slice(0, at) +
-    '\n__probe.expose({ handleSubmit: handleSubmit, setState: function (o) {' +
+    // typeof guards so this harness also loads against a version that predates the
+    // fixes. Without them the expose throws a ReferenceError at load and the whole
+    // suite reports nothing at all, which is indistinguishable from passing -- the
+    // exact failure this file exists to avoid. Absent symbols surface as failed
+    // probes instead.
+    '\n__probe.expose({ handleSubmit: handleSubmit,' +
+    ' fitPanelToContent: (typeof fitPanelToContent === "function") ? fitPanelToContent : null,' +
+    ' PANEL_MIN_H: (typeof PANEL_MIN_H === "number") ? PANEL_MIN_H : null,' +
+    ' PANEL_MAX_H: (typeof PANEL_MAX_H === "number") ? PANEL_MAX_H : null,' +
+    ' setState: function (o) {' +
     ' if (o.settings !== undefined) settings = o.settings;' +
     ' if (o.currentForm !== undefined) currentForm = o.currentForm;' +
     ' if (o.selectedPartner !== undefined) selectedPartner = o.selectedPartner; } });' +
@@ -82,7 +91,12 @@ function drain(turns) {
 function run(fail) {
   const els = Object.create(null);
   const calls = [];
+  const resizes = [];
   let exposed = null;
+
+  const body = makeElement('body');
+  // The one input the height fit reads. Scenarios set it to stand in for content.
+  body.scrollHeight = 300;
 
   const document = {
     getElementById(id) {
@@ -90,7 +104,7 @@ function run(fail) {
       return els[id];
     },
     createElement: (t) => makeElement('<' + t + '>'),
-    body: makeElement('body'),
+    body,
     addEventListener() {}
   };
 
@@ -139,7 +153,8 @@ function run(fail) {
     },
     request,
     metadata: () => Promise.resolve({ settings: SETTINGS }),
-    invoke() {}, on() {}, has() { return false; }
+    invoke(name, opts) { if (name === 'resize') resizes.push((opts && opts.height) || ''); },
+    on() {}, has() { return false; }
   };
 
   // TSANet-side calls go through global fetch, not the ZAF client.
@@ -190,9 +205,22 @@ function run(fail) {
     banner: els['error-banner'] ? els['error-banner'].textContent : '',
     dialogDisplay: els['new-collab-dialog'].style.display,
     submitBtn: els['btn-submit-collab'] || makeElement('btn-submit-collab'),
-    calls,
+    calls, resizes, body, exposed,
     collabPosts: calls.filter((c) => c.indexOf('POST') === 0 && c.indexOf('/collaboration-requests') !== -1).length
   }));
+}
+
+// Height fit in isolation: set a content height, ask for a fit, read what was requested.
+function heightFor(scrollHeight) {
+  return run(null).then((r) => {
+    if (!r.exposed.fitPanelToContent) {
+      return { asked: '(main.js has no fitPanelToContent)', min: null, max: null };
+    }
+    r.body.scrollHeight = scrollHeight;
+    r.resizes.length = 0;
+    r.exposed.fitPanelToContent();
+    return { asked: r.resizes[r.resizes.length - 1], min: r.exposed.PANEL_MIN_H, max: r.exposed.PANEL_MAX_H };
+  });
 }
 
 const results = [];
@@ -257,6 +285,72 @@ async function main() {
     check('a pre-creation failure created no case',
           r.collabPosts === 1,
           'posts=' + r.collabPosts, 'the one attempt, which failed');
+  }
+
+  // ── tsanetgit/Zendesk_App#179, the sidebar's fixed height ──────────────────
+  //
+  // The pixel-level fit is NOT testable here and is not claimed to be: the apps tray
+  // geometry is what is being fitted, so "a single-field form does not require
+  // scrolling" needs a real instance. What is testable, and what actually regressed,
+  // is that the height is DERIVED rather than constant, and bounded.
+
+  // 6. The constant is gone. This is the whole defect: 600px pads a short form and
+  //    truncates a long one, and no content can change either outcome.
+  {
+    const shortPanel = await heightFor(120);
+    const tallPanel = await heightFor(500);
+    check('panel height varies with content instead of being a constant',
+          shortPanel.asked !== tallPanel.asked &&
+            parseInt(shortPanel.asked, 10) < parseInt(tallPanel.asked, 10),
+          '120px content -> ' + shortPanel.asked + ', 500px content -> ' + tallPanel.asked,
+          'two different heights, the taller content taller');
+  }
+
+  // 7. Bounded above, so a ticket with many collaborations scrolls inside the pane
+  //    rather than pushing the rest of the apps tray out of reach.
+  {
+    const huge = await heightFor(100000);
+    check('panel height is clamped above',
+          parseInt(huge.asked, 10) === huge.max,
+          huge.asked, huge.max + 'px');
+  }
+
+  // 8. Bounded below, so a fit can never collapse the panel to nothing.
+  {
+    const tiny = await heightFor(0);
+    check('panel height is clamped below',
+          parseInt(tiny.asked, 10) === tiny.min,
+          tiny.asked, tiny.min + 'px');
+  }
+
+  // 9. No path still asks for the old constant. Catches a call site that was missed
+  //    or one added later by copying an old line.
+  {
+    const src = fs.readFileSync(MAIN_JS, 'utf8');
+    const hardcoded = (src.match(/invoke\('resize'[^)]*height:\s*'(\d+)px'/g) || [])
+      .filter((m) => !/'44px'/.test(m));   // the collapsed compact bar is a state, not a fit
+    check('no resize call hardcodes a panel height',
+          hardcoded.length === 0, JSON.stringify(hardcoded),
+          'every non-collapsed resize routed through fitPanelToContent');
+  }
+
+  // 10. flexible_height is not a ZAF manifest property, so declaring it did nothing
+  //     for every release that carried it. Assert against the documented key set
+  //     rather than just its absence, so the next invented key is caught too.
+  {
+    const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'zaf-build/manifest.json'), 'utf8'));
+    const ALLOWED = ['url', 'autoHide', 'autoLoad', 'flexible', 'signed', 'size'];
+    const bad = [];
+    const support = (mf.location && mf.location.support) || {};
+    Object.keys(support).forEach((loc) => {
+      const v = support[loc];
+      if (v && typeof v === 'object') {
+        Object.keys(v).forEach((k) => { if (ALLOWED.indexOf(k) === -1) bad.push(loc + '.' + k); });
+      }
+    });
+    check('no manifest location declares a property ZAF does not define',
+          bad.length === 0, JSON.stringify(bad),
+          'only ' + ALLOWED.join('/'));
   }
 
   const failed = results.filter((r) => !r.pass);

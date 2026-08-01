@@ -280,6 +280,35 @@ function addTicketTag(ticketId, tag, retried) {
 }
 
 // ── Load collaborations ───────────────────────────────────────────────────────
+// ── Panel height ─────────────────────────────────────────────────────────────
+// The sidebar used to ask for 600px whenever it was not collapsed, which truncates
+// anything taller and pads anything shorter. EDB reported the second half of that:
+// a single-field form still needed scrolling (tsanetgit/Zendesk_App#179).
+//
+// There is no manifest setting that fixes this. The manifest declared
+// "flexible_height": true on both locations, and that is NOT a ZAF property — a
+// location object takes url, autoHide, autoLoad, flexible, signed and size — so it
+// was silently ignored by every release that shipped it. The real property,
+// `flexible`, governs WIDTH, and only for ticket_sidebar. Height is whatever the app
+// asks for, so it has to be asked for from the content.
+//
+// Clamped at both ends. Unbounded growth on a ticket carrying many collaborations
+// would push the rest of the apps tray out of reach; above the clamp a long list
+// scrolls inside the pane, which is the behaviour it should have anyway.
+var PANEL_MIN_H = 44;    // the collapsed compact bar: one row, and a state of its own
+var PANEL_MAX_H = 800;
+// body sets padding: 8px and keeps the browser's default 8px margin. scrollHeight
+// counts the padding but not the margin, so without this the last row clips by a few
+// pixels and the pane grows a scrollbar it does not need.
+var PANEL_PAD_H = 20;
+
+function fitPanelToContent() {
+  var h = Math.ceil(document.body.scrollHeight) + PANEL_PAD_H;
+  if (h < PANEL_MIN_H) h = PANEL_MIN_H;
+  if (h > PANEL_MAX_H) h = PANEL_MAX_H;
+  client.invoke('resize', { width: '100%', height: h + 'px' });
+}
+
 function loadCollaborations(quiet) {
   if (!quiet) show('loading', true);
   hideInfoBanner();
@@ -297,14 +326,19 @@ function loadCollaborations(quiet) {
     show('btn-new-collab', true);
     show('btn-sync-inbound', true);
     show('tsanet-notice', true);
-    client.invoke('resize', { width: '100%', height: '600px' });
     show('empty-state', false);
+    // Fit twice on purpose. The old 600px was asked for HERE, before the cards
+    // exist, which is most of why a constant was needed at all: at this point the
+    // panel is a spinner. This first call fits the loading state; the one after
+    // renderAll fits the cards it was waiting for.
+    fitPanelToContent();
     return Promise.all(tokens.map(function(t) {
       return tsanetGet('/collaboration-requests/' + t).catch(function() { return null; });
     })).then(function(results) {
       collaborations = results.filter(Boolean);
       renderAll();
       show('loading', false);
+      fitPanelToContent();
       // Sync live TSANet status back to Zendesk ticket fields
       syncStatusToTicket(collaborations);
     });
@@ -810,6 +844,8 @@ document.getElementById('btn-new-collab').addEventListener('click', function() {
     document.getElementById('collab-form').style.display = 'none';
     selectedPartner = null; currentForm = null;
   }
+  // Both directions: opening adds the dialog's height, closing gives it back.
+  fitPanelToContent();
 });
 
 // Called from compact-bar "+ New" button on non-TSANet tickets.
@@ -821,13 +857,15 @@ function enterNewCollaboration() {
   show('btn-sync-inbound', true);
   show('tsanet-notice', true);
   show('empty-state', true);
-  client.invoke('resize', { width: '100%', height: '600px' });
   var d = document.getElementById('new-collab-dialog');
   d.style.display = 'block';
   document.getElementById('partner-search-input').value = '';
   document.getElementById('partner-results').innerHTML = '';
   document.getElementById('collab-form').style.display = 'none';
   selectedPartner = null; currentForm = null;
+  // After the dialog is shown, not before: the old call sat above these lines and
+  // measured the collapsed panel, which is the other half of why it needed a constant.
+  fitPanelToContent();
 }
 
 document.getElementById('partner-search-input').addEventListener('input', function() {
@@ -928,8 +966,13 @@ function renderCollabForm(formData) {
   form.appendChild(actions);
   document.getElementById('btn-cancel-form').onclick = function() {
     document.getElementById('new-collab-dialog').style.display = 'none';
+    fitPanelToContent();
   };
   document.getElementById('btn-submit-collab').onclick = handleSubmit;
+  // The form has just been built from the partner's process form, so its height is
+  // only knowable now. This is the case EDB reported: a single-field form used to sit
+  // in a 600px pane and still need scrolling.
+  fitPanelToContent();
 }
 
 // A partner-supplied fieldId is interpolated into an id attribute that goes
@@ -1009,6 +1052,7 @@ function handleSubmit() {
       // Closing the dialog here, on the line after the case is created, is what makes
       // the resend unavailable rather than merely discouraged.
       document.getElementById('new-collab-dialog').style.display = 'none';
+      fitPanelToContent();
       return client.request({ url: '/api/v2/tickets/' + ticketId + '.json', type: 'GET' }).then(function(d2) {
         var cf2 = d2.ticket.custom_fields || [];
         var mf = cf2.find(function(f) { return String(f.id) === String(settings.field_id_tokens_multi); });
