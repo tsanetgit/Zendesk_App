@@ -296,11 +296,18 @@ function addTicketTag(ticketId, tag, retried) {
 // Clamped at both ends. Unbounded growth on a ticket carrying many collaborations
 // would push the rest of the apps tray out of reach; above the clamp a long list
 // scrolls inside the pane, which is the behaviour it should have anyway.
-var PANEL_MIN_H = 44;    // the collapsed compact bar: one row, and a state of its own
+// Floor for the clamp, and nothing else. It was ALSO the collapsed compact bar's
+// height until tsanetgit/Zendesk_App#188: the bar measures 62px at the 320px sidebar
+// width, so asking for 44 made the one state a new ticket ever reaches scroll. No
+// state asserts its own height now; every one of them measures.
+var PANEL_MIN_H = 44;
 var PANEL_MAX_H = 800;
-// body sets padding: 8px and keeps the browser's default 8px margin. scrollHeight
-// counts the padding but not the margin, so without this the last row clips by a few
-// pixels and the pane grows a scrollbar it does not need.
+// Slack over the measurement. body carries padding: 8px, which scrollHeight already
+// counts. It does NOT carry the browser's default 8px margin, which index.html:14
+// zeroes with `* { margin: 0 }` and computed style confirms as 0px; the comment here
+// claimed otherwise and anyone tuning this number was reading a false premise
+// (tsanetgit/Zendesk_App#188). The slack is kept because a fit that lands a pixel
+// short grows a scrollbar, and being a few pixels tall costs nothing.
 var PANEL_PAD_H = 20;
 
 // The ONLY place this file asks ZAF to resize, so the guard below cannot be bypassed by
@@ -336,11 +343,12 @@ function loadCollaborations(quiet) {
       // No TSANet data on this ticket — collapse to compact bar
       show('loading', false);
       show('compact-bar', true);
-      // Collapsed is a deliberate state rather than a fit, so it sets an explicit
-      // height — but through the same guarded helper, and from the same constant as
-      // the clamp's floor rather than repeating the number where nothing would notice
-      // the two drifting apart.
-      setPanelHeight(PANEL_MIN_H);
+      // Collapsed is still a deliberate state, but its height is measured like every
+      // other one. Asserting PANEL_MIN_H here was wrong twice over: the bar needs 62px
+      // at the 320px sidebar width, and a new ticket reaches this branch and no other,
+      // so the number nobody checked was the only number most members ever saw
+      // (tsanetgit/Zendesk_App#188). The clamp keeps 44 as the floor.
+      fitPanelToContent();
       return;
     }
     // TSANet ticket — show full panel
@@ -897,10 +905,18 @@ document.getElementById('partner-search-input').addEventListener('input', functi
   _searchTimer = setTimeout(function() { doPartnerSearch(q); }, 350);
 });
 
+// Every branch here changes how tall the panel needs to be, and none of them used to
+// say so (tsanetgit/Zendesk_App#188). The dialog was fitted when it opened, holding an
+// empty results list, and then the results rendered into it: measured at the 320px
+// sidebar width, four results need 435px against a panel still sitting at 347.
+// #partner-results caps itself at 150px and scrolls internally past that, which is
+// deliberate, but the panel was never grown to hold even the first 150.
 function doPartnerSearch(q) {
   var res = document.getElementById('partner-results');
   res.innerHTML = '<div style="padding:6px;color:#68737d;font-size:12px;">Searching...</div>';
-  tsanetGet('/partners/' + encodeURIComponent(q)).then(function(partners) {
+  // The placeholder is a state the agent actually sees, so it is fitted too.
+  fitPanelToContent();
+  return tsanetGet('/partners/' + encodeURIComponent(q)).then(function(partners) {
     res.innerHTML = '';
     if (!partners || !partners.length) {
       res.innerHTML = '<div style="padding:6px;color:#68737d;font-size:12px;">No results.</div>';
@@ -915,7 +931,10 @@ function doPartnerSearch(q) {
     });
   }).catch(function(err) {
     res.innerHTML = '<div style="padding:6px;color:#cc3340;font-size:12px;">Search failed: ' + esc(err.message) + '</div>';
-  });
+    // One fit for all three terminal renders. The catch resolves, so the fit below
+    // runs after results, no-results and failure alike, rather than three call sites
+    // that a fourth branch could later be added beside without one.
+  }).then(fitPanelToContent);
 }
 
 function selectPartner(partner, itemEl) {
@@ -937,8 +956,13 @@ function selectPartner(partner, itemEl) {
     : '/forms/company/' + partner.companyId;
   tsanetGet(url).then(function(formData) {
     currentForm = formData;
-    renderCollabForm(formData);
+    // Shown BEFORE it is rendered, because renderCollabForm ends by fitting the panel
+    // and the form was still display:none here, so that fit measured a panel without
+    // the form in it. Same mistake as the pre-#183 enterNewCollaboration, which asked
+    // for a height above the lines that changed what the height should be. Found while
+    // fixing the two states named in tsanetgit/Zendesk_App#188; this is the third.
     form.style.display = 'block';
+    renderCollabForm(formData);
   }).catch(function(err) { showError('Form load failed: ' + err.message); });
 }
 

@@ -45,6 +45,9 @@ function instrument(src) {
     // exact failure this file exists to avoid. Absent symbols surface as failed
     // probes instead.
     '\n__probe.expose({ handleSubmit: handleSubmit,' +
+    ' loadCollaborations: (typeof loadCollaborations === "function") ? loadCollaborations : null,' +
+    ' doPartnerSearch: (typeof doPartnerSearch === "function") ? doPartnerSearch : null,' +
+    ' selectPartner: (typeof selectPartner === "function") ? selectPartner : null,' +
     ' fitPanelToContent: (typeof fitPanelToContent === "function") ? fitPanelToContent : null,' +
     ' PANEL_MIN_H: (typeof PANEL_MIN_H === "number") ? PANEL_MIN_H : null,' +
     ' PANEL_MAX_H: (typeof PANEL_MAX_H === "number") ? PANEL_MAX_H : null,' +
@@ -68,13 +71,27 @@ const SETTINGS = {
 const TOKEN = 'cd277fac1b44aa00';
 
 function makeElement(id) {
+  // appendChild RECORDS its children. It used to be a no-op, and that is not a detail:
+  // doPartnerSearch builds result rows with createElement + appendChild rather than by
+  // assigning innerHTML, so a no-op made those rows invisible to the content model and
+  // the probe for tsanetgit/Zendesk_App#188's second half passed against the very bug it
+  // was written for. innerHTML is an accessor for the same reason: assigning it clears
+  // children in a browser, and the model has to agree or the two paths disagree about
+  // what is on screen.
+  const children = [];
+  let html = '';
   return {
     id,
-    textContent: '', innerHTML: '', value: '', disabled: false,
+    textContent: '', value: '', disabled: false,
     style: {}, className: '',
+    children,
+    get innerHTML() { return html; },
+    set innerHTML(v) { html = String(v == null ? '' : v); children.length = 0; },
     classList: { add() {}, remove() {}, contains() { return false; } },
     addEventListener() {}, removeEventListener() {},
-    appendChild() {}, insertBefore() {}, removeChild() {},
+    appendChild(c) { children.push(c); return c; },
+    insertBefore(c) { children.push(c); return c; },
+    removeChild() {},
     setAttribute() {}, querySelector() { return null; }, querySelectorAll() { return []; },
     firstChild: null, nodeType: 1
   };
@@ -92,11 +109,68 @@ function run(fail, throwOnResize, patch) {
   const els = Object.create(null);
   const calls = [];
   const resizes = [];
+  const needed = [];   // content height at each resize, parallel to `resizes`
   let exposed = null;
 
   const body = makeElement('body');
-  // The one input the height fit reads. Scenarios set it to stand in for content.
-  body.scrollHeight = 300;
+  // Content height is DERIVED from what is on screen, not handed in as a number.
+  //
+  // It used to be `body.scrollHeight = 300`, a plain input. That is why 22 probes
+  // passed on a panel that was 18px too short in the one state a new ticket ever
+  // reaches (tsanetgit/Zendesk_App#188): with the content height supplied by the
+  // scenario, nothing could observe a resize asking for less than the content needs.
+  //
+  // These are measured, not invented. zaf-build/assets/index.html rendered at 320px,
+  // the ZAF sidebar width, each element shown alone and the delta in
+  // document.body.scrollHeight recorded. The model is additive and was checked against
+  // the composite states: 16+39+40+84+47+101 = 327 matches the measured dialog state,
+  // and +4*27 = 435 matches it with four search results.
+  const BODY_PAD_H = 16;                 // body { padding: 8px }, top + bottom
+  const CONTENT_H = {
+    'loading': 64, 'error-banner': 28, 'info-banner': 101, 'compact-bar': 46,
+    'btn-new-collab': 39, 'btn-sync-inbound': 40, 'tsanet-notice': 84,
+    'empty-state': 47, 'new-collab-dialog': 101, 'collab-form': 0
+  };
+  const PARTNER_ROW_H = 27;
+  const PARTNER_RESULTS_MAX_H = 150;     // #partner-results { max-height: 150px }
+  // An EMPTY collab-form measures 0, which is why the table above lists it as 0. Its
+  // rendered rows are what carry height: measured 58 for a select, 56 for a text input,
+  // 89 for the textarea and 30 for the actions row, so a minimal three-field form plus
+  // actions is 233px. Averaged per child rather than typed, because the model only has
+  // to make "was the form on screen when this was measured" observable, and with a flat
+  // 0 it was not: reverting the selectPartner ordering changed nothing the probe saw.
+  const FORM_CHILD_H = 58;
+  let forcedScrollHeight = null;
+  Object.defineProperty(body, 'scrollHeight', {
+    get() {
+      if (forcedScrollHeight !== null) { return forcedScrollHeight; }
+      let h = BODY_PAD_H;
+      Object.keys(CONTENT_H).forEach((id) => {
+        const e = els[id];
+        // Absent or display:none means not laid out. Elements start hidden here, which
+        // matches index.html's CSS defaults for every id in this table.
+        if (e && e.style && e.style.display && e.style.display !== 'none') h += CONTENT_H[id];
+      });
+      // Rows arrive two ways: appended elements (the results list) and an innerHTML
+      // string (the Searching / No results / failure placeholders). Count both.
+      const cf = els['collab-form'];
+      if (cf && cf.style && cf.style.display && cf.style.display !== 'none') {
+        h += cf.children.length * FORM_CHILD_H;
+      }
+      const pr = els['partner-results'];
+      if (pr) {
+        const appended = pr.children.filter((c) => c && c.className === 'partner-result').length;
+        const inHtml = (String(pr.innerHTML).match(/partner-result/g) || []).length;
+        const rows = appended + inHtml;
+        if (rows) { h += Math.min(PARTNER_RESULTS_MAX_H, rows * PARTNER_ROW_H); }
+        else if (pr.innerHTML) { h += PARTNER_ROW_H; }
+      }
+      return h;
+    },
+    // heightFor() drives the clamp arithmetic directly, so an explicit assignment still
+    // overrides the model.
+    set(v) { forcedScrollHeight = v; }
+  });
 
   const document = {
     getElementById(id) {
@@ -104,6 +178,10 @@ function run(fail, throwOnResize, patch) {
       return els[id];
     },
     createElement: (t) => makeElement('<' + t + '>'),
+    // selectPartner clears the previous selection through this. Elements already carry
+    // it; the document did not, and its absence threw before the fit under test ran.
+    querySelectorAll: () => [],
+    querySelector: () => null,
     body,
     addEventListener() {}
   };
@@ -156,6 +234,9 @@ function run(fail, throwOnResize, patch) {
     invoke(name, opts) {
       if (name !== 'resize') return;
       resizes.push((opts && opts.height) || '');
+      // What the content actually needed at the instant the app asked. Paired with the
+      // ask, this is what makes "asked for less than is on screen" observable at all.
+      needed.push(body.scrollHeight);
       // deploy.js:222 already wraps this call in try/catch, so the repo treats a
       // throwing resize as a real condition. Scenarios opt in to reproduce it.
       if (throwOnResize) throw new Error('ZAF: resize rejected');
@@ -174,6 +255,12 @@ function run(fail, throwOnResize, patch) {
         });
       }
       return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({ token: TOKEN }) });
+    }
+    // Four rows, which is the case measured against the real page: the dialog needs
+    // 327px empty and 435px with these, against a panel last fitted at 347.
+    if (String(url).indexOf('/partners/') !== -1) {
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(
+        [1, 2, 3, 4].map((n) => ({ companyName: 'Probe Partner ' + n, companyId: 900 + n }))) });
     }
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
   };
@@ -213,7 +300,7 @@ function run(fail, throwOnResize, patch) {
     banner: els['error-banner'] ? els['error-banner'].textContent : '',
     dialogDisplay: els['new-collab-dialog'].style.display,
     submitBtn: els['btn-submit-collab'] || makeElement('btn-submit-collab'),
-    calls, resizes, body, exposed,
+    calls, resizes, needed, body, els, exposed,
     collabPosts: calls.filter((c) => c.indexOf('POST') === 0 && c.indexOf('/collaboration-requests') !== -1).length
   }));
 }
@@ -403,7 +490,106 @@ async function main() {
           'a banner naming the token, and never "Submit failed"');
   }
 
-  // 10. flexible_height is not a ZAF manifest property, so declaring it did nothing
+  // 10-11. tsanetgit/Zendesk_App#188. Every resize must ask for at least the content that
+  //     is on screen when it fires. The harness could not express this while content
+  //     height was an input rather than a model (see CONTENT_H in run()), which is why
+  //     22 probes passed on a panel 18px too short in the state a new ticket lands in.
+  //
+  //     Both halves of #188 are instances of the one invariant, so they are asserted as
+  //     one shape rather than two special cases.
+  const shortfalls = (r) => r.resizes
+    .map((h, i) => ({ asked: parseInt(h, 10), needed: r.needed[i] }))
+    .filter((x) => x.asked < x.needed);
+
+  //     shortfalls() alone is NOT enough, and the gap is this patch's own failure mode.
+  //     It samples only the instants a resize fired, so a path that fits EARLY and then
+  //     renders more content passes: the early ask covered the content that existed
+  //     then, and nothing asks about the content that exists now. Deleting the terminal
+  //     fit from doPartnerSearch, which is exactly #188's second half, left this suite
+  //     at 23/23 until this check was added. So every probe below also asserts the LAST
+  //     ask still covers the state the run ended in.
+  const coversFinalState = (r) => r.resizes.length > 0 &&
+    parseInt(r.resizes[r.resizes.length - 1], 10) >= r.body.scrollHeight;
+
+  //     A NEW ticket carries no TSANet tokens, so loadCollaborations takes the collapsed
+  //     branch and no other. The bar measures 62px at the 320px sidebar width; the code
+  //     used to assert PANEL_MIN_H, which is 44.
+  {
+    const r = await run(null);
+    if (!r.exposed.loadCollaborations) {
+      check('the collapsed compact bar asks for at least its own height',
+            false, '(main.js does not expose loadCollaborations)', 'a fitted collapsed state');
+    } else {
+      r.resizes.length = 0; r.needed.length = 0;
+      await r.exposed.loadCollaborations();
+      await drain(8);
+      const short = shortfalls(r);
+      check('the collapsed compact bar asks for at least its own height',
+            short.length === 0 && coversFinalState(r),
+            JSON.stringify({ asked: r.resizes, needed: r.needed, short,
+                             finalNeed: r.body.scrollHeight }),
+            'a resize >= the content on screen, not an asserted constant');
+    }
+  }
+
+  //     And one step later: the dialog is fitted while its results list is empty, then
+  //     the search renders into it. Nothing re-fitted, so the panel kept the empty
+  //     height. Drives the real doPartnerSearch against the four-row fixture.
+  {
+    const r = await run(null);
+    if (!r.exposed.doPartnerSearch) {
+      check('a partner search that renders results refits the panel',
+            false, '(main.js does not expose doPartnerSearch)', 'a fit after the results render');
+    } else {
+      // The state enterNewCollaboration() leaves behind: dialog open, results empty.
+      const SHOWN = ['btn-new-collab', 'btn-sync-inbound', 'tsanet-notice', 'empty-state',
+                     'new-collab-dialog'];
+      SHOWN.concat(['partner-results']).forEach((id) => {
+        if (!r.els[id]) r.els[id] = makeElement(id);
+      });
+      SHOWN.forEach((id) => { r.els[id].style.display = 'block'; });
+      r.els['partner-results'].innerHTML = '';
+      r.resizes.length = 0; r.needed.length = 0;
+      await r.exposed.doPartnerSearch('probe');
+      await drain(8);
+      const short = shortfalls(r);
+      check('a partner search that renders results refits the panel',
+            short.length === 0 && coversFinalState(r),
+            JSON.stringify({ asked: r.resizes, needed: r.needed, short,
+                             finalNeed: r.body.scrollHeight }),
+            'the LAST ask >= the content once the results are in the DOM');
+    }
+  }
+
+  //     And the third instance, found while fixing the two the ticket names: selecting a
+  //     partner fetched the form, called renderCollabForm (which fits at its end), and
+  //     only THEN set the form visible, so that fit measured a panel with no form in it.
+  //     The same shape as the pre-#183 enterNewCollaboration.
+  {
+    const r = await run(null);
+    if (!r.exposed.selectPartner) {
+      check('selecting a partner fits with the form visible',
+            false, '(main.js does not expose selectPartner)', 'a fit that measures the shown form');
+    } else {
+      ['btn-new-collab', 'btn-sync-inbound', 'tsanet-notice', 'new-collab-dialog',
+       'collab-form', 'partner-results'].forEach((id) => {
+        if (!r.els[id]) r.els[id] = makeElement(id);
+      });
+      ['btn-new-collab', 'btn-sync-inbound', 'tsanet-notice', 'new-collab-dialog']
+        .forEach((id) => { r.els[id].style.display = 'block'; });
+      r.resizes.length = 0; r.needed.length = 0;
+      const itemEl = makeElement('a-result');
+      await r.exposed.selectPartner({ companyName: 'Probe Partner 1', companyId: 901 }, itemEl);
+      await drain(10);
+      check('selecting a partner fits with the form visible',
+            shortfalls(r).length === 0 && coversFinalState(r),
+            JSON.stringify({ asked: r.resizes, needed: r.needed,
+                             finalNeed: r.body.scrollHeight }),
+            'the last ask >= the content with collab-form displayed');
+    }
+  }
+
+  // 13. flexible_height is not a ZAF manifest property, so declaring it did nothing
   //     for every release that carried it. Assert against the documented key set
   //     rather than just its absence, so the next invented key is caught too.
   {
