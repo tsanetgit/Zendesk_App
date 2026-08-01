@@ -20,15 +20,23 @@ Usage:
 
 --no-network skips the checks that fetch the pinned SDK from the CDN; those
 are reported as SKIP rather than counted as passes.
+
+Tree-wide checks read the files git reports for PATH (tracked, plus untracked
+files that are not ignored), so a second checkout living inside the tree — a
+Claude Code worktree under .claude/worktrees/, say — is not scanned as though
+it were this one. A PATH that is not a git repository falls back to a pruned
+filesystem walk, so an exported tree still audits.
 """
 import argparse
 import base64
+import collections
 import datetime
 import glob
 import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -45,6 +53,174 @@ def read(root, rel):
     path = os.path.join(root, rel)
     with open(path, encoding="utf-8") as f:
         return f.read()
+
+
+# This file's own path inside the repo. Spelled once because it is used twice
+# for two different jobs — as the sentinel the enumeration is checked against,
+# and as a file the deprecation scan skips reading — and two spellings of one
+# path are a drift waiting to happen.
+AUDIT_SCRIPT = os.path.join("scripts", "security-audit.py")
+
+# Named fields, so a swapped unpacking cannot quietly misreport the source.
+Scan = collections.namedtuple("Scan", "paths source degraded")
+
+
+def _tree_files(root):
+    """The files belonging to THIS repository tree, and where the list came from.
+
+    Tree-wide checks enumerate here. Checks anchored under zaf-build/ keep
+    their own glob or walk: no second checkout lands inside zaf-build/, and
+    routing them through this would change what they scan for no gain.
+
+    `git ls-files` rather than a raw filesystem walk, because a walk cannot
+    tell this tree's files from a SECOND CHECKOUT sitting inside it. Claude
+    Code creates linked worktrees under .claude/worktrees/<name>/, each at
+    whatever commit that session was on, and the walk read them as ordinary
+    directories. So the audit scanned two copies of the repo at two different
+    revisions: measured on main at 7907fe1, a clone with one nested worktree
+    reported 3 warn / 17 pass where a clean export of the same commit reported
+    2 warn / 18 pass. The extra WARN was `every audit-allow marker excuses a
+    real call`, firing on markers that live in the worktree's copy of THIS
+    file, and the two real WARNs listed every finding twice, once per copy.
+    The per-path skip in check_deprecated_endpoints could not stop it: the
+    copies enumerate as `.claude/worktrees/<name>/scripts/security-audit.py`,
+    which is not the string it compares against.
+
+    `--others --exclude-standard` keeps untracked-but-not-ignored files in
+    scope, because the audit's local value is the run BEFORE `git add`: a new
+    file carrying a v1 call has to be visible then, not one commit later.
+    Ignored paths drop out, which preserves the dist/ and node_modules/ prune
+    this list used to do by hand (both are in .gitignore), and .claude/ drops
+    out because Claude Code registers .claude/worktrees/ in .git/info/exclude,
+    which --exclude-standard honours. Probed on the contaminated clone: 44
+    paths, none under .claude/.
+
+    Two routes reach the pruned walk instead, and only one of them is a
+    problem. A `root` that is not a checkout is ordinary — an exported tree
+    (`git archive | tar -x`) is how this bug was diagnosed, so it stays
+    runnable — and reports PASS. A `root` that IS a checkout whose git did not
+    answer is degraded, and says so, because there git was the right tool.
+    """
+    # Gate on root being a checkout in its own right, and do not merely let a
+    # failed git call fall through. git SUCCEEDS for an ANCESTOR repository: an
+    # export unpacked inside some other checkout — /tmp is not always outside
+    # one — enumerates through the ANCESTOR's ignore rules, silently. Probed by
+    # putting a clean export of this repo in a scratch repo whose .gitignore
+    # said `*.json`: the audit read 39 files instead of 44, every .json in the
+    # tree (including zaf-build/manifest.json) dropped out of scope, and
+    # check_scanned_tree PASSED, because the sentinel is a .py, nothing was a
+    # nested checkout and nothing was a directory. That is this bug one
+    # directory level up, so it is closed by construction rather than watched.
+    # A linked worktree keeps its `.git` as a FILE, so exists() is the test,
+    # not isdir().
+    if not os.path.exists(os.path.join(root, ".git")):
+        return Scan(_walk_files(root),
+                    "filesystem walk (not a git repository)", False)
+    try:
+        out = subprocess.run(
+            ["git", "-C", root, "ls-files", "-z",
+             "--cached", "--others", "--exclude-standard"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            check=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        # Reached only when root IS a checkout, so git was the right tool and
+        # did not answer: no git on PATH, a timeout, a nonzero exit. Degraded
+        # rather than expected, hence the flag.
+        return Scan(_walk_files(root),
+                    "filesystem walk (git could not enumerate this tree)", True)
+    # Split on the NUL bytes before decoding, because a tracked path is not
+    # required to be valid UTF-8. git separates with `/` on every platform;
+    # normalising to os.sep keeps these paths interchangeable with the
+    # os.path.relpath ones _walk_files produces, which the sentinel comparison
+    # and the `zaf-build` prefix test below both assume. A no-op on POSIX.
+    return Scan(sorted(os.fsdecode(p).replace("/", os.sep)
+                       for p in out.stdout.split(b"\0") if p),
+                "git ls-files", False)
+
+
+def _walk_files(root):
+    """Fallback enumeration: files under `root` that are not in another tree.
+
+    Prunes .git and .claude outright, plus any directory holding a `.git`
+    entry, which is what a nested checkout looks like from outside. That last
+    rule tests for an ENTRY and not a directory on purpose: a linked git
+    worktree carries a `.git` FILE (93 bytes in the clone this was found in),
+    so a directory test would walk straight into it.
+    """
+    out = []
+    for base, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs
+                   if d not in (".git", ".claude", "dist", "node_modules")
+                   and not os.path.exists(os.path.join(base, d, ".git"))]
+        out.extend(os.path.relpath(os.path.join(base, fn), root)
+                   for fn in files)
+    return sorted(out)
+
+
+def check_scanned_tree(root, scan):
+    """The tree-wide scan covers this tree, all of it, and nothing else.
+
+    A guard on the enumeration itself, because what it catches is invisible in
+    the findings: a second checkout inside the repo does not make the audit
+    error, it makes the audit report another revision's code as this one's,
+    with every real finding listed twice. Nothing downstream can notice that —
+    the duplicate is a well-formed path to a real file with real content.
+    """
+    cat = "supply-chain"
+    name = "the scanned tree is exactly this tree"
+    problems = []
+
+    # Suffix-aware, NOT equality. The contaminating copy enumerates as
+    # `.claude/worktrees/<name>/scripts/security-audit.py`, so counting exact
+    # matches returns 1 on the contaminated tree exactly as on the clean one,
+    # and the check would pass on the single input it exists to reject. That is
+    # the same prefix blindness that let check_deprecated_endpoints' per-path
+    # skip miss those copies in the first place.
+    sentinels = [p for p in scan.paths
+                 if p == AUDIT_SCRIPT or p.endswith(os.sep + AUDIT_SCRIPT)]
+    if not sentinels:
+        problems.append(
+            f"the enumeration does not contain {AUDIT_SCRIPT}, so it is not "
+            f"listing this repository at all; the checks reading it would pass "
+            f"vacuously")
+    elif len(sentinels) > 1:
+        problems.append(
+            f"{len(sentinels)} copies of {AUDIT_SCRIPT} are in scope, so a "
+            f"second checkout is being scanned as though it were this tree: "
+            + "; ".join(sentinels))
+
+    # The sentinel catches a second copy of THIS repo. A nested checkout of any
+    # OTHER repo has no sentinel to duplicate, so assert the boundary directly.
+    nested = set()
+    for rel in scan.paths:
+        parts = rel.split(os.sep)[:-1]
+        for i in range(1, len(parts) + 1):
+            d = os.sep.join(parts[:i])
+            if os.path.exists(os.path.join(root, d, ".git")):
+                nested.add(d)
+    if nested:
+        problems.append("scanned paths sit inside a nested checkout: "
+                        + "; ".join(sorted(nested)))
+
+    # A submodule enumerates as one gitlink entry and an untracked nested
+    # repository as a bare directory; either way the contents are never read.
+    # Neither exists in this tree today, and both should arrive loudly rather
+    # than quietly halving what the audit sees.
+    dirs = sorted(p for p in scan.paths
+                  if os.path.isdir(os.path.join(root, p)))
+    if dirs:
+        problems.append("enumerated as directories, so their contents go "
+                        "unscanned: " + "; ".join(dirs))
+
+    if problems:
+        record("FAIL", name, " | ".join(problems), cat)
+    elif scan.degraded:
+        record("WARN", name,
+               f"{len(scan.paths)} file(s) via {scan.source}; this root IS a "
+               f"git repository, so the walk is a degraded substitute for its "
+               f"index", cat)
+    else:
+        record("PASS", name, f"{len(scan.paths)} file(s) via {scan.source}", cat)
 
 
 # ── Category 1: supply chain and release integrity ──────────────────────
@@ -792,7 +968,7 @@ def check_shared_helper_drift(root):
            f"({', '.join(may) or 'none'})", cat)
 
 
-def check_deprecated_endpoints(root, today=None):
+def check_deprecated_endpoints(root, scan, today=None):
     cat = "platform-deadlines"
     # Endpoints with a published sunset that the connector still calls.
     #
@@ -866,120 +1042,118 @@ def check_deprecated_endpoints(root, today=None):
     superseded = []       # marked, but the escalation window withdrew the excuse
     degrading  = []       # audit-degrades: deliberate, and does NOT survive
     marked_dates = []
-    for base, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in (".git", "dist", "node_modules")]
-        for fn in files:
-            if not fn.endswith(SCANNED_SUFFIXES):
+    # `scan.paths`, not a walk of `root`: a walk cannot tell this tree from a
+    # second checkout inside it, and scanned both. See _tree_files().
+    for rel in scan.paths:
+        if not rel.endswith(SCANNED_SUFFIXES):
+            continue
+        # Files that DESCRIBE the deprecated endpoints rather than call
+        # them. Without the audit-record exclusion this check can never
+        # reach PASS again: the record permanently names the call sites a
+        # migration removed, so fixing the finding would not clear it.
+        if rel in (AUDIT_SCRIPT, ".security-audit.json"):
+            continue
+        try:
+            body = read(root, rel)
+        except OSError:
+            continue
+        # Two readings, because either alone has a hole. The regex catches
+        # the old inline-host shape ('https://connect2.tsanet.net/v1'); the
+        # parsed default catches every spelling of the parameterised one.
+        default = _baseurl_default(body)
+        on_v1_base = re.search(v1_base, body) is not None or default == "v1"
+        if (rel.startswith("zaf-build" + os.sep) and _has_baseurl(body)
+                and default is None and not on_v1_base):
+            unreadable_anchor.append(rel)
+        lines = body.splitlines()
+        used = set()
+        for pat, needs_v1_base, key, label, date, repl in deprecated:
+            if needs_v1_base and not on_v1_base:
                 continue
-            rel = os.path.relpath(os.path.join(base, fn), root)
-            # Files that DESCRIBE the deprecated endpoints rather than call
-            # them. Without the audit-record exclusion this check can never
-            # reach PASS again: the record permanently names the call sites a
-            # migration removed, so fixing the finding would not clear it.
-            if rel in (os.path.join("scripts", "security-audit.py"),
-                       ".security-audit.json"):
-                continue
-            try:
-                body = read(root, rel)
-            except OSError:
-                continue
-            # Two readings, because either alone has a hole. The regex catches
-            # the old inline-host shape ('https://connect2.tsanet.net/v1'); the
-            # parsed default catches every spelling of the parameterised one.
-            default = _baseurl_default(body)
-            on_v1_base = re.search(v1_base, body) is not None or default == "v1"
-            if (rel.startswith("zaf-build" + os.sep) and _has_baseurl(body)
-                    and default is None and not on_v1_base):
-                unreadable_anchor.append(rel)
-            lines = body.splitlines()
-            used = set()
-            for pat, needs_v1_base, key, label, date, repl in deprecated:
-                if needs_v1_base and not on_v1_base:
-                    continue
-                marked = []
-                unmarked = _matches_unmarked(
-                    lines, pat, key, date, used, marked, today)
-                now = today or datetime.date.today()
-                for lineno, kind, mkey, until, malformed, tracker in marked:
-                    kw = f"audit-{kind}"
-                    # audit-degrades never clears, so it needs no expiry logic to
-                    # decide anything. What it does need is the tracker, because
-                    # naming where the deletion is owed is its entire job
-                    # (#152, #153). Without one it is a shrug in a comment.
-                    if kind == "degrades":
-                        if not tracker:
-                            bad_markers.append(
-                                f"{rel}:{lineno}: {kw}: {mkey} has no "
-                                f"`tracked-by <issue>`, so it names no owner for "
-                                f"the deletion it admits is owed")
-                        else:
-                            degrading.append(
-                                f"{rel}:{lineno}: {label} (deliberate, does NOT "
-                                f"survive its {date} sunset, tracked by {tracker})")
-                        continue
-                    # Three different mistakes, three different messages. They
-                    # all FAIL and none excuses its call, but "has no expiry"
-                    # on a line that visibly reads `until soon` sends the author
-                    # looking for the wrong thing (#159 review).
-                    if not until and malformed:
-                        bad_markers.append(
-                            f"{rel}:{lineno}: {kw}: {mkey} has a malformed "
-                            f"expiry {malformed!r}, expected "
-                            f"`until <YYYY-MM-DD>`, so it excuses nothing")
-                        continue
-                    if not until:
+            marked = []
+            unmarked = _matches_unmarked(
+                lines, pat, key, date, used, marked, today)
+            now = today or datetime.date.today()
+            for lineno, kind, mkey, until, malformed, tracker in marked:
+                kw = f"audit-{kind}"
+                # audit-degrades never clears, so it needs no expiry logic to
+                # decide anything. What it does need is the tracker, because
+                # naming where the deletion is owed is its entire job
+                # (#152, #153). Without one it is a shrug in a comment.
+                if kind == "degrades":
+                    if not tracker:
                         bad_markers.append(
                             f"{rel}:{lineno}: {kw}: {mkey} has no "
-                            f"`until <YYYY-MM-DD>` expiry, so it excuses nothing")
-                        continue
-                    # ALLOW_MARKER only checks the SHAPE of the date, so an
-                    # ordinary typo like 2026-02-30 reaches this parse. Left
-                    # unguarded it raised out of the whole audit: exit 3, no
-                    # finding, no file, no line, and the other checks never ran.
-                    # _excuses already guarded the same call; this caller did
-                    # not (#159 review).
-                    try:
-                        expires = datetime.date.fromisoformat(until)
-                    except ValueError:
-                        bad_markers.append(
-                            f"{rel}:{lineno}: {kw}: {mkey} has an expiry "
-                            f"of {until!r}, which is the right shape but not a "
-                            f"real date, so it excuses nothing")
-                        continue
-                    if expires < now:
-                        bad_markers.append(
-                            f"{rel}:{lineno}: {kw}: {mkey} expired {until}")
-                        continue
-                    # A marker inside the escalation window has stopped
-                    # excusing (condition 6), so its call is already a finding
-                    # below. Reporting it here as "deliberate" too would put two
-                    # lines about one call in the same run saying opposite
-                    # things (#159 review).
-                    if (datetime.date.fromisoformat(date) - now).days <= SUNSET_FAIL_WITHIN_DAYS:
-                        superseded.append(f"{rel}:{lineno}: {kw}: {mkey}")
-                        continue
-                    still_marked.append(
-                        f"{rel}:{lineno}: {label} (deliberate until {until}, "
-                        f"sunset {date}, use {repl})")
-                    marked_dates.append(date)
-                if unmarked:
-                    found.append(f"{rel}: {label} (sunset {date}, use {repl})")
-                    hit_dates.append(date)
-            # A marker that excused nothing is not harmless. It reads in review
-            # as a considered exemption while protecting nothing, and it is what
-            # a typo'd key or a call that moved leaves behind.
-            for i, ln in enumerate(lines):
-                for mk in ALLOW_MARKER.finditer(ln):
-                    if (i, mk.start()) not in used:
-                        # The key is what the author needs in order to find the
-                        # typo, and the kind is what this reported instead until
-                        # #168. Both are named now, and the prefix is derived
-                        # from the match rather than hardcoded to `audit-allow`,
-                        # so a stale `audit-degrades:` marker is not reported
-                        # under the other vocabulary's name.
-                        stale_markers.append(
-                            f"{rel}:{i + 1}: audit-{mk.group('kind')}: "
-                            f"{mk.group('key')}")
+                            f"`tracked-by <issue>`, so it names no owner for "
+                            f"the deletion it admits is owed")
+                    else:
+                        degrading.append(
+                            f"{rel}:{lineno}: {label} (deliberate, does NOT "
+                            f"survive its {date} sunset, tracked by {tracker})")
+                    continue
+                # Three different mistakes, three different messages. They
+                # all FAIL and none excuses its call, but "has no expiry"
+                # on a line that visibly reads `until soon` sends the author
+                # looking for the wrong thing (#159 review).
+                if not until and malformed:
+                    bad_markers.append(
+                        f"{rel}:{lineno}: {kw}: {mkey} has a malformed "
+                        f"expiry {malformed!r}, expected "
+                        f"`until <YYYY-MM-DD>`, so it excuses nothing")
+                    continue
+                if not until:
+                    bad_markers.append(
+                        f"{rel}:{lineno}: {kw}: {mkey} has no "
+                        f"`until <YYYY-MM-DD>` expiry, so it excuses nothing")
+                    continue
+                # ALLOW_MARKER only checks the SHAPE of the date, so an
+                # ordinary typo like 2026-02-30 reaches this parse. Left
+                # unguarded it raised out of the whole audit: exit 3, no
+                # finding, no file, no line, and the other checks never ran.
+                # _excuses already guarded the same call; this caller did
+                # not (#159 review).
+                try:
+                    expires = datetime.date.fromisoformat(until)
+                except ValueError:
+                    bad_markers.append(
+                        f"{rel}:{lineno}: {kw}: {mkey} has an expiry "
+                        f"of {until!r}, which is the right shape but not a "
+                        f"real date, so it excuses nothing")
+                    continue
+                if expires < now:
+                    bad_markers.append(
+                        f"{rel}:{lineno}: {kw}: {mkey} expired {until}")
+                    continue
+                # A marker inside the escalation window has stopped
+                # excusing (condition 6), so its call is already a finding
+                # below. Reporting it here as "deliberate" too would put two
+                # lines about one call in the same run saying opposite
+                # things (#159 review).
+                if (datetime.date.fromisoformat(date) - now).days <= SUNSET_FAIL_WITHIN_DAYS:
+                    superseded.append(f"{rel}:{lineno}: {kw}: {mkey}")
+                    continue
+                still_marked.append(
+                    f"{rel}:{lineno}: {label} (deliberate until {until}, "
+                    f"sunset {date}, use {repl})")
+                marked_dates.append(date)
+            if unmarked:
+                found.append(f"{rel}: {label} (sunset {date}, use {repl})")
+                hit_dates.append(date)
+        # A marker that excused nothing is not harmless. It reads in review
+        # as a considered exemption while protecting nothing, and it is what
+        # a typo'd key or a call that moved leaves behind.
+        for i, ln in enumerate(lines):
+            for mk in ALLOW_MARKER.finditer(ln):
+                if (i, mk.start()) not in used:
+                    # The key is what the author needs in order to find the
+                    # typo, and the kind is what this reported instead until
+                    # #168. Both are named now, and the prefix is derived
+                    # from the match rather than hardcoded to `audit-allow`,
+                    # so a stale `audit-degrades:` marker is not reported
+                    # under the other vocabulary's name.
+                    stale_markers.append(
+                        f"{rel}:{i + 1}: audit-{mk.group('kind')}: "
+                        f"{mk.group('key')}")
 
     # Assert the anchor rather than inferring it. needs_v1_base decides whether
     # a relative path counts as a v1 call, so a baseUrl() whose default cannot
@@ -1074,6 +1248,12 @@ def main():
         sys.exit(3)
 
     try:
+        # Enumerated once and handed to both consumers, so the check that
+        # asserts the scan is sound is asserting the list that was actually
+        # scanned rather than a second one that could differ from it. Inside
+        # the try because failing to enumerate is the audit failing to RUN
+        # (exit 3), not a finding.
+        scan = _tree_files(root)
         check_all_workflows_declare_permissions(root)
         check_workflow_permissions(root)
         check_workflow_expression_injection(root)
@@ -1082,7 +1262,8 @@ def main():
         check_no_embedded_secrets(root)
         check_secure_settings(root)
         check_shared_helper_drift(root)
-        check_deprecated_endpoints(root)
+        check_scanned_tree(root, scan)
+        check_deprecated_endpoints(root, scan)
     except Exception as e:  # noqa: BLE001 - an audit that crashes must not read as a pass
         print(f"error: audit aborted: {e}", file=sys.stderr)
         sys.exit(3)
