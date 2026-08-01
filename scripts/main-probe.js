@@ -51,7 +51,7 @@ function instrument(src) {
     ' fitPanelToContent: (typeof fitPanelToContent === "function") ? fitPanelToContent : null,' +
     ' PANEL_MIN_H: (typeof PANEL_MIN_H === "number") ? PANEL_MIN_H : null,' +
     ' PANEL_MAX_H: (typeof PANEL_MAX_H === "number") ? PANEL_MAX_H : null,' +
-    ' PANEL_MAX_H_FORM: (typeof PANEL_MAX_H_FORM === "number") ? PANEL_MAX_H_FORM : null,' +
+    ' loadNotes: (typeof loadNotes === "function") ? loadNotes : null,' +
     ' setState: function (o) {' +
     ' if (o.settings !== undefined) settings = o.settings;' +
     ' if (o.currentForm !== undefined) currentForm = o.currentForm;' +
@@ -85,13 +85,6 @@ function makeElement(id) {
     id,
     textContent: '', value: '', disabled: false,
     style: {}, className: '',
-    // panelMaxH() asks whether an element is EFFECTIVELY visible, so the stub has to
-    // answer that rather than expose only inline style. Null when this element is
-    // display:none; #collab-form additionally consults its container below, because an
-    // ancestor can hide it while its own inline style still says block.
-    get offsetParent() {
-      return (this.style && this.style.display && this.style.display !== 'none') ? {} : null;
-    },
     children,
     get innerHTML() { return html; },
     set innerHTML(v) { html = String(v == null ? '' : v); children.length = 0; },
@@ -182,24 +175,7 @@ function run(fail, throwOnResize, patch) {
 
   const document = {
     getElementById(id) {
-      if (!els[id]) {
-        els[id] = makeElement(id);
-        // index.html nests #collab-form inside #new-collab-dialog, and the close paths
-        // hide the dialog rather than the form, so the model has to know this one edge
-        // or it cannot tell "form on screen" from "form left inline-visible behind a
-        // hidden dialog" -- which is the state the discriminator got wrong.
-        if (id === 'collab-form') {
-          Object.defineProperty(els[id], 'offsetParent', {
-            get() {
-              const own = els['collab-form'].style.display;
-              const dlg = els['new-collab-dialog'];
-              if (!own || own === 'none') return null;
-              if (dlg && dlg.style.display === 'none') return null;
-              return dlg || {};
-            }
-          });
-        }
-      }
+      if (!els[id]) els[id] = makeElement(id);
       return els[id];
     },
     createElement: (t) => makeElement('<' + t + '>'),
@@ -280,6 +256,11 @@ function run(fail, throwOnResize, patch) {
         });
       }
       return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({ token: TOKEN }) });
+    }
+    if (String(url).indexOf('/notes') !== -1) {
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(
+        [1, 2].map((n) => ({ summary: 'Probe note ' + n, description: 'body ' + n,
+                             createdAt: '2026-07-31T17:30:00Z', companyName: 'Probe Partner' }))) });
     }
     // Four rows, which is the case measured against the real page: the dialog needs
     // 327px empty and 435px with these, against a panel last fitted at 347.
@@ -621,9 +602,9 @@ async function main() {
   //     tallest known form has to clear, not a number near today's data.
   {
     const r = await run(null);
-    if (!r.exposed.PANEL_MAX_H_FORM) {
+    if (!r.exposed.PANEL_MAX_H) {
       check('the tallest known partner form is not truncated',
-            false, '(main.js has no PANEL_MAX_H_FORM)', 'a cap that a form clears');
+            false, '(main.js has no PANEL_MAX_H)', 'a cap that a form clears');
     } else {
       ['btn-new-collab', 'btn-sync-inbound', 'tsanet-notice', 'new-collab-dialog',
        'collab-form'].forEach((id) => {
@@ -641,34 +622,47 @@ async function main() {
       const need = r.body.scrollHeight;
       check('the tallest known partner form is not truncated',
             r.resizes.length > 0 && asked >= need,
-            JSON.stringify({ asked, need, cap: r.exposed.PANEL_MAX_H_FORM }),
-            'an ask >= the form height, not the list cap of ' + r.exposed.PANEL_MAX_H);
+            JSON.stringify({ asked, need, cap: r.exposed.PANEL_MAX_H }),
+            'an ask >= the form height, under the cap of ' + r.exposed.PANEL_MAX_H);
     }
   }
 
-  //     Opened-then-closed, which is the state every real ticket passes through. Two
-  //     close paths (btn-cancel-form at main.js:1048 and handleSubmit after the case is
-  //     created at :1134) hide the DIALOG and leave #collab-form carrying inline
-  //     display:block. A discriminator that reads the form's own inline display then
-  //     says "form open" back on the list and the list cap silently stops binding.
+  //     Notes land AFTER the panel has been fitted. renderAll builds each card with a
+  //     "Loading notes..." placeholder, loadCollaborations fits, and loadNotes then
+  //     replaces the placeholder with the real thread: one card measures 386px at the
+  //     placeholder and 510px with two notes, so the panel sat 104px short and clipped
+  //     the thread mid-note (tsanetgit/Zendesk_App#191). The bug is a MISSING call, so
+  //     what this asserts is that a fit fires in the window where the notes render.
   {
     const r = await run(null);
-    const dialog = r.els['new-collab-dialog'] || (r.els['new-collab-dialog'] = makeElement('new-collab-dialog'));
-    const form = r.els['collab-form'] || (r.els['collab-form'] = makeElement('collab-form'));
-    dialog.style.display = 'block';
-    form.style.display = 'block';
-    for (let i = 0; i < 20; i++) { form.appendChild(makeElement('row' + i)); }
-    // The cancel path: dialog hidden, form's own inline display untouched.
-    dialog.style.display = 'none';
-    r.body.scrollHeight = 5000;          // a collaboration-heavy ticket
-    r.resizes.length = 0;
-    r.exposed.fitPanelToContent();
-    const asked = parseInt(r.resizes[r.resizes.length - 1], 10);
-    check('closing the form restores the list cap',
-          asked === r.exposed.PANEL_MAX_H,
-          JSON.stringify({ asked, listCap: r.exposed.PANEL_MAX_H,
-                           formCap: r.exposed.PANEL_MAX_H_FORM }),
-          'the list cap of ' + r.exposed.PANEL_MAX_H + ', not the form cap');
+    if (!r.exposed.loadNotes) {
+      check('rendering notes refits the panel',
+            false, '(main.js does not expose loadNotes)', 'a fit after the notes render');
+    } else {
+      // ORDERING, not just presence. "a resize happened while loadNotes ran" would
+      // still pass if the fit were moved ahead of the innerHTML write, which is #191
+      // exactly. So record how many resizes had fired at the moment the notes landed in
+      // the DOM, and require at least one more after that.
+      const container = makeElement('notes-probe');
+      let html = '';
+      let resizesWhenNotesLanded = null;
+      Object.defineProperty(container, 'innerHTML', {
+        get() { return html; },
+        set(v) {
+          html = String(v == null ? '' : v);
+          if (html.indexOf('Probe note') !== -1) resizesWhenNotesLanded = r.resizes.length;
+        }
+      });
+      r.resizes.length = 0;
+      await r.exposed.loadNotes('probe-token', container, 'Us');
+      await drain(8);
+      const after = resizesWhenNotesLanded === null ? null : r.resizes.length - resizesWhenNotesLanded;
+      check('rendering notes refits the panel AFTER they are in the DOM',
+            resizesWhenNotesLanded !== null && after > 0,
+            JSON.stringify({ resizes: r.resizes, atNotesLanded: resizesWhenNotesLanded,
+                             firedAfter: after }),
+            'at least one resize after the notes were written, not merely during');
+    }
   }
 
   // 15. flexible_height is not a ZAF manifest property, so declaring it did nothing

@@ -301,31 +301,34 @@ function addTicketTag(ticketId, tag, retried) {
 // width, so asking for 44 made the one state a new ticket ever reaches scroll. No
 // state asserts its own height now; every one of them measures.
 var PANEL_MIN_H = 44;
-// The cap for a collaboration LIST, which is what the paragraph above is reasoning
-// about. Scrolling a list is ordinary, and an uncapped one on a ticket carrying many
-// collaborations really would push the rest of the apps tray out of reach.
-var PANEL_MAX_H = 800;
-// A FORM is different in kind, and 800 was never chosen with one in mind. Putting a
-// scrollbar inside something the agent has to fill in IS the complaint #179 opened
-// with. This is not an edge case: all 110 live partner forms on BETA were read, and
-// 46 of them, 41%, need more than 800px. A form renders at 513px with no custom fields
-// and about 56px per field after that, so it crosses 800 at six.
+// ONE cap for every state. #190 briefly had two, 800 for the list and 2000 for a form,
+// because 800 had been chosen for the list and truncated 41% of partner forms. The list
+// then turned out to need the same room as the form, so the split earned nothing and is
+// gone, along with the visibility discriminator it required.
 //
-//   16 fields  1409px  Test Evernex        <- tallest in the member base
-//   12 fields  1225px  Test Lenovo
+// Both states were measured at the 320px sidebar width. Forms, from all 110 live
+// partner forms on BETA (46 of them, 41%, needed more than 800):
+//
+//   16 fields  1409px  Test Evernex        <- tallest form in the member base
 //   10 fields  1113px  Microsoft | Standard
 //    9 fields  1017px  Cisco | WebEx Support, Test IBM | SUPPORT
-//    7 fields   905px  Cisco | JSON Inbound
 //    6 fields   889px  IBM | Common Customer Issue (with an admin note)
 //
-// The majority case is the warning, though. 71 of the 110 have five fields and need
-// 793px, which cleared the old cap by SEVEN pixels: a label wrapping to a second line
-// or a slightly narrower tray would have truncated most of the member base, not 41% of
-// it. So this number is deliberately not fitted to today's data. 2000 clears the
-// tallest known form by ~590px, another ten fields, and still bounds a pathological
-// one. If the apps tray is shorter than what the app asks for, the tray scrolls as a
-// column, which is one scrollbar rather than the two an inner cap produces.
-var PANEL_MAX_H_FORM = 2000;
+// The collaboration list, per card carrying its notes thread:
+//
+//   1 card,  2 notes    510px      1 card,  5 notes    699px
+//   2 cards, 2 notes    888px      3 cards, 2 notes   1266px
+//   3 cards, 5 notes   1833px      5 cards, 2 notes   2022px  <- still over
+//
+// 2000 is deliberately not fitted to either set. The warning is what 800 did: 71 of the
+// 110 forms need 793px and cleared it by SEVEN pixels, so a label wrapping to a second
+// line would have truncated most of the member base rather than 41% of it.
+//
+// The list is genuinely unbounded in a way a form is not, since a ticket can accrue
+// arbitrarily many collaborations and notes, so a cap still has to exist and a busy
+// enough ticket will still scroll. If the apps tray is shorter than what the app asks
+// for, the tray scrolls as a column, which is one scrollbar rather than two nested.
+var PANEL_MAX_H = 2000;
 // Slack over the measurement. body carries padding: 8px, which scrollHeight already
 // counts. It does NOT carry the browser's default 8px margin, which index.html:14
 // zeroes with `* { margin: 0 }` and computed style confirms as 0px; the comment here
@@ -351,28 +354,10 @@ function setPanelHeight(h) {
   catch (e) { /* a location that will not resize is a worse-looking panel, nothing more */ }
 }
 
-// Which cap applies depends on what is on screen, because the two states want opposite
-// things from one. Keyed on the form being displayed rather than on a flag set by the
-// path that opened it, so it stays true however the form got there.
-function panelMaxH() {
-  var form = document.getElementById('collab-form');
-  // EFFECTIVE visibility, not the form's own inline display. Reading form.style.display
-  // was wrong in the state every real ticket passes through: btn-cancel-form and
-  // handleSubmit's post-creation path both hide the DIALOG and leave #collab-form
-  // carrying display:block, so the form read as open while the agent was back on the
-  // collaboration list, and the list cap silently stopped binding for the rest of the
-  // session. offsetParent is null whenever the element or ANY ancestor is display:none,
-  // so it answers the question actually being asked and a close path added later cannot
-  // get it wrong. A representation, not a guard on each path.
-  var formOpen = !!(form && form.offsetParent !== null);
-  return formOpen ? PANEL_MAX_H_FORM : PANEL_MAX_H;
-}
-
 function fitPanelToContent() {
   var h = Math.ceil(document.body.scrollHeight) + PANEL_PAD_H;
   if (h < PANEL_MIN_H) h = PANEL_MIN_H;
-  var max = panelMaxH();
-  if (h > max) h = max;
+  if (h > PANEL_MAX_H) h = PANEL_MAX_H;
   setPanelHeight(h);
 }
 
@@ -640,7 +625,17 @@ function loadNotes(token, container, ourCompany) {
     syncNotesToZendesk(notes, ourCompany);
   }).catch(function() {
     container.innerHTML = '';
-  });
+    // One fit for all three terminal renders, the same shape doPartnerSearch uses: the
+    // catch resolves, so this runs after notes, no-notes and failure alike rather than
+    // three call sites a fourth branch could later be added beside.
+    //
+    // Notes arrive AFTER the panel has been fitted. renderAll builds each card with a
+    // "Loading notes..." placeholder, loadCollaborations fits, and only then does this
+    // replace the placeholder with the real thread. Measured at the 320px sidebar
+    // width, one card is 386px at the placeholder and 510px with two notes, so the
+    // panel sat 104px short and clipped the thread mid-note (#191). Same class as the
+    // partner-search miss in #188: content that lands after the measurement.
+  }).then(fitPanelToContent);
 }
 
 // ── Sync TSANet notes → Zendesk internal comments ─────────────────────────────
