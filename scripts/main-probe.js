@@ -88,7 +88,7 @@ function drain(turns) {
 
 // `fail` names which step should reject: 'post' (pre-creation), 'writeFields',
 // 'addTag', 'loadCollaborations', or null for the happy path.
-function run(fail) {
+function run(fail, throwOnResize, patch) {
   const els = Object.create(null);
   const calls = [];
   const resizes = [];
@@ -153,7 +153,13 @@ function run(fail) {
     },
     request,
     metadata: () => Promise.resolve({ settings: SETTINGS }),
-    invoke(name, opts) { if (name === 'resize') resizes.push((opts && opts.height) || ''); },
+    invoke(name, opts) {
+      if (name !== 'resize') return;
+      resizes.push((opts && opts.height) || '');
+      // deploy.js:222 already wraps this call in try/catch, so the repo treats a
+      // throwing resize as a real condition. Scenarios opt in to reproduce it.
+      if (throwOnResize) throw new Error('ZAF: resize rejected');
+    },
     on() {}, has() { return false; }
   };
 
@@ -181,7 +187,9 @@ function run(fail) {
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
 
-  vm.runInNewContext(instrument(SRC), sandbox, { filename: 'main.js' });
+  var src = instrument(SRC);
+  if (patch) src = patch(src);
+  vm.runInNewContext(src, sandbox, { filename: 'main.js' });
   if (!exposed) throw new Error('probe: main.js internals were not exposed');
 
   // Put the form in the state a real submit starts from, without running boot.
@@ -323,15 +331,76 @@ async function main() {
           tiny.asked, tiny.min + 'px');
   }
 
-  // 9. No path still asks for the old constant. Catches a call site that was missed
-  //    or one added later by copying an old line.
+  // 9. No path still asks for a literal height. This used to carry an exception for
+  //    the collapsed bar's '44px'; that line now reads PANEL_MIN_H, so the check is
+  //    unconditional and the two 44s can no longer drift apart unnoticed.
+  //
+  //    It also asserts there is exactly ONE client.invoke('resize') in the file. The
+  //    guard against a throwing resize lives in setPanelHeight, and a guard is only
+  //    worth what its call sites are: the first version of this fix guarded
+  //    fitPanelToContent and left the collapsed-bar call raw, which a probe caught.
+  //    One call site makes that unbypassable rather than merely documented.
   {
     const src = fs.readFileSync(MAIN_JS, 'utf8');
-    const hardcoded = (src.match(/invoke\('resize'[^)]*height:\s*'(\d+)px'/g) || [])
-      .filter((m) => !/'44px'/.test(m));   // the collapsed compact bar is a state, not a fit
+    const hardcoded = src.match(/invoke\('resize'[^)]*height:\s*'(\d+)px'/g) || [];
     check('no resize call hardcodes a panel height',
           hardcoded.length === 0, JSON.stringify(hardcoded),
-          'every non-collapsed resize routed through fitPanelToContent');
+          'every resize height derived from a constant or from content');
+
+    const invocations = src.match(/client\.invoke\('resize'/g) || [];
+    check('every resize goes through the single guarded helper',
+          invocations.length === 1, invocations.length + " client.invoke('resize') call(s)",
+          'exactly 1, inside setPanelHeight');
+  }
+
+  // 11. THE #169/#179 COLLISION. fitPanelToContent() is called inside handleSubmit's
+  //     post-creation region, which must never reject. Its last statement is
+  //     client.invoke('resize'), which deploy.js:222 already guards, so the repo treats
+  //     it as a call that can throw. Unguarded here, a throw reaches the outer .catch
+  //     and renders "Submit failed" for a case the partner already has: #169 arriving
+  //     back through the fix for #179.
+  //
+  //     Reproduced before the guard was added: happy path gave
+  //     "Submit failed: ZAF: resize rejected | dialog=none | posts=1".
+  {
+    const r = await run(null, true);
+    check('a throwing resize does not turn a created case into "Submit failed"',
+          !/Submit failed/.test(r.banner),
+          r.banner + ' | posts=' + r.collabPosts,
+          'the success banner, with the resize failure swallowed as cosmetic');
+    check('a throwing resize still reports success and closes the dialog',
+          /submitted!/.test(r.banner) && r.dialogDisplay === 'none',
+          r.banner + ' | dialog=' + r.dialogDisplay,
+          'success banner, dialog closed');
+  }
+
+  // 12. A resize that throws must not break the bookkeeping-failure path either, which
+  //     is where the token and the do-not-resend instruction live.
+  {
+    const r = await run('addTag', true);
+    check('a throwing resize leaves the partial-success message intact',
+          !/Submit failed/.test(r.banner) && r.banner.indexOf(TOKEN) !== -1,
+          r.banner, 'the partial-success message, naming the token');
+  }
+
+  // 13. The terminal .catch is defence in depth and nothing reaches it today, because
+  //     loadCollaborations has its own terminal catch (main.js:345) and always resolves.
+  //     An empty handler there would swallow the outcome entirely: no banner, dialog
+  //     closed, case created — which reads as an ordinary success and is the one result
+  //     worse than a wrong label, since it carries no signal at all. Injected rather
+  //     than routed, because no route can make that chain reject; the alternative was
+  //     leaving the branch unprobed, which is how the decorative probe got written the
+  //     first time.
+  {
+    const rejectRefresh = (src) => src.replace(
+      'function loadCollaborations(quiet) {',
+      'function loadCollaborations(quiet) { return Promise.reject(new Error("probe: forced refresh failure")); //'
+    );
+    const r = await run(null, false, rejectRefresh);
+    check('a refresh that rejects still tells the agent something',
+          r.banner.length > 0 && !/Submit failed/.test(r.banner) && r.banner.indexOf(TOKEN) !== -1,
+          JSON.stringify(r.banner),
+          'a banner naming the token, and never "Submit failed"');
   }
 
   // 10. flexible_height is not a ZAF manifest property, so declaring it did nothing

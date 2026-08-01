@@ -285,12 +285,13 @@ function addTicketTag(ticketId, tag, retried) {
 // anything taller and pads anything shorter. EDB reported the second half of that:
 // a single-field form still needed scrolling (tsanetgit/Zendesk_App#179).
 //
-// There is no manifest setting that fixes this. The manifest declared
-// "flexible_height": true on both locations, and that is NOT a ZAF property — a
-// location object takes url, autoHide, autoLoad, flexible, signed and size — so it
-// was silently ignored by every release that shipped it. The real property,
-// `flexible`, governs WIDTH, and only for ticket_sidebar. Height is whatever the app
-// asks for, so it has to be asked for from the content.
+// No manifest setting makes it fit its CONTENT. `size` does take a height, but a fixed
+// initial height is the problem rather than the cure. The manifest declared
+// "flexible_height": true on both locations, and that is NOT a ZAF property at all — a
+// location object takes url, autoHide, autoLoad, flexible, signed and size — so it was
+// silently ignored by every release that shipped it. The real property, `flexible`,
+// governs WIDTH, and only for ticket_sidebar. Height is whatever the app asks for, so
+// it has to be asked for from the content.
 //
 // Clamped at both ends. Unbounded growth on a ticket carrying many collaborations
 // would push the rest of the apps tray out of reach; above the clamp a long list
@@ -302,11 +303,28 @@ var PANEL_MAX_H = 800;
 // pixels and the pane grows a scrollbar it does not need.
 var PANEL_PAD_H = 20;
 
+// The ONLY place this file asks ZAF to resize, so the guard below cannot be bypassed by
+// a call site that forgets it. That is a representation rather than a rule: a second
+// unguarded call is what this started as, and a probe caught it.
+//
+// The guard is load-bearing rather than defensive habit. deploy.js:222 wraps this
+// identical call, so the repo already treats it as one that can throw. One of the call
+// sites this change adds sits inside handleSubmit's post-creation region, which must
+// never reject: a throw there reaches the outer .catch and renders "Submit failed" for a
+// collaboration case the partner already has. That is tsanetgit/Zendesk_App#169 arriving
+// back through the fix for #179, and the two changes touch at exactly that line.
+//
+// Failing to resize is cosmetic. Reporting a created case as a failed submit is not.
+function setPanelHeight(h) {
+  try { client.invoke('resize', { width: '100%', height: h + 'px' }); }
+  catch (e) { /* a location that will not resize is a worse-looking panel, nothing more */ }
+}
+
 function fitPanelToContent() {
   var h = Math.ceil(document.body.scrollHeight) + PANEL_PAD_H;
   if (h < PANEL_MIN_H) h = PANEL_MIN_H;
   if (h > PANEL_MAX_H) h = PANEL_MAX_H;
-  client.invoke('resize', { width: '100%', height: h + 'px' });
+  setPanelHeight(h);
 }
 
 function loadCollaborations(quiet) {
@@ -318,7 +336,11 @@ function loadCollaborations(quiet) {
       // No TSANet data on this ticket — collapse to compact bar
       show('loading', false);
       show('compact-bar', true);
-      client.invoke('resize', { width: '100%', height: '44px' });
+      // Collapsed is a deliberate state rather than a fit, so it sets an explicit
+      // height — but through the same guarded helper, and from the same constant as
+      // the clamp's floor rather than repeating the number where nothing would notice
+      // the two drifting apart.
+      setPanelHeight(PANEL_MIN_H);
       return;
     }
     // TSANet ticket — show full panel
@@ -1091,7 +1113,15 @@ function handleSubmit() {
                   'to pick it up.');
       }).then(function() {
         return loadCollaborations();
-      }).catch(function() {
+      }).catch(function(err) {
+        // Says something rather than nothing. An empty handler here would swallow the
+        // outcome entirely: no banner at all, dialog closed, case created — which reads
+        // to the agent as an ordinary success and is the one outcome worse than a wrong
+        // label, because it carries no signal to act on. Still never "Submit failed".
+        showError('Collaboration request submitted (token ' + (created && created.token) +
+                  '), but the panel could not be refreshed: ' + (err && (err.message || err)) +
+                  '. Do NOT submit again, the partner already has this request. Reload ' +
+                  'the ticket to see it.');
         // Defence in depth, and honestly labelled as such: loadCollaborations has its
         // own terminal .catch today and always resolves, so nothing currently reaches
         // here. It exists so that a later change making the refresh reject cannot
