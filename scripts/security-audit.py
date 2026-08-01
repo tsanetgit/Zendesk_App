@@ -508,134 +508,6 @@ def check_sdk_sri(root, network):
 
 # ── Category 2/3: credentials and authorization ─────────────────────────
 
-# Values that are self-evidently a stand-in rather than a credential. The same
-# idea as the {{setting.x}} exclusion below, extended to the conventions
-# documentation actually uses, and it exists because the check as written
-# flagged the three most obvious ones. Measured: `<your-client-secret>`,
-# `YOUR_CLIENT_SECRET_HERE` and `xxxxxxxxxxxxxxxxxxxxxxx` all FAILed, while
-# `$CLIENT_SECRET` and `"..."` passed only by accident — the `$` sits in the
-# excluded first-character class, and `...` is under the 12-character floor. So
-# a member-facing setup doc showing a secret the ordinary way turned the audit
-# red at exit 1, which release.yml:80-84 routes to flag_coverage, and no doc in
-# the tree had tripped it yet purely because none shows a credential value.
-#
-# Deliberately NOT an audit-allow-style marker, which is what the sibling check
-# uses. A marker is a general-purpose lever that can excuse a REAL credential,
-# which is the one thing this check exists to refuse, and it puts the burden on
-# every doc author to remember it. A shape rule can only ever excuse something
-# that already looks like a placeholder. If a doc genuinely needs to show a
-# realistic-looking literal — documenting the SHAPE of a secret rather than
-# standing in for one — that is the case to revisit this on, and it should be
-# revisited then rather than pre-built now.
-PLACEHOLDER_WORDS = frozenset((
-    "your", "example", "placeholder", "replace", "changeme", "dummy",
-    "fake", "sample", "todo", "redacted",
-))
-
-
-# Bounds on what can pass as a word or a number. Both exist because
-# "not mixed-case" and "is a digit run" are not the same as "is not key
-# material", and each was demonstrated by a probe whose control differed by one
-# token: `your_20260114093217465829` was excused where the bare 20-digit run
-# flagged, and `your_xkqjzvwmptrlbhndgscf` was excused where the bare
-# 20-character run flagged. 4 covers years and version numbers; 15 covers the
-# longest words this domain writes (`authentication`, `configuration`) while
-# refusing a key-length run.
-MAX_WORD_DIGITS = 4
-MAX_WORD_LETTERS = 15
-
-
-def _wordlike(token):
-    """A token that reads as a word or a plain number, not as key material.
-
-    Case has to be ORDINARY: all-lower, all-upper or Titlecase, so `aBcDeFgHiJ`
-    is refused. Case alone is not enough, though, which is what the two length
-    bounds are for: a uniform-case run and a digit run are both perfectly
-    ordinary-cased and neither is a word.
-
-    An uncased script (CJK, for instance) satisfies isalpha() but none of the
-    three case tests, so it is refused. That is the conservative direction and
-    it is deliberate: this cannot tell a Han placeholder from Han key material,
-    so it declines to excuse either.
-    """
-    if token.isdigit():
-        return len(token) <= MAX_WORD_DIGITS
-    if not token.isalpha():
-        return False
-    if len(token) > MAX_WORD_LETTERS:
-        return False
-    return token.islower() or token.isupper() or token.istitle()
-
-
-def _is_placeholder(value):
-    """True only when NOTHING left in the value looks like key material.
-
-    Inverted on purpose, and the inversion is the whole point. The first
-    version excused on the PRESENCE of a placeholder word, so a placeholder
-    word sitting NEXT TO a real token excused the real token. Probed, each
-    against a control differing by a single token:
-
-        your_aB3xK9mQ2vL8pR4tZ7       excused | aB3xK9mQ2vL8pR4tZ7        flagged
-        Example-Corp-2026-Xy9kLmNpQr  excused | Acme-Corp-2026-Xy9kLmNpQr flagged
-        prod.redacted.7fQ2mK9xLp      excused | prod.primary.7fQ2mK9xLp   flagged
-
-    Same length, same entropy, one word's difference, and a live credential
-    goes silent. It needs no adversary: a doc template says `your_<paste-here>`,
-    someone pastes the real key and leaves the prefix word. `password` is one
-    of the three keywords and passphrase-style values are exactly the
-    delimited kind, so that is the ordinary case for it, not an exotic one.
-
-    The sentence that justified the old version — "a high-entropy credential is
-    one long token and so cannot collide with a word in the set" — holds only
-    for values carrying no separator, which was the single shape the old probe
-    tested.
-
-    So a value is excused only when it names itself a stand-in AND every token
-    in it reads as a word or a number. One token that does not is enough to
-    flag, whatever else the value says about itself.
-
-    Known limits, recorded rather than coded around, because each needs a
-    dictionary or a bypass an attacker already has:
-
-      - a pure dictionary-word passphrase (`correct-horse-battery-example`) is
-        excused, and no shape rule separates it from a stand-in;
-      - a uniform-case alphabetic run UNDER MAX_WORD_LETTERS beside a
-        placeholder word is excused. The bound narrows this; only a dictionary
-        closes it;
-      - splitting a secret into one-character tokens
-        (`example-a-B-3-x-K-9-m-Q`) is excused. That needs someone reading
-        this code, and such a reader evades the outer keyword regex far more
-        cheaply by renaming the variable, so this was never the attacker-proof
-        layer;
-      - excluding `\n` from the value's FIRST character means a quote followed
-        by a newline and then the secret is no longer matched, where the old
-        class caught it by accident. No YAML block scalar or JSON string
-        produces that shape.
-    """
-    v = value.strip()
-    # Unwrap ONE layer of <...> and judge the CONTENTS. Treating the brackets
-    # themselves as proof let `<Abc8Q~kJ3mNpQrStUvWxYz012345678>` pass while the
-    # identical value without them failed, because nothing looked inside.
-    wrapped = re.fullmatch(r"<([^>]*)>", v)
-    if wrapped:
-        v = wrapped.group(1).strip()
-    if not v:
-        return True
-    # Runs of pure filler carry nothing, whatever they are made of.
-    if re.fullmatch(r"\.{3,}|[xX]{4,}|[-_*]{4,}", v):
-        return True
-    # `[\W_]+`, which is Unicode-aware, NOT `[^A-Za-z0-9]+`. The ASCII class
-    # made every non-ASCII character a SEPARATOR, so the secret never reached
-    # _wordlike at all: `your_密钥в9хЛм2вП8` tokenised to ['your','9','2','8'],
-    # every one of them wordlike, and the value was excused.
-    tokens = [t for t in re.split(r"[\W_]+", v, flags=re.UNICODE) if t]
-    if not tokens:
-        return True
-    if not any(t.lower() in PLACEHOLDER_WORDS for t in tokens):
-        return False
-    return all(_wordlike(t) for t in tokens)
-
-
 def check_no_embedded_secrets(root, scan):
     """No credential-shaped literal anywhere in the repository.
 
@@ -658,6 +530,31 @@ def check_no_embedded_secrets(root, scan):
     remembers to extend, silently not covering whatever is added next. Every
     enumerated file is read instead, and what cannot be decoded as text is
     skipped, which needs no maintenance as the tree grows new file types.
+
+    AND NO EXCUSING MECHANISM AT ALL. Documentation writes a credential as
+    `$CLIENT_SECRET`, `${CLIENT_SECRET}` or `{{settings.client_secret}}`, all
+    of which are already invisible here because `$` and `{` sit in the excluded
+    first-character class. That is a convention, and it holds by construction.
+
+    It replaces a placeholder heuristic that this check carried briefly and
+    that was wrong twice in the same direction, both times SILENTLY EXCUSING A
+    REAL CREDENTIAL:
+
+      - it excused on the PRESENCE of a placeholder word rather than the
+        absence of key material, so `your_aB3xK9mQ2vL8pR4tZ7` passed while
+        `aB3xK9mQ2vL8pR4tZ7` failed. One token's difference, no adversary
+        required: a template says `your_<paste-here>` and someone pastes the
+        key and leaves the prefix;
+      - rewritten to excuse only on the absence of key material, it still let
+        through a 20-digit run, a uniform-case alphabetic run, and anything
+        non-ASCII, because the ASCII tokeniser treated those characters as
+        separators so the secret never reached the test.
+
+    Three rounds, two of them silently excusing live key material, is the point
+    at which the representation changes rather than the rule. A convention has
+    no failure mode to sweep: nothing here can excuse anything, so nothing here
+    can excuse a credential. The cost is that a doc must write `$VAR` rather
+    than `<your-client-secret>`, and the FAIL message says so.
     """
     cat = "credentials"
     name = "no embedded credentials anywhere in the repository"
@@ -674,22 +571,20 @@ def check_no_embedded_secrets(root, scan):
     # over-promising costs most on a check just renamed to claim the whole
     # repository.
     patterns = [
-        # NAMED group, and the keyword alternation is non-capturing: only this
-        # pattern carries a value, so the loop reads it by name via
-        # groupdict() and the other two return {} rather than raising. A
-        # numbered group here would be a positional contract of exactly the
-        # kind #168 was filed about.
-        # `\n` is excluded from the value on BOTH character classes, so a
-        # value cannot run past its own line. `[^\"']` matched newline and
-        # `{12,}` is greedy with no closing-quote requirement, so an unbalanced
-        # or curly quote let the capture run to the next ASCII quote anywhere
-        # in the file. That was merely over-reporting until a value could be
-        # excused; now it is a way to SUPPRESS. Probed: `password:
-        # "Pr0dS3cretValue99887766` left unclosed, with the word "example" in
-        # unrelated prose two lines below, was excused, and deleting that one
-        # word flagged the same file.
+        # `\n` is excluded from the value on BOTH character classes, so a value
+        # cannot run past its own line. `[^\"']` matched newline and `{12,}` is
+        # greedy with no closing-quote requirement, so an unbalanced or curly
+        # quote let the match run to the next ASCII quote anywhere in the file,
+        # reporting a finding against unrelated prose. Kept after the
+        # placeholder rule was deleted: over-reporting across lines is the
+        # cheaper failure of the two, but it is still a wrong file and a wrong
+        # line for whoever has to act on it.
+        #
+        # The `{}$` in the first character class is what makes the convention
+        # work: `$CLIENT_SECRET`, `${CLIENT_SECRET}` and
+        # `{{settings.client_secret}}` cannot match at all.
         (re.compile(r"(?i)(?:client_secret|api[_-]?token|password)\s*[:=]\s*"
-                    r"[\"'](?P<value>[^\"'{}$\n][^\"'\n]{12,})"),
+                    r"[\"'][^\"'{}$\n][^\"'\n]{12,}"),
          "credential-shaped assignment"),
         (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "Slack token"),
         (re.compile(r"ghp_[A-Za-z0-9]{20,}"), "GitHub PAT"),
@@ -729,12 +624,6 @@ def check_no_embedded_secrets(root, scan):
                 # {{setting.x}} placeholders are the correct pattern
                 if "{{" in m.group(0) or "settings." in m.group(0):
                     continue
-                # groupdict() rather than a numbered group: only the
-                # assignment pattern captures a value, and the other two
-                # return {} here instead of raising.
-                value = m.groupdict().get("value")
-                if value is not None and _is_placeholder(value):
-                    continue
                 hits.append(f"{rel}: {label}")
     # Report every bucket, and report them so they ADD UP to what was
     # enumerated. Two reasons. The blind spots become visible at runtime
@@ -752,7 +641,15 @@ def check_no_embedded_secrets(root, scan):
                f"nothing readable in scope — the check could not run, which "
                f"is not a pass: {tally}", cat)
     elif hits:
-        record("FAIL", name, "; ".join(sorted(set(hits))), cat)
+        # Name the remedy in the finding. There is no marker and no heuristic
+        # to reach for, so an author who trips this on a documentation example
+        # has to be told the convention or they will go looking for an
+        # exemption that does not exist.
+        record("FAIL", name,
+               "; ".join(sorted(set(hits)))
+               + ". If one of these is a documentation example rather than a "
+                 "credential, write it as $NAME, ${NAME} or "
+                 "{{settings.name}}, which this check cannot match", cat)
     elif unreadable:
         # A judgement QA left open, decided here rather than left implicit. A
         # file that was enumerated and could not be opened is a scan-integrity
