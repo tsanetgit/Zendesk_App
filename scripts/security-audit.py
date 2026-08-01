@@ -508,6 +508,49 @@ def check_sdk_sri(root, network):
 
 # ── Category 2/3: credentials and authorization ─────────────────────────
 
+# Values that are self-evidently a stand-in rather than a credential. The same
+# idea as the {{setting.x}} exclusion below, extended to the conventions
+# documentation actually uses, and it exists because the check as written
+# flagged the three most obvious ones. Measured: `<your-client-secret>`,
+# `YOUR_CLIENT_SECRET_HERE` and `xxxxxxxxxxxxxxxxxxxxxxx` all FAILed, while
+# `$CLIENT_SECRET` and `"..."` passed only by accident — the `$` sits in the
+# excluded first-character class, and `...` is under the 12-character floor. So
+# a member-facing setup doc showing a secret the ordinary way turned the audit
+# red at exit 1, which release.yml:80-84 routes to flag_coverage, and no doc in
+# the tree had tripped it yet purely because none shows a credential value.
+#
+# Deliberately NOT an audit-allow-style marker, which is what the sibling check
+# uses. A marker is a general-purpose lever that can excuse a REAL credential,
+# which is the one thing this check exists to refuse, and it puts the burden on
+# every doc author to remember it. A shape rule can only ever excuse something
+# that already looks like a placeholder. If a doc genuinely needs to show a
+# realistic-looking literal — documenting the SHAPE of a secret rather than
+# standing in for one — that is the case to revisit this on, and it should be
+# revisited then rather than pre-built now.
+PLACEHOLDER_WORDS = frozenset((
+    "your", "example", "placeholder", "replace", "changeme", "dummy",
+    "fake", "sample", "todo", "redacted",
+))
+
+
+def _is_placeholder(value):
+    """True when a credential-shaped value is self-evidently a stand-in.
+
+    Whole-token equality, never substring. Under a substring test a real secret
+    that happened to contain the letters "sample" would excuse itself, which is
+    the failure mode that matters here, since excusing is the dangerous
+    direction. A high-entropy credential is one long token and so cannot
+    collide with a word in the set. Probed both ways: `AbcdefYOURghij123456` is
+    NOT excused, `YOUR_CLIENT_SECRET_HERE` is.
+    """
+    v = value.strip()
+    # Shapes that carry no information at all, whatever words they contain.
+    if re.fullmatch(r"<[^>]*>|\.{3,}|[xX]{4,}|-{4,}|_{4,}", v):
+        return True
+    return bool({t.lower() for t in re.split(r"[^A-Za-z0-9]+", v) if t}
+                & PLACEHOLDER_WORDS)
+
+
 def check_no_embedded_secrets(root, scan):
     """No credential-shaped literal anywhere in the repository.
 
@@ -546,7 +589,14 @@ def check_no_embedded_secrets(root, scan):
     # over-promising costs most on a check just renamed to claim the whole
     # repository.
     patterns = [
-        (re.compile(r"(?i)(client_secret|api[_-]?token|password)\s*[:=]\s*[\"'][^\"'{}$][^\"']{12,}"), "credential-shaped assignment"),
+        # NAMED group, and the keyword alternation is non-capturing: only this
+        # pattern carries a value, so the loop reads it by name via
+        # groupdict() and the other two return {} rather than raising. A
+        # numbered group here would be a positional contract of exactly the
+        # kind #168 was filed about.
+        (re.compile(r"(?i)(?:client_secret|api[_-]?token|password)\s*[:=]\s*"
+                    r"[\"'](?P<value>[^\"'{}$][^\"']{12,})"),
+         "credential-shaped assignment"),
         (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "Slack token"),
         (re.compile(r"ghp_[A-Za-z0-9]{20,}"), "GitHub PAT"),
     ]
@@ -584,6 +634,12 @@ def check_no_embedded_secrets(root, scan):
             for m in pat.finditer(body):
                 # {{setting.x}} placeholders are the correct pattern
                 if "{{" in m.group(0) or "settings." in m.group(0):
+                    continue
+                # groupdict() rather than a numbered group: only the
+                # assignment pattern captures a value, and the other two
+                # return {} here instead of raising.
+                value = m.groupdict().get("value")
+                if value is not None and _is_placeholder(value):
                     continue
                 hits.append(f"{rel}: {label}")
     # Report every bucket, and report them so they ADD UP to what was
