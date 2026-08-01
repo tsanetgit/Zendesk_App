@@ -406,20 +406,64 @@ async function main() {
   // 10. flexible_height is not a ZAF manifest property, so declaring it did nothing
   //     for every release that carried it. Assert against the documented key set
   //     rather than just its absence, so the next invented key is caught too.
+  //
+  //     Every app in the repo, DISCOVERED rather than named. This read a hardcoded
+  //     zaf-build/manifest.json and passed while zaf-debug/manifest.json sat in the same
+  //     tree declaring flexible_height: a check reporting "nothing found" with the thing
+  //     it looks for present, which is the shape it exists to catch. Top-level
+  //     directories only, because one app per top-level dir is this repo's convention
+  //     and, with no ignore logic available here, a recursive walk would collect stray
+  //     manifest.json files from fixtures or dependencies. A nested app would be missed.
+  //
+  //     Every PRODUCT under location, not just support. `location` is keyed by product
+  //     (support, chat, sell), so pinning "support" leaves the identical blind spot one
+  //     level up, where location.chat.invented_key would sail through.
   {
-    const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'zaf-build/manifest.json'), 'utf8'));
     const ALLOWED = ['url', 'autoHide', 'autoLoad', 'flexible', 'signed', 'size'];
+    const appDirs = fs.readdirSync(ROOT, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && fs.existsSync(path.join(ROOT, e.name, 'manifest.json')))
+      .map((e) => e.name)
+      .sort();
+
+    // Without this, a scan that finds nothing is indistinguishable from a scan that
+    // finds nothing wrong, and the check below passes while measuring zero manifests.
+    // Named rather than counted: a third app is covered by the scan automatically, and
+    // removing one takes a deliberate edit here rather than silently shrinking coverage.
+    //
+    // It also converts the one silent miss the scan has into a loud one. Dirent does not
+    // follow symlinks, so a symlinked app directory reports isDirectory() false and drops
+    // out of appDirs; for the two apps named here that now fails this check instead of
+    // passing quietly. A FUTURE app added as a symlink would still be missed.
+    check('the manifest scan discovers every app in this repo',
+          ['zaf-build', 'zaf-debug'].every((d) => appDirs.indexOf(d) !== -1),
+          JSON.stringify(appDirs), 'at least zaf-build and zaf-debug');
+
     const bad = [];
-    const support = (mf.location && mf.location.support) || {};
-    Object.keys(support).forEach((loc) => {
-      const v = support[loc];
-      if (v && typeof v === 'object') {
-        Object.keys(v).forEach((k) => { if (ALLOWED.indexOf(k) === -1) bad.push(loc + '.' + k); });
-      }
+    appDirs.forEach((dir) => {
+      const rel = dir + '/manifest.json';
+      let mf;
+      // Has to land as a failed check: a throw would kill every probe after this one,
+      // and skipping would be a vacuous pass.
+      try { mf = JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8')); }
+      catch (e) { bad.push(rel + ': unparseable'); return; }
+      const byProduct = (mf.location && typeof mf.location === 'object') ? mf.location : {};
+      Object.keys(byProduct).forEach((product) => {
+        const locs = byProduct[product];
+        if (!locs || typeof locs !== 'object') { bad.push(rel + ' ' + product + ': not an object'); return; }
+        Object.keys(locs).forEach((loc) => {
+          const v = locs[loc];
+          // A bare-string location ("background": "assets/background.html") carries no
+          // properties, so there is nothing here to check.
+          if (!v || typeof v !== 'object') { return; }
+          Object.keys(v).forEach((k) => {
+            if (ALLOWED.indexOf(k) === -1) { bad.push(rel + ' ' + product + '.' + loc + '.' + k); }
+          });
+        });
+      });
     });
     check('no manifest location declares a property ZAF does not define',
           bad.length === 0, JSON.stringify(bad),
-          'only ' + ALLOWED.join('/'));
+          'only ' + ALLOWED.join('/') + ', across ' + appDirs.length + ' manifest(s)');
   }
 
   const failed = results.filter((r) => !r.pass);

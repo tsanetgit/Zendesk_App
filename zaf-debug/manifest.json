@@ -11,8 +11,7 @@
   "location": {
     "support": {
       "nav_bar": {
-        "url": "assets/index.html",
-        "flexible_height": true
+        "url": "assets/index.html"
       }
     }
   },
