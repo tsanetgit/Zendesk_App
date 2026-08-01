@@ -112,7 +112,11 @@ def _tree_files(root):
 
     Staged work is still covered: `--cached` reads the INDEX, so `git add`
     followed by the audit sees a new file. What is no longer covered is the
-    run before `git add`, which is the deliberate trade.
+    run before `git add`, which is the deliberate trade — and it is a smaller
+    trade than it sounds, because `git add -N` is enough. That records the
+    path in the index without staging its content, so a brand-new file is back
+    in scope while still showing as unstaged. Probed both ways: untracked
+    alone is not flagged, and the same file after `git add -N` is.
 
     Nothing else needs an exclusion. Tracked paths cannot be ignored, so the
     dist/ and node_modules/ prune this list once did by hand is inherent, and
@@ -135,9 +139,23 @@ def _tree_files(root):
 
     And this selects WHICH files are read, not WHAT is read from them: the
     list comes from the index, the bytes come from the working tree. They
-    coincide on CI and in a fresh clone. Locally, a tracked file with unstaged
-    edits is scanned with its edited content, which is usually what a person
-    running this wants and is not what a clean export would produce.
+    coincide on CI and in a fresh clone, and diverge locally in BOTH
+    directions, so "the audit measures the commit" above is the intent rather
+    than a literal guarantee:
+
+      - a tracked file with unstaged edits is scanned with its EDITED content,
+        which is usually what a person running this wants and is not what a
+        clean export would produce. A false positive, and a loud one.
+      - a path in the index whose file is absent from disk (`git add` then
+        `rm`) is enumerated, fails to open, and is skipped by the `except
+        OSError` in the scan loop. Its content IS in what would be committed
+        and the audit reports clean. A false NEGATIVE, and a silent one.
+
+    The second is pre-existing rather than introduced here — `read()` has
+    always read from disk, and `--others` never helped for a file that is not
+    on disk — and it is named because this paragraph is where a reader looks
+    for the limit. Closing it means reading index blobs (`git cat-file -p
+    :<path>`), which is a much larger change than #185 asked for.
     """
     # Gate on root being a checkout in its own right, and do not merely let a
     # failed git call fall through. git SUCCEEDS for an ANCESTOR repository: an
