@@ -997,6 +997,18 @@ function handleSubmit() {
     else if (selectedPartner) payload.receiverCompanyId = selectedPartner.companyId;
 
     return tsanetPost('/collaboration-requests', payload).then(function(created) {
+      // THE CASE NOW EXISTS AND THE PARTNER ALREADY HAS IT. Everything below is
+      // bookkeeping on the member's own ticket, and none of it can un-create the
+      // case, so none of it may reach the outer .catch. That catch renders "Submit
+      // failed" beside a dialog still populated with this exact payload, and the
+      // natural response to that is to press Submit again — which opens a SECOND
+      // collaboration request to the partner (tsanetgit/Zendesk_App#169). That is the
+      // same member-visible duplicate class #148 and #149 exist to remove, reached
+      // from the outbound side instead of the inbound one.
+      //
+      // Closing the dialog here, on the line after the case is created, is what makes
+      // the resend unavailable rather than merely discouraged.
+      document.getElementById('new-collab-dialog').style.display = 'none';
       return client.request({ url: '/api/v2/tickets/' + ticketId + '.json', type: 'GET' }).then(function(d2) {
         var cf2 = d2.ticket.custom_fields || [];
         var mf = cf2.find(function(f) { return String(f.id) === String(settings.field_id_tokens_multi); });
@@ -1019,14 +1031,34 @@ function handleSubmit() {
           // support ticket wiped that ticket's tags (tsanetgit/Zendesk_App#165).
           // addTicketTag writes the union under safe_update; see its comment.
           return addTicketTag(ticketId, 'tsanet_outbound');
-        }).then(function() {
-          document.getElementById('new-collab-dialog').style.display = 'none';
-          showSuccess('Collaboration request submitted!');
-          return loadCollaborations();
         });
+      }).then(function() {
+        showSuccess('Collaboration request submitted!');
+      }, function(err) {
+        // Partial success, and the difference from a failed submit is the whole point:
+        // the request reached the partner, only this ticket's own record of it did
+        // not. Name the token so the case is recoverable by hand, and say plainly not
+        // to resend, because the obvious reading of any red banner here is "it did not
+        // go through".
+        showError('Collaboration request submitted, but this ticket could not be ' +
+                  'updated: ' + (err.message || String(err)) + ' The case exists under ' +
+                  'token ' + created.token + '. Do NOT submit again, the partner ' +
+                  'already has this request. Use Sync Inbound or reload the ticket ' +
+                  'to pick it up.');
+      }).then(function() {
+        return loadCollaborations();
+      }).catch(function() {
+        // Defence in depth, and honestly labelled as such: loadCollaborations has its
+        // own terminal .catch today and always resolves, so nothing currently reaches
+        // here. It exists so that a later change making the refresh reject cannot
+        // resurrect this issue by falling through to the outer catch and relabelling a
+        // created case as "Submit failed".
       });
     });
   }).catch(function(err) {
+    // Reachable only BEFORE the case is created: client.get, the payload build, or
+    // the POST itself. Everything after creation is handled above, so this message
+    // now means what it says.
     btn.disabled = false; btn.textContent = 'Submit';
     showError('Submit failed: ' + (err.message || String(err)));
   });
