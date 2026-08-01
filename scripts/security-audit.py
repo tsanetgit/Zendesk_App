@@ -533,22 +533,107 @@ PLACEHOLDER_WORDS = frozenset((
 ))
 
 
-def _is_placeholder(value):
-    """True when a credential-shaped value is self-evidently a stand-in.
+# Bounds on what can pass as a word or a number. Both exist because
+# "not mixed-case" and "is a digit run" are not the same as "is not key
+# material", and each was demonstrated by a probe whose control differed by one
+# token: `your_20260114093217465829` was excused where the bare 20-digit run
+# flagged, and `your_xkqjzvwmptrlbhndgscf` was excused where the bare
+# 20-character run flagged. 4 covers years and version numbers; 15 covers the
+# longest words this domain writes (`authentication`, `configuration`) while
+# refusing a key-length run.
+MAX_WORD_DIGITS = 4
+MAX_WORD_LETTERS = 15
 
-    Whole-token equality, never substring. Under a substring test a real secret
-    that happened to contain the letters "sample" would excuse itself, which is
-    the failure mode that matters here, since excusing is the dangerous
-    direction. A high-entropy credential is one long token and so cannot
-    collide with a word in the set. Probed both ways: `AbcdefYOURghij123456` is
-    NOT excused, `YOUR_CLIENT_SECRET_HERE` is.
+
+def _wordlike(token):
+    """A token that reads as a word or a plain number, not as key material.
+
+    Case has to be ORDINARY: all-lower, all-upper or Titlecase, so `aBcDeFgHiJ`
+    is refused. Case alone is not enough, though, which is what the two length
+    bounds are for: a uniform-case run and a digit run are both perfectly
+    ordinary-cased and neither is a word.
+
+    An uncased script (CJK, for instance) satisfies isalpha() but none of the
+    three case tests, so it is refused. That is the conservative direction and
+    it is deliberate: this cannot tell a Han placeholder from Han key material,
+    so it declines to excuse either.
+    """
+    if token.isdigit():
+        return len(token) <= MAX_WORD_DIGITS
+    if not token.isalpha():
+        return False
+    if len(token) > MAX_WORD_LETTERS:
+        return False
+    return token.islower() or token.isupper() or token.istitle()
+
+
+def _is_placeholder(value):
+    """True only when NOTHING left in the value looks like key material.
+
+    Inverted on purpose, and the inversion is the whole point. The first
+    version excused on the PRESENCE of a placeholder word, so a placeholder
+    word sitting NEXT TO a real token excused the real token. Probed, each
+    against a control differing by a single token:
+
+        your_aB3xK9mQ2vL8pR4tZ7       excused | aB3xK9mQ2vL8pR4tZ7        flagged
+        Example-Corp-2026-Xy9kLmNpQr  excused | Acme-Corp-2026-Xy9kLmNpQr flagged
+        prod.redacted.7fQ2mK9xLp      excused | prod.primary.7fQ2mK9xLp   flagged
+
+    Same length, same entropy, one word's difference, and a live credential
+    goes silent. It needs no adversary: a doc template says `your_<paste-here>`,
+    someone pastes the real key and leaves the prefix word. `password` is one
+    of the three keywords and passphrase-style values are exactly the
+    delimited kind, so that is the ordinary case for it, not an exotic one.
+
+    The sentence that justified the old version — "a high-entropy credential is
+    one long token and so cannot collide with a word in the set" — holds only
+    for values carrying no separator, which was the single shape the old probe
+    tested.
+
+    So a value is excused only when it names itself a stand-in AND every token
+    in it reads as a word or a number. One token that does not is enough to
+    flag, whatever else the value says about itself.
+
+    Known limits, recorded rather than coded around, because each needs a
+    dictionary or a bypass an attacker already has:
+
+      - a pure dictionary-word passphrase (`correct-horse-battery-example`) is
+        excused, and no shape rule separates it from a stand-in;
+      - a uniform-case alphabetic run UNDER MAX_WORD_LETTERS beside a
+        placeholder word is excused. The bound narrows this; only a dictionary
+        closes it;
+      - splitting a secret into one-character tokens
+        (`example-a-B-3-x-K-9-m-Q`) is excused. That needs someone reading
+        this code, and such a reader evades the outer keyword regex far more
+        cheaply by renaming the variable, so this was never the attacker-proof
+        layer;
+      - excluding `\n` from the value's FIRST character means a quote followed
+        by a newline and then the secret is no longer matched, where the old
+        class caught it by accident. No YAML block scalar or JSON string
+        produces that shape.
     """
     v = value.strip()
-    # Shapes that carry no information at all, whatever words they contain.
-    if re.fullmatch(r"<[^>]*>|\.{3,}|[xX]{4,}|-{4,}|_{4,}", v):
+    # Unwrap ONE layer of <...> and judge the CONTENTS. Treating the brackets
+    # themselves as proof let `<Abc8Q~kJ3mNpQrStUvWxYz012345678>` pass while the
+    # identical value without them failed, because nothing looked inside.
+    wrapped = re.fullmatch(r"<([^>]*)>", v)
+    if wrapped:
+        v = wrapped.group(1).strip()
+    if not v:
         return True
-    return bool({t.lower() for t in re.split(r"[^A-Za-z0-9]+", v) if t}
-                & PLACEHOLDER_WORDS)
+    # Runs of pure filler carry nothing, whatever they are made of.
+    if re.fullmatch(r"\.{3,}|[xX]{4,}|[-_*]{4,}", v):
+        return True
+    # `[\W_]+`, which is Unicode-aware, NOT `[^A-Za-z0-9]+`. The ASCII class
+    # made every non-ASCII character a SEPARATOR, so the secret never reached
+    # _wordlike at all: `your_密钥в9хЛм2вП8` tokenised to ['your','9','2','8'],
+    # every one of them wordlike, and the value was excused.
+    tokens = [t for t in re.split(r"[\W_]+", v, flags=re.UNICODE) if t]
+    if not tokens:
+        return True
+    if not any(t.lower() in PLACEHOLDER_WORDS for t in tokens):
+        return False
+    return all(_wordlike(t) for t in tokens)
 
 
 def check_no_embedded_secrets(root, scan):
@@ -594,8 +679,17 @@ def check_no_embedded_secrets(root, scan):
         # groupdict() and the other two return {} rather than raising. A
         # numbered group here would be a positional contract of exactly the
         # kind #168 was filed about.
+        # `\n` is excluded from the value on BOTH character classes, so a
+        # value cannot run past its own line. `[^\"']` matched newline and
+        # `{12,}` is greedy with no closing-quote requirement, so an unbalanced
+        # or curly quote let the capture run to the next ASCII quote anywhere
+        # in the file. That was merely over-reporting until a value could be
+        # excused; now it is a way to SUPPRESS. Probed: `password:
+        # "Pr0dS3cretValue99887766` left unclosed, with the word "example" in
+        # unrelated prose two lines below, was excused, and deleting that one
+        # word flagged the same file.
         (re.compile(r"(?i)(?:client_secret|api[_-]?token|password)\s*[:=]\s*"
-                    r"[\"'](?P<value>[^\"'{}$][^\"']{12,})"),
+                    r"[\"'](?P<value>[^\"'{}$\n][^\"'\n]{12,})"),
          "credential-shaped assignment"),
         (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "Slack token"),
         (re.compile(r"ghp_[A-Za-z0-9]{20,}"), "GitHub PAT"),
@@ -659,6 +753,18 @@ def check_no_embedded_secrets(root, scan):
                f"is not a pass: {tally}", cat)
     elif hits:
         record("FAIL", name, "; ".join(sorted(set(hits))), cat)
+    elif unreadable:
+        # A judgement QA left open, decided here rather than left implicit. A
+        # file that was enumerated and could not be opened is a scan-integrity
+        # gap, not a clean result: the check cannot say "no credentials" about
+        # bytes it never read. Reporting the count made it visible; PASSing on
+        # it still asserted more than was checked. WARN, because the tree is
+        # not known bad either, and exit 2 keeps release.yml's "warnings only"
+        # branch rather than flagging coverage.
+        record("WARN", name,
+               f"clean over what could be read, but {len(unreadable)} "
+               f"enumerated file(s) could not be opened, so the result does "
+               f"not cover them: {tally}", cat)
     else:
         record("PASS", name, f"no credential-shaped literals: {tally}", cat)
 
