@@ -29,12 +29,14 @@ on:
       - 'zis/tsanet_connect_bundle.json'
       - 'zaf-build/assets/tsanet_connect_bundle.json'
       - 'zaf-build/assets/deploy.js'
+      - 'scripts/compare-probe.js'
       - '.github/workflows/zaf-bundle-sync.yml'
   pull_request:
     paths:
       - 'zis/tsanet_connect_bundle.json'
       - 'zaf-build/assets/tsanet_connect_bundle.json'
       - 'zaf-build/assets/deploy.js'
+      - 'scripts/compare-probe.js'
       - '.github/workflows/zaf-bundle-sync.yml'
 
 jobs:
@@ -83,3 +85,17 @@ jobs:
 
           print(f"all {len(field_ph | other_ph)} bundle placeholders are handled by deploy.js")
           PY
+
+      # The placeholder check above asks whether each token appears ANYWHERE in
+      # deploy.js. The top-of-file constants satisfy that no matter what the
+      # comparison code does with them, so it cannot see a comparator that has
+      # fallen behind substitute() -- which is exactly what tsanetgit/Zendesk_App#175
+      # did, and it shipped past this gate. These probes close that hole: they run
+      # the real deploy.js under a stubbed ZAF client and DOM and assert on the
+      # rendered rows.
+      #
+      # Node builtins only (fs, path, vm), so no setup-node and no npm install.
+      - name: Bundle comparison probes
+        run: |
+          node --version
+          node scripts/compare-probe.js

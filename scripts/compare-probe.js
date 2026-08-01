@@ -266,16 +266,46 @@ async function main() {
   // 3. BLOCKER 1 regression (REGISTRY removed by #175).
   //    The bundle lane must reach the RENAMED registry path. A ReferenceError here is
   //    swallowed by guard() and renders "could not check" while the screen stays green,
-  //    so assert the request URL as well as the absence of that row.
+  //    so assert the request URLs as well as the absence of that row.
+  //
+  //    UNIVERSAL, not existential. The first version of this asserted that SOME request
+  //    hit /registry/acme_tsanet/bundles. checkBundle has two call sites and the second
+  //    one's URL contains the first one's substring, so either alone satisfied that, and
+  //    mutation-testing confirmed it: hardcoding the default name at exactly one site
+  //    passed 12/12 twice. Blocker 1 was "a call site reaching a registry path that no
+  //    longer resolves", so the assertion has to be that NO call site does, which also
+  //    covers sites added later. That is the real failure mode: both of blocker 1's call
+  //    sites were themselves added after the fork point.
   {
     const deployed = await withDeployedBundle(renamed);
     const r = await run({ settings: renamed, routes: registryRoutes(deployed) });
     const row = bundleRow(r.rows);
-    const hit = r.requests.filter((u) => u.indexOf('/registry/acme_tsanet/bundles') !== -1);
-    check('bundle lane requests the per-instance registry path',
-          hit.length > 0,
-          JSON.stringify(r.requests.filter((u) => u.indexOf('registry') !== -1)),
-          'a GET against /registry/acme_tsanet/bundles');
+    //    One call legitimately names the DEFAULT integration and must not be swept up:
+    //    pre-flight's rename guard (deploy.js:1183) deliberately reads the OLD
+    //    integration on a renamed instance, because renaming does not retire it and its
+    //    job specs keep intercepting the same events, producing duplicate tickets. A
+    //    blanket "no call names the default" assertion fails on correct code, and
+    //    satisfying it would delete that safeguard.
+    const RENAME_GUARD = '/api/services/zis/registry/' + 'tsanet_connect' + '/job_specs';
+    const registryCalls = r.requests.filter((u) => u.indexOf('/registry/') !== -1);
+    const scoped = (u) => u.indexOf('/registry/acme_tsanet/') !== -1;
+
+    // Blocker 1's own class: every registry call the bundle lane makes. Both of
+    // checkBundle's call sites have to fire, so a single satisfied URL cannot stand in
+    // for the other.
+    const bundleCalls = registryCalls.filter((u) => u.indexOf('/bundles') !== -1);
+    check('every bundle-lane registry call is scoped to the instance name',
+          bundleCalls.length >= 2 && bundleCalls.every(scoped),
+          JSON.stringify(bundleCalls),
+          'both the list and the per-bundle read, each under /registry/acme_tsanet/');
+
+    // And nothing else quietly hardcodes the default. Catches a call site added later,
+    // which is the real failure mode: both of blocker 1's sites were themselves added
+    // after the fork point.
+    const unexpected = registryCalls.filter((u) => !scoped(u) && u !== RENAME_GUARD);
+    check('no registry call other than the rename guard names the default integration',
+          unexpected.length === 0, JSON.stringify(unexpected),
+          'only deploy.js:1183, the deliberate rename guard');
     check('bundle lane does not fall into "could not check"',
           !/could not check/.test(row.name),
           row.name + ' | ' + row.detail, 'any verdict other than "could not check"');
