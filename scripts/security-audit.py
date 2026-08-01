@@ -120,32 +120,61 @@ def _tree_files(root):
         out = subprocess.run(
             ["git", "-C", root, "ls-files", "-z",
              "--cached", "--others", "--exclude-standard"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             check=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as e:
         # Reached only when root IS a checkout, so git was the right tool and
         # did not answer: no git on PATH, a timeout, a nonzero exit. Degraded
         # rather than expected, hence the flag.
+        #
+        # Carry git's own first line into the message. Discarding stderr left
+        # the WARN saying only THAT the enumeration degraded, never why, which
+        # is the difference between a reader fixing it and a reader shrugging.
+        # CalledProcessError and TimeoutExpired carry .stderr; OSError (no git
+        # on PATH) has none, and its str() is the useful text there.
+        #
+        # decode(), NOT os.fsdecode(): stderr is a message, not a path. fsdecode
+        # applies surrogateescape, and a lone surrogate raises UnicodeEncodeError
+        # the moment main() prints the report — an audit crashing inside the
+        # branch added to make its failures legible. Probed: os.fsdecode(b"\xff")
+        # crashes on print to a UTF-8 stream, "replace" prints as U+FFFD.
+        err = getattr(e, "stderr", None) or b""
+        lines = err.decode("utf-8", "replace").strip().splitlines()
+        why = (lines[0] if lines else str(e))[:120]
         return Scan(_walk_files(root),
-                    "filesystem walk (git could not enumerate this tree)", True)
+                    f"filesystem walk (git could not enumerate this tree: "
+                    f"{why})", True)
     # Split on the NUL bytes before decoding, because a tracked path is not
     # required to be valid UTF-8. git separates with `/` on every platform;
     # normalising to os.sep keeps these paths interchangeable with the
     # os.path.relpath ones _walk_files produces, which the sentinel comparison
     # and the `zaf-build` prefix test below both assume. A no-op on POSIX.
-    return Scan(sorted(os.fsdecode(p).replace("/", os.sep)
-                       for p in out.stdout.split(b"\0") if p),
+    #
+    # A SET, because --cached emits an unmerged path once per stage: during a
+    # conflicted merge this command returns the same path three times. Left as
+    # a list that made check_scanned_tree report "3 copies of
+    # scripts/security-audit.py ... a second checkout is being scanned",
+    # naming a checkout that does not exist, and inflated the deliberate-call
+    # counts, which are len() of a list whose detail line renders through
+    # sorted(set(...)) — a WARN that says 3 and then lists 1. Deduplicating
+    # HERE rather than guarding downstream makes both unreachable by
+    # construction, and it cannot weaken the duplicate-sentinel check, whose
+    # inputs are DISTINCT paths (`.claude/worktrees/<x>/scripts/…` versus
+    # `scripts/…`) that a set preserves. Probed both ways.
+    return Scan(sorted({os.fsdecode(p).replace("/", os.sep)
+                        for p in out.stdout.split(b"\0") if p}),
                 "git ls-files", False)
 
 
 def _walk_files(root):
     """Fallback enumeration: files under `root` that are not in another tree.
 
-    Prunes .git and .claude outright, plus any directory holding a `.git`
-    entry, which is what a nested checkout looks like from outside. That last
-    rule tests for an ENTRY and not a directory on purpose: a linked git
-    worktree carries a `.git` FILE (93 bytes in the clone this was found in),
-    so a directory test would walk straight into it.
+    Prunes four names outright — .git, .claude, dist and node_modules, the
+    last two carried over from the prune this replaced — plus any directory
+    holding a `.git` entry, which is what a nested checkout looks like from
+    outside. That last rule tests for an ENTRY and not a directory on purpose:
+    a linked git worktree carries a `.git` FILE (93 bytes in the clone this
+    was found in), so a directory test would walk straight into it.
     """
     out = []
     for base, dirs, files in os.walk(root):
