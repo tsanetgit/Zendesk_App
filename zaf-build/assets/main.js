@@ -301,7 +301,31 @@ function addTicketTag(ticketId, tag, retried) {
 // width, so asking for 44 made the one state a new ticket ever reaches scroll. No
 // state asserts its own height now; every one of them measures.
 var PANEL_MIN_H = 44;
+// The cap for a collaboration LIST, which is what the paragraph above is reasoning
+// about. Scrolling a list is ordinary, and an uncapped one on a ticket carrying many
+// collaborations really would push the rest of the apps tray out of reach.
 var PANEL_MAX_H = 800;
+// A FORM is different in kind, and 800 was never chosen with one in mind. Putting a
+// scrollbar inside something the agent has to fill in IS the complaint #179 opened
+// with. This is not an edge case: all 110 live partner forms on BETA were read, and
+// 46 of them, 41%, need more than 800px. A form renders at 513px with no custom fields
+// and about 56px per field after that, so it crosses 800 at six.
+//
+//   16 fields  1409px  Test Evernex        <- tallest in the member base
+//   12 fields  1225px  Test Lenovo
+//   10 fields  1113px  Microsoft | Standard
+//    9 fields  1017px  Cisco | WebEx Support, Test IBM | SUPPORT
+//    7 fields   905px  Cisco | JSON Inbound
+//    6 fields   889px  IBM | Common Customer Issue (with an admin note)
+//
+// The majority case is the warning, though. 71 of the 110 have five fields and need
+// 793px, which cleared the old cap by SEVEN pixels: a label wrapping to a second line
+// or a slightly narrower tray would have truncated most of the member base, not 41% of
+// it. So this number is deliberately not fitted to today's data. 2000 clears the
+// tallest known form by ~590px, another ten fields, and still bounds a pathological
+// one. If the apps tray is shorter than what the app asks for, the tray scrolls as a
+// column, which is one scrollbar rather than the two an inner cap produces.
+var PANEL_MAX_H_FORM = 2000;
 // Slack over the measurement. body carries padding: 8px, which scrollHeight already
 // counts. It does NOT carry the browser's default 8px margin, which index.html:14
 // zeroes with `* { margin: 0 }` and computed style confirms as 0px; the comment here
@@ -327,10 +351,28 @@ function setPanelHeight(h) {
   catch (e) { /* a location that will not resize is a worse-looking panel, nothing more */ }
 }
 
+// Which cap applies depends on what is on screen, because the two states want opposite
+// things from one. Keyed on the form being displayed rather than on a flag set by the
+// path that opened it, so it stays true however the form got there.
+function panelMaxH() {
+  var form = document.getElementById('collab-form');
+  // EFFECTIVE visibility, not the form's own inline display. Reading form.style.display
+  // was wrong in the state every real ticket passes through: btn-cancel-form and
+  // handleSubmit's post-creation path both hide the DIALOG and leave #collab-form
+  // carrying display:block, so the form read as open while the agent was back on the
+  // collaboration list, and the list cap silently stopped binding for the rest of the
+  // session. offsetParent is null whenever the element or ANY ancestor is display:none,
+  // so it answers the question actually being asked and a close path added later cannot
+  // get it wrong. A representation, not a guard on each path.
+  var formOpen = !!(form && form.offsetParent !== null);
+  return formOpen ? PANEL_MAX_H_FORM : PANEL_MAX_H;
+}
+
 function fitPanelToContent() {
   var h = Math.ceil(document.body.scrollHeight) + PANEL_PAD_H;
   if (h < PANEL_MIN_H) h = PANEL_MIN_H;
-  if (h > PANEL_MAX_H) h = PANEL_MAX_H;
+  var max = panelMaxH();
+  if (h > max) h = max;
   setPanelHeight(h);
 }
 
