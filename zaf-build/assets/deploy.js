@@ -198,7 +198,7 @@
 
   var state = { settings: null, bundleText: null, bundle: null, steps: [],
                 preflightOk: false, detected: null, installationId: null,
-                appId: null, appVersion: null, latestTag: null };
+                appId: null, appVersion: null, latestTag: null, bundleCheckedAt: null };
 
   // Rows of the Current state card, keyed by lane so each resolves independently.
   var STATUS_LABEL = { bundle: 'Bundle', app: 'App version', release: 'Latest release' };
@@ -584,7 +584,23 @@
       Object.keys(state.detected).forEach(function (k) { state.settings[k] = state.detected[k]; });
       el('detect-note').textContent = ' saved';
       show('apply-btn', false);
-      return detectFields().then(function () { return preflight(); });
+      // Apply changes the settings substitute() runs on, so it changes what "what this
+      // app would deploy" means, which is half of the bundle comparison. Same hazard as
+      // a deploy, so the same two-part treatment: invalidate HERE, on the line after the
+      // settings actually changed, rather than refreshing at the end of a chain that can
+      // stop early. detectFields() and preflight() are both allowed to reject, and a
+      // rejection there would otherwise leave a verdict computed against settings that
+      // no longer exist — a stale "matches what this app would deploy" surviving a state
+      // change, which is the case the deploy path treats as the dangerous one.
+      status.bundle = { ok: null, name: 'Bundle: checking…',
+                        detail: 'App settings just changed, so the previous result no longer applies.' };
+      renderStatus();
+      // Re-checked on BOTH outcomes for the same reason. guard() swallows its own
+      // errors, so this cannot turn a pre-flight failure into an unhandled rejection.
+      var recheck = function () { return guard('bundle', checkBundle); };
+      return detectFields()
+        .then(function () { return preflight(); })
+        .then(recheck, recheck);
     });
   }
 
@@ -621,23 +637,50 @@
   var RE_META = /[.*+?^${}()|[\]\\]/g;
   function reEsc(s) { return String(s).replace(RE_META, '\\$&'); }
 
+  // Every SUBSTRING site substitute() rewrites, paired with the shape its output can
+  // take. hasPlaceholder and shapePattern both walk this one table, so a site cannot be
+  // known to substitute() and unknown to the comparison.
+  //
+  // That divergence is not hypothetical. #175 added the ARN prefix to substitute() and
+  // the comparison never learned it, so on a renamed instance all 18 resource ARNs
+  // failed a literal compare and the card told a member whose bundle was in sync to
+  // redeploy — the exact false positive this card exists to prevent, on the one row
+  // that drives the recommendation. Two independent lists are what made that possible.
+  //
+  // connectionName is deliberately NOT here: shapeEq matches it structurally, as a bare
+  // leaf, rather than by wildcarding a substring. That seam is covered by the self-check
+  // in compareBundle, which fails loudly on any site this vocabulary has fallen behind
+  // on, leaf-shaped ones included.
+  var SUBST_SITES = Object.keys(FIELD_PLACEHOLDERS).map(function (ph) {
+    return { token: ph, shape: '\\d+' };
+  }).concat([
+    { token: HOST_PLACEHOLDER,  shape: 'connect2\\.tsanet\\.(?:org|net)' },
+    { token: EMAIL_PLACEHOLDER, shape: '[^"]*' },
+    // The live side's integration name was validated against /^[a-z0-9_-]{1,64}$/ before
+    // it was deployed, so match that charset rather than re-validating it here. It
+    // cannot match a colon, so it never over-runs into the ARN's later segments.
+    { token: ARN_PREFIX,        shape: 'zis:[a-z0-9_-]{1,64}:' }
+  ]);
+
   function hasPlaceholder(s) {
-    if (s.indexOf(HOST_PLACEHOLDER) !== -1 || s.indexOf(EMAIL_PLACEHOLDER) !== -1) { return true; }
-    var found = false;
-    Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) {
-      if (s.indexOf(ph) !== -1) { found = true; }
-    });
-    return found;
+    for (var i = 0; i < SUBST_SITES.length; i++) {
+      if (s.indexOf(SUBST_SITES[i].token) !== -1) { return true; }
+    }
+    return false;
   }
 
   // A pristine string leaf becomes a matcher with each substitution site wildcarded.
   // Needed because placeholders also live inside a jq expression string
   // (flow_field_action's Extract step), which no structural walk can reach.
   function shapePattern(s) {
+    // The text being split is already reEsc'd, so each token has to be reEsc'd to match
+    // it. The old code did that for the host and not for the other two, which was
+    // correct only because those tokens carry no regex metacharacters — a property of
+    // today's values, not of the code. Uniform now, so it stays true.
     var out = reEsc(s);
-    Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) { out = out.split(ph).join('\\d+'); });
-    out = out.split(reEsc(HOST_PLACEHOLDER)).join('connect2\\.tsanet\\.(?:org|net)');
-    out = out.split(EMAIL_PLACEHOLDER).join('[^"]*');
+    SUBST_SITES.forEach(function (site) {
+      out = out.split(reEsc(site.token)).join(site.shape);
+    });
     return new RegExp('^' + out + '$');
   }
 
@@ -698,6 +741,49 @@
   function compareBundle(runningRes) {
     var sub = substitute(state.bundleText, state.settings);
     var pristineRes = (state.bundle && state.bundle.resources) || {};
+
+    // Self-check, before any verdict about the member's instance. substitute()'s output
+    // is a bundle this comparison MUST recognise, because we generated it one line ago
+    // from the pristine side it is compared against. If it does not, substitute() has a
+    // per-instance site that SUBST_SITES and shapeEq do not know.
+    //
+    // This is the control the SUBST_SITES table cannot be: the table stops the two
+    // comparator helpers drifting from each other, but #175 was substitute() drifting
+    // from BOTH of them, and substitute()'s passes are too heterogeneous to drive off
+    // the same table. So assert the property instead of duplicating the list. A
+    // divergence that used to surface as confident wrong advice on a member's screen
+    // now surfaces here, on our own output, as a visible app bug.
+    var selfBad = '';
+    try {
+      var subRes = (JSON.parse(sub.text) || {}).resources || {};
+      Object.keys(subRes).forEach(function (n) {
+        if (selfBad) { return; }
+        // substitute() only ever REMOVES resources (the field-action strip); no pass
+        // adds one. So a name here the pristine side lacks means a pass rewrote a
+        // resource KEY rather than a value. The field-id and ARN passes run over the
+        // bundle TEXT, so nothing structurally confines them to values, and comparing
+        // only the names both sides carry would skip exactly that case in silence.
+        if (!Object.prototype.hasOwnProperty.call(pristineRes, n)) {
+          selfBad = 'it renamed the resource ' + n;
+          return;
+        }
+        // The reverse direction — a pristine name missing from subRes — is the
+        // field-action strip doing its job, and the mode classification below reports
+        // it. Not a vocabulary failure.
+        if (!shapeEq(pristineRes[n], subRes[n])) { selfBad = n; }
+      });
+    } catch (e) {
+      // A parse failure here is not the member's problem either: deploy() refuses to
+      // upload unparseable output, so this is still an app-side fault.
+      selfBad = 'the bundle this app generated did not parse';
+    }
+    if (selfBad) {
+      return { verdict: 'selfcheck', detail: 'This app version cannot verify its own bundle (' +
+               selfBad + '), so it will not guess what is deployed. That is a bug in the app, ' +
+               'not a problem with your instance — please report it to TSANet. Pre-flight and ' +
+               'Deploy are unaffected.' };
+    }
+
     var expected = Object.keys(pristineRes);
     if (sub.mode === 'off') {
       expected = expected.filter(function (n) { return FIELD_ACTION_RESOURCES.indexOf(n) === -1; });
@@ -761,15 +847,23 @@
     insync:     { ok: true,  name: 'Bundle: matches what this app would deploy' },
     settings:   { ok: false, name: 'Bundle: app settings changed since it was deployed' },
     mode:       { ok: null,  name: 'Bundle: field-action mode differs from app settings' },
-    generation: { ok: false, name: 'Bundle: older than the one this app ships — deploy recommended' },
-    shapeonly:  { ok: null,  name: 'Bundle: right generation, values unverified' }
+    // States the fact, and nothing more. shapeEq establishes that the two sides DIFFER;
+    // it never establishes which is newer. The previous wording ("older than the one
+    // this app ships — deploy recommended") asserted a direction it could not know, and
+    // an app BEHIND the deployed bundle is reachable — this repo ships custom builds,
+    // which is why the release row already tolerates an app ahead of the published tag.
+    // Telling that admin to deploy would downgrade the bundle and orphan its job specs,
+    // the outage this card exists to prevent. The detail line names the resources.
+    generation: { ok: false, name: 'Bundle: differs from what this app would deploy' },
+    shapeonly:  { ok: null,  name: 'Bundle: right generation, values unverified' },
+    selfcheck:  { ok: null,  name: 'Bundle: cannot be checked by this app version' }
   };
 
   // GET /bundles lists metadata only (uuid, name, description, zis_template_version —
   // no timestamp and no version), so the content comes from GET /bundles/{uuid}, which
   // returns the bundle unwrapped with `resources` at the top level.
   function checkBundle() {
-    return req({ url: REGISTRY + '/bundles', type: 'GET' }).then(function (r) {
+    return req({ url: registryPath(state.settings) + '/bundles', type: 'GET' }).then(function (r) {
       if (!r.ok) {
         // A fresh install has no integration yet, so this 404s. That is a real answer,
         // not a failure, and the screen never said it before.
@@ -796,7 +890,7 @@
       return read.reduce(function (chain, b) {
         return chain.then(function () {
           if (best && best.verdict === 'insync') { return; }   // stop at the first match
-          return req({ url: REGISTRY + '/bundles/' + encodeURIComponent(b.uuid), type: 'GET' })
+          return req({ url: registryPath(state.settings) + '/bundles/' + encodeURIComponent(b.uuid), type: 'GET' })
             .then(function (r2) {
               if (!r2.ok) {
                 if (!best) {
@@ -932,7 +1026,12 @@
     return Promise.resolve().then(fn).then(null, function (e) {
       status[lane] = { ok: null, name: STATUS_LABEL[lane] + ': could not check',
                        detail: String((e && e.message) || e).slice(0, 200) };
-    }).then(renderStatus);
+    }).then(function () {
+      // Stamped on both paths on purpose: a lane that failed was still sampled, and the
+      // report should say when, so "could not check" is not mistaken for "never ran".
+      if (lane === 'bundle') { state.bundleCheckedAt = new Date().toISOString(); }
+      return renderStatus();
+    });
   }
 
   // Rows land at different times and each render resizes, so they appear as they resolve.
@@ -1110,6 +1209,15 @@
     state.steps = [];
     el('deploy-btn').disabled = true;
     el('recheck-btn').disabled = true;
+    // A deploy writes to the registry, so whatever the card established about the
+    // running bundle stops being true the moment this starts. Clear it BEFORE the first
+    // request rather than refreshing after the last one: otherwise there is a window in
+    // which Copy report emits a pre-deploy verdict, and the dangerous case is not the
+    // stale "differs" — it is a stale "matches what this app would deploy" carried into
+    // the report for a deploy that then failed halfway.
+    status.bundle = { ok: null, name: 'Bundle: checking…',
+                      detail: 'A deploy is in progress, so the previous result no longer applies.' };
+    renderStatus();
     show('result', true);
     el('result-banner').className = 'banner warn';
     el('result-banner').textContent = 'Deploying… do not close this tab.';
@@ -1198,7 +1306,13 @@
       // deployedNames is a closure variable, so it is in scope even when the chain
       // failed before the install loop.
       return verify(deployedNames);   // still read back: a partial state must be reported accurately
-    }).then(finish);
+      // finish() on BOTH outcomes. The catch above is the last handler in the chain, so
+      // a rejection from the read-back it performs would otherwise skip finish entirely:
+      // buttons stay disabled, the banner still reads "Deploying…", and since this
+      // branch now clears the bundle row up front, the card would go on asserting "a
+      // deploy is in progress" forever. A row that lies is worse than one that is stale,
+      // and finish() is where the post-deploy re-check fires.
+    }).then(finish, finish);
   }
 
   // Truth comes from the registry, not from the POST responses above.
@@ -1247,6 +1361,12 @@
     renderSteps('result-steps', state.steps);
     el('recheck-btn').disabled = false;
     el('deploy-btn').disabled = false;
+    // Re-read the registry now the writes are done, so the card and the copied report
+    // describe what is actually deployed rather than what was there at boot. Bundle lane
+    // only: a deploy cannot change this app's installed version or the latest published
+    // release, so re-running those two would spend the round-trips and re-expose their
+    // failure modes for nothing. Not awaited, and guarded, exactly like the boot call.
+    guard('bundle', checkBundle);
     resize();
   }
 
@@ -1265,7 +1385,14 @@
                         ' (ZIS template ' + (state.bundle && state.bundle.zis_template_version) + ')',
       'app version: ' + (state.appVersion || '?') +
                         ' (latest release ' + (state.latestTag || '?') + ')',
-      'deployed:    ' + (status.bundle && status.bundle.name),
+      // Sampled-at, because this line is the one support reads to decide whether a
+      // member needs to deploy, and it is a snapshot of a remote resource rather than a
+      // property of the report. The re-checks after deploy and Apply keep it current;
+      // the stamp covers the cases they cannot, namely a re-check that failed and a
+      // report copied while one is still in flight.
+      'deployed:    ' + (status.bundle && status.bundle.name) +
+                        (state.bundleCheckedAt ? '  (sampled ' + state.bundleCheckedAt + ')'
+                                               : '  (not sampled yet)'),
       ''
     ];
     state.steps.forEach(function (st) {
