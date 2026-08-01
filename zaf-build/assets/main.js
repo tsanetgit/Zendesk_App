@@ -280,6 +280,53 @@ function addTicketTag(ticketId, tag, retried) {
 }
 
 // ── Load collaborations ───────────────────────────────────────────────────────
+// ── Panel height ─────────────────────────────────────────────────────────────
+// The sidebar used to ask for 600px whenever it was not collapsed, which truncates
+// anything taller and pads anything shorter. EDB reported the second half of that:
+// a single-field form still needed scrolling (tsanetgit/Zendesk_App#179).
+//
+// No manifest setting makes it fit its CONTENT. `size` does take a height, but a fixed
+// initial height is the problem rather than the cure. The manifest declared
+// "flexible_height": true on both locations, and that is NOT a ZAF property at all — a
+// location object takes url, autoHide, autoLoad, flexible, signed and size — so it was
+// silently ignored by every release that shipped it. The real property, `flexible`,
+// governs WIDTH, and only for ticket_sidebar. Height is whatever the app asks for, so
+// it has to be asked for from the content.
+//
+// Clamped at both ends. Unbounded growth on a ticket carrying many collaborations
+// would push the rest of the apps tray out of reach; above the clamp a long list
+// scrolls inside the pane, which is the behaviour it should have anyway.
+var PANEL_MIN_H = 44;    // the collapsed compact bar: one row, and a state of its own
+var PANEL_MAX_H = 800;
+// body sets padding: 8px and keeps the browser's default 8px margin. scrollHeight
+// counts the padding but not the margin, so without this the last row clips by a few
+// pixels and the pane grows a scrollbar it does not need.
+var PANEL_PAD_H = 20;
+
+// The ONLY place this file asks ZAF to resize, so the guard below cannot be bypassed by
+// a call site that forgets it. That is a representation rather than a rule: a second
+// unguarded call is what this started as, and a probe caught it.
+//
+// The guard is load-bearing rather than defensive habit. deploy.js:222 wraps this
+// identical call, so the repo already treats it as one that can throw. One of the call
+// sites this change adds sits inside handleSubmit's post-creation region, which must
+// never reject: a throw there reaches the outer .catch and renders "Submit failed" for a
+// collaboration case the partner already has. That is tsanetgit/Zendesk_App#169 arriving
+// back through the fix for #179, and the two changes touch at exactly that line.
+//
+// Failing to resize is cosmetic. Reporting a created case as a failed submit is not.
+function setPanelHeight(h) {
+  try { client.invoke('resize', { width: '100%', height: h + 'px' }); }
+  catch (e) { /* a location that will not resize is a worse-looking panel, nothing more */ }
+}
+
+function fitPanelToContent() {
+  var h = Math.ceil(document.body.scrollHeight) + PANEL_PAD_H;
+  if (h < PANEL_MIN_H) h = PANEL_MIN_H;
+  if (h > PANEL_MAX_H) h = PANEL_MAX_H;
+  setPanelHeight(h);
+}
+
 function loadCollaborations(quiet) {
   if (!quiet) show('loading', true);
   hideInfoBanner();
@@ -289,7 +336,11 @@ function loadCollaborations(quiet) {
       // No TSANet data on this ticket — collapse to compact bar
       show('loading', false);
       show('compact-bar', true);
-      client.invoke('resize', { width: '100%', height: '44px' });
+      // Collapsed is a deliberate state rather than a fit, so it sets an explicit
+      // height — but through the same guarded helper, and from the same constant as
+      // the clamp's floor rather than repeating the number where nothing would notice
+      // the two drifting apart.
+      setPanelHeight(PANEL_MIN_H);
       return;
     }
     // TSANet ticket — show full panel
@@ -297,14 +348,19 @@ function loadCollaborations(quiet) {
     show('btn-new-collab', true);
     show('btn-sync-inbound', true);
     show('tsanet-notice', true);
-    client.invoke('resize', { width: '100%', height: '600px' });
     show('empty-state', false);
+    // Fit twice on purpose. The old 600px was asked for HERE, before the cards
+    // exist, which is most of why a constant was needed at all: at this point the
+    // panel is a spinner. This first call fits the loading state; the one after
+    // renderAll fits the cards it was waiting for.
+    fitPanelToContent();
     return Promise.all(tokens.map(function(t) {
       return tsanetGet('/collaboration-requests/' + t).catch(function() { return null; });
     })).then(function(results) {
       collaborations = results.filter(Boolean);
       renderAll();
       show('loading', false);
+      fitPanelToContent();
       // Sync live TSANet status back to Zendesk ticket fields
       syncStatusToTicket(collaborations);
     });
@@ -810,6 +866,8 @@ document.getElementById('btn-new-collab').addEventListener('click', function() {
     document.getElementById('collab-form').style.display = 'none';
     selectedPartner = null; currentForm = null;
   }
+  // Both directions: opening adds the dialog's height, closing gives it back.
+  fitPanelToContent();
 });
 
 // Called from compact-bar "+ New" button on non-TSANet tickets.
@@ -821,13 +879,15 @@ function enterNewCollaboration() {
   show('btn-sync-inbound', true);
   show('tsanet-notice', true);
   show('empty-state', true);
-  client.invoke('resize', { width: '100%', height: '600px' });
   var d = document.getElementById('new-collab-dialog');
   d.style.display = 'block';
   document.getElementById('partner-search-input').value = '';
   document.getElementById('partner-results').innerHTML = '';
   document.getElementById('collab-form').style.display = 'none';
   selectedPartner = null; currentForm = null;
+  // After the dialog is shown, not before: the old call sat above these lines and
+  // measured the collapsed panel, which is the other half of why it needed a constant.
+  fitPanelToContent();
 }
 
 document.getElementById('partner-search-input').addEventListener('input', function() {
@@ -928,8 +988,13 @@ function renderCollabForm(formData) {
   form.appendChild(actions);
   document.getElementById('btn-cancel-form').onclick = function() {
     document.getElementById('new-collab-dialog').style.display = 'none';
+    fitPanelToContent();
   };
   document.getElementById('btn-submit-collab').onclick = handleSubmit;
+  // The form has just been built from the partner's process form, so its height is
+  // only knowable now. This is the case EDB reported: a single-field form used to sit
+  // in a 600px pane and still need scrolling.
+  fitPanelToContent();
 }
 
 // A partner-supplied fieldId is interpolated into an id attribute that goes
@@ -997,6 +1062,19 @@ function handleSubmit() {
     else if (selectedPartner) payload.receiverCompanyId = selectedPartner.companyId;
 
     return tsanetPost('/collaboration-requests', payload).then(function(created) {
+      // THE CASE NOW EXISTS AND THE PARTNER ALREADY HAS IT. Everything below is
+      // bookkeeping on the member's own ticket, and none of it can un-create the
+      // case, so none of it may reach the outer .catch. That catch renders "Submit
+      // failed" beside a dialog still populated with this exact payload, and the
+      // natural response to that is to press Submit again — which opens a SECOND
+      // collaboration request to the partner (tsanetgit/Zendesk_App#169). That is the
+      // same member-visible duplicate class #148 and #149 exist to remove, reached
+      // from the outbound side instead of the inbound one.
+      //
+      // Closing the dialog here, on the line after the case is created, is what makes
+      // the resend unavailable rather than merely discouraged.
+      document.getElementById('new-collab-dialog').style.display = 'none';
+      fitPanelToContent();
       return client.request({ url: '/api/v2/tickets/' + ticketId + '.json', type: 'GET' }).then(function(d2) {
         var cf2 = d2.ticket.custom_fields || [];
         var mf = cf2.find(function(f) { return String(f.id) === String(settings.field_id_tokens_multi); });
@@ -1019,14 +1097,42 @@ function handleSubmit() {
           // support ticket wiped that ticket's tags (tsanetgit/Zendesk_App#165).
           // addTicketTag writes the union under safe_update; see its comment.
           return addTicketTag(ticketId, 'tsanet_outbound');
-        }).then(function() {
-          document.getElementById('new-collab-dialog').style.display = 'none';
-          showSuccess('Collaboration request submitted!');
-          return loadCollaborations();
         });
+      }).then(function() {
+        showSuccess('Collaboration request submitted!');
+      }, function(err) {
+        // Partial success, and the difference from a failed submit is the whole point:
+        // the request reached the partner, only this ticket's own record of it did
+        // not. Name the token so the case is recoverable by hand, and say plainly not
+        // to resend, because the obvious reading of any red banner here is "it did not
+        // go through".
+        showError('Collaboration request submitted, but this ticket could not be ' +
+                  'updated: ' + (err.message || String(err)) + ' The case exists under ' +
+                  'token ' + created.token + '. Do NOT submit again, the partner ' +
+                  'already has this request. Use Sync Inbound or reload the ticket ' +
+                  'to pick it up.');
+      }).then(function() {
+        return loadCollaborations();
+      }).catch(function(err) {
+        // Says something rather than nothing. An empty handler here would swallow the
+        // outcome entirely: no banner at all, dialog closed, case created — which reads
+        // to the agent as an ordinary success and is the one outcome worse than a wrong
+        // label, because it carries no signal to act on. Still never "Submit failed".
+        showError('Collaboration request submitted (token ' + (created && created.token) +
+                  '), but the panel could not be refreshed: ' + (err && (err.message || err)) +
+                  '. Do NOT submit again, the partner already has this request. Reload ' +
+                  'the ticket to see it.');
+        // Defence in depth, and honestly labelled as such: loadCollaborations has its
+        // own terminal .catch today and always resolves, so nothing currently reaches
+        // here. It exists so that a later change making the refresh reject cannot
+        // resurrect this issue by falling through to the outer catch and relabelling a
+        // created case as "Submit failed".
       });
     });
   }).catch(function(err) {
+    // Reachable only BEFORE the case is created: client.get, the payload build, or
+    // the POST itself. Everything after creation is handled above, so this message
+    // now means what it says.
     btn.disabled = false; btn.textContent = 'Submit';
     showError('Submit failed: ' + (err.message || String(err)));
   });

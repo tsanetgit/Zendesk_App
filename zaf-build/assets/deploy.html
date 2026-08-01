@@ -40,6 +40,16 @@
   <div id="gate" class="banner bad hidden"></div>
 
   <div id="main" class="hidden">
+    <div id="status" class="card">
+      <strong>Current state</strong>
+      <p class="sub" style="margin:4px 0 10px">
+        What is on this instance right now, checked when this screen opens. The
+        <em>Bundle</em> row is the one that says whether you need to deploy; the version
+        rows below it are for reference and do not decide that on their own.
+      </p>
+      <ul class="steps" id="status-rows"></ul>
+    </div>
+
     <div id="detect" class="card">
       <strong>Custom field IDs</strong>
       <p class="sub" style="margin:4px 0 10px">

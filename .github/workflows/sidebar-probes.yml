@@ -1,0 +1,53 @@
+name: Ticket sidebar probes
+
+# Runs scripts/main-probe.js, which drives the real zaf-build/assets/main.js under a
+# stubbed ZAF client and DOM.
+#
+# It exists because the two defects it covers were both invisible to every other gate
+# in this repository, and both were shapes rather than values:
+#
+#   tsanetgit/Zendesk_App#169 — outbound submit created the collaboration case and then
+#   reported "Submit failed" if any post-creation bookkeeping rejected, beside a dialog
+#   still populated with the same payload. Pressing Submit again opened a SECOND request
+#   to the partner. Nothing static can see that; it is the arrangement of one .catch.
+#
+#   tsanetgit/Zendesk_App#179 — the panel asked for a fixed 600px, and the manifest
+#   declared "flexible_height", which is not a ZAF property and was silently ignored for
+#   every release that carried it. A gate that reads the manifest for known keys sees
+#   nothing wrong with an unknown one.
+#
+# Separate from zaf-bundle-sync.yml on purpose: that workflow is about the ZIS bundle and
+# the admin deploy screen, and its triggers are those files. A change to the sidebar
+# should not run the bundle comparison, and vice versa.
+#
+# Node builtins only (fs, path, vm), so no setup-node and no npm install.
+
+# Reads the repo and runs one script; writes nothing. Declared explicitly so it does not
+# inherit the repository default (tsanetgit/Zendesk_App#109).
+permissions:
+  contents: read
+
+on:
+  push:
+    paths:
+      - 'zaf-build/assets/main.js'
+      - 'zaf-build/manifest.json'
+      - 'scripts/main-probe.js'
+      - '.github/workflows/sidebar-probes.yml'
+  pull_request:
+    paths:
+      - 'zaf-build/assets/main.js'
+      - 'zaf-build/manifest.json'
+      - 'scripts/main-probe.js'
+      - '.github/workflows/sidebar-probes.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Ticket sidebar probes
+        run: |
+          node --version
+          node scripts/main-probe.js
