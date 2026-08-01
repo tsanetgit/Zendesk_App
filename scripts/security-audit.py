@@ -86,20 +86,58 @@ def _tree_files(root):
     copies enumerate as `.claude/worktrees/<name>/scripts/security-audit.py`,
     which is not the string it compares against.
 
-    `--others --exclude-standard` keeps untracked-but-not-ignored files in
-    scope, because the audit's local value is the run BEFORE `git add`: a new
-    file carrying a v1 call has to be visible then, not one commit later.
-    Ignored paths drop out, which preserves the dist/ and node_modules/ prune
-    this list used to do by hand (both are in .gitignore), and .claude/ drops
-    out because Claude Code registers .claude/worktrees/ in .git/info/exclude,
-    which --exclude-standard honours. Probed on the contaminated clone: 44
-    paths, none under .claude/.
+    `--cached` ONLY. The audit measures the commit, which is what CI builds
+    from and what members install; the working tree it happens to be run
+    beside is not the subject. An earlier version added
+    `--others --exclude-standard` to keep untracked-but-not-ignored files in
+    scope, on the reasoning that the local value of the audit is the run
+    before `git add`. That convenience cost the property, and the property is
+    what tsanetgit/Zendesk_App#185 asks for:
+
+      - one untracked file at the repo root carrying a stale marker moved a
+        clean run from 19 pass / 2 warn to 18 pass / 3 warn, which is #185's
+        third acceptance criterion failing verbatim;
+      - an untracked PARTIAL copy of the bundle (vendor_copy/zaf-build/assets/
+        background.html, no .git of its own) got background.html reported
+        TWICE while check_scanned_tree still said PASS. That is the exact
+        double-reporting the guard below exists to prevent, reaching it
+        through a shape none of the guard's three tests can see: no duplicate
+        sentinel, because the copy carries no scripts/security-audit.py; no
+        nested .git; no directory entry.
+
+    So `--others` reopened a narrower form of the class #184 had just closed,
+    and no check could catch it, because every path involved is a well-formed
+    path to a real file. Removing the flag closes it by construction rather
+    than by adding a fourth test to the guard.
+
+    Staged work is still covered: `--cached` reads the INDEX, so `git add`
+    followed by the audit sees a new file. What is no longer covered is the
+    run before `git add`, which is the deliberate trade.
+
+    Nothing else needs an exclusion. Tracked paths cannot be ignored, so the
+    dist/ and node_modules/ prune this list once did by hand is inherent, and
+    .claude/worktrees/ is untracked and therefore out of scope by the same
+    rule rather than by .git/info/exclude honouring an ignore file.
 
     Two routes reach the pruned walk instead, and only one of them is a
     problem. A `root` that is not a checkout is ordinary — an exported tree
     (`git archive | tar -x`) is how this bug was diagnosed, so it stays
     runnable — and reports PASS. A `root` that IS a checkout whose git did not
     answer is degraded, and says so, because there git was the right tool.
+
+    Scope the tracked-only property honestly, in two directions.
+
+    It holds on the git route, and on an export, where every file present IS
+    the commit. It does NOT hold in degraded mode, because a walk with no git
+    cannot tell tracked from untracked, so an untracked file at the root is
+    back in scope there. That is inherent rather than an oversight, and it is
+    the reason the degraded route WARNs instead of passing quietly.
+
+    And this selects WHICH files are read, not WHAT is read from them: the
+    list comes from the index, the bytes come from the working tree. They
+    coincide on CI and in a fresh clone. Locally, a tracked file with unstaged
+    edits is scanned with its edited content, which is usually what a person
+    running this wants and is not what a clean export would produce.
     """
     # Gate on root being a checkout in its own right, and do not merely let a
     # failed git call fall through. git SUCCEEDS for an ANCESTOR repository: an
@@ -117,9 +155,11 @@ def _tree_files(root):
         return Scan(_walk_files(root),
                     "filesystem walk (not a git repository)", False)
     try:
+        # Do NOT add --others here. See the docstring: it puts untracked files
+        # in scope, and an untracked copy of a bundle file is then reported as
+        # a second finding under a PASSing guard (#185).
         out = subprocess.run(
-            ["git", "-C", root, "ls-files", "-z",
-             "--cached", "--others", "--exclude-standard"],
+            ["git", "-C", root, "ls-files", "-z", "--cached"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             check=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
