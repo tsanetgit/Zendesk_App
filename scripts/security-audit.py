@@ -533,7 +533,18 @@ def check_no_embedded_secrets(root, scan):
     """
     cat = "credentials"
     name = "no embedded credentials anywhere in the repository"
-    # Long base64/hex runs and obvious credential assignments.
+    # Keyword assignments plus two vendor-prefixed token shapes. NOT an
+    # entropy or hex-run detector, which is what this comment claimed before
+    # and the patterns have never done. A bare high-entropy literal, with no
+    # keyword in front of it and no vendor prefix, is invisible here. Probed:
+    # a file carrying both `cd277fac1b44aa00` and `deadbeefdeadbeef` PASSes —
+    # so the 16-hex fixture in scripts/main-probe.js that prompted this
+    # widening is precisely the shape this check cannot see, and relabelling
+    # that literal is a fix for human reviewers rather than something the
+    # audit enforces. Correcting the comment rather than adding an entropy
+    # rule: that is a different check with its own false-positive budget, and
+    # over-promising costs most on a check just renamed to claim the whole
+    # repository.
     patterns = [
         (re.compile(r"(?i)(client_secret|api[_-]?token|password)\s*[:=]\s*[\"'][^\"'{}$][^\"']{12,}"), "credential-shaped assignment"),
         (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "Slack token"),
@@ -541,14 +552,21 @@ def check_no_embedded_secrets(root, scan):
     ]
     hits = []
     scanned = 0
-    skipped = 0
+    skipped = []      # enumerated, but not decodable as text
+    unreadable = []   # enumerated, but could not be opened at all
     for rel in scan.paths:
         try:
             body = read(root, rel)
         except OSError:
+            # A third bucket, and it has to be counted or the numbers stop
+            # reconciling silently. A tracked path whose file is absent from
+            # disk lands here; before this was counted, deleting one tracked
+            # text file reported "37 readable; 6 skipped" against 44
+            # enumerated and nothing said where the 38th went.
+            unreadable.append(rel)
             continue
         except UnicodeDecodeError:
-            skipped += 1
+            skipped.append(rel)
             # Not text, so not scanned. Named separately rather than folded
             # into the OSError catch, because the two mean different things
             # and only this one is a deliberate blind spot: a credential-shaped
@@ -568,21 +586,25 @@ def check_no_embedded_secrets(root, scan):
                 if "{{" in m.group(0) or "settings." in m.group(0):
                     continue
                 hits.append(f"{rel}: {label}")
-    # Report the skip count, not just the read count. It makes the blind spot
-    # visible at runtime rather than only in this docstring, and it separates
-    # two different vacuity failures that would otherwise read alike: "0 read,
-    # 6 skipped" means the scope somehow became all-binary, while "0 read, 0
-    # skipped" means the enumeration itself is empty.
+    # Report every bucket, and report them so they ADD UP to what was
+    # enumerated. Two reasons. The blind spots become visible at runtime
+    # instead of only in this docstring; and a reader can subtract, so a file
+    # that silently left scope shows up as an arithmetic gap rather than not
+    # showing up at all. It also separates vacuity failures that would
+    # otherwise read alike: "0 read of 6" means the scope became all-binary,
+    # "0 read of 0" means the enumeration itself is empty.
+    exts = sorted({os.path.splitext(p)[1].lower() or "(none)" for p in skipped})
+    tally = (f"{scanned} read, {len(skipped)} skipped as non-text"
+             f"{' (' + ', '.join(exts) + ')' if exts else ''}, "
+             f"{len(unreadable)} unreadable, of {len(scan.paths)} enumerated")
     if not scanned:
         record("FAIL", name,
-               f"nothing readable in scope ({skipped} skipped as non-text) — "
-               f"the check could not run, which is not a pass", cat)
+               f"nothing readable in scope — the check could not run, which "
+               f"is not a pass: {tally}", cat)
     elif hits:
         record("FAIL", name, "; ".join(sorted(set(hits))), cat)
     else:
-        record("PASS", name,
-               f"no credential-shaped literals in {scanned} readable file(s); "
-               f"{skipped} skipped as non-text", cat)
+        record("PASS", name, f"no credential-shaped literals: {tally}", cat)
 
 
 def check_secure_settings(root):
