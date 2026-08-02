@@ -555,6 +555,35 @@ def check_no_embedded_secrets(root, scan):
     no failure mode to sweep: nothing here can excuse anything, so nothing here
     can excuse a credential. The cost is that a doc must write `$VAR` rather
     than `<your-client-secret>`, and the FAIL message says so.
+
+    That sentence is now literally true. A `{{`/`settings.` substring test on
+    the whole match outlived the heuristic, and it was the same shape one more
+    time: an assignment left without a closing quote runs to end of line, so a
+    real secret was excused whenever either of those two tokens appeared
+    anywhere further along that line, including in ordinary prose ending in a
+    full stop. It excused nothing real — measured across all 44 tracked files,
+    hits are 0 with it and 0 without — because the first-character class
+    already makes every legitimate spelling unmatchable. So it could only ever
+    have excused a credential, and it is gone.
+
+    Note for whoever edits this docstring: with that test deleted, THIS FILE is
+    scanned like any other and a credential-shaped example written here will
+    fail the check. That is the correct behaviour and it is not worked around
+    — the deprecation scan skips this file because it must NAME the endpoints
+    it hunts, and no such need exists here. Describe the shape in prose rather
+    than writing a matchable literal. Caught exactly this way: the paragraph
+    above originally spelled its example out and turned the clean tree red.
+
+    KNOWN LIMIT, and it is the flip side of the convention. `$` and `{` are
+    excluded from the value's first character unconditionally, which is exactly
+    what makes `$VAR` work, and it also makes any real value starting with
+    those characters invisible: `$2b$12$…` (bcrypt), `$argon2id$…`, and the PHP
+    crypt formats all begin with `$`, as does `$ecretValue123456789`. This
+    check therefore teaches that a leading `$` marks a non-secret, while a
+    leading `$` is also how several hash formats begin. Recorded rather than
+    fixed, because narrowing the exclusion would break the convention this
+    check now depends on, and detecting hash formats is a different rule with
+    its own false-positive budget.
     """
     cat = "credentials"
     name = "no embedded credentials anywhere in the repository"
@@ -621,9 +650,6 @@ def check_no_embedded_secrets(root, scan):
         scanned += 1
         for pat, label in patterns:
             for m in pat.finditer(body):
-                # {{setting.x}} placeholders are the correct pattern
-                if "{{" in m.group(0) or "settings." in m.group(0):
-                    continue
                 hits.append(f"{rel}: {label}")
     # Report every bucket, and report them so they ADD UP to what was
     # enumerated. Two reasons. The blind spots become visible at runtime
@@ -645,11 +671,18 @@ def check_no_embedded_secrets(root, scan):
         # to reach for, so an author who trips this on a documentation example
         # has to be told the convention or they will go looking for an
         # exemption that does not exist.
-        record("FAIL", name,
-               "; ".join(sorted(set(hits)))
-               + ". If one of these is a documentation example rather than a "
-                 "credential, write it as $NAME, ${NAME} or "
-                 "{{settings.name}}, which this check cannot match", cat)
+        #
+        # Only on assignment hits. The convention is a property of the VALUE in
+        # a `keyword: "..."` assignment; a Slack or GitHub token is matched by
+        # its own prefix wherever it appears, and telling someone to rewrite a
+        # `ghp_` literal as $NAME describes a form that pattern would never
+        # have matched anyway.
+        detail = "; ".join(sorted(set(hits)))
+        if any("assignment" in h for h in hits):
+            detail += (". If one of these is a documentation example rather "
+                       "than a credential, write it as $NAME, ${NAME} or "
+                       "{{settings.name}}, which this check cannot match")
+        record("FAIL", name, detail, cat)
     elif unreadable:
         # A judgement QA left open, decided here rather than left implicit. A
         # file that was enumerated and could not be opened is a scan-integrity
