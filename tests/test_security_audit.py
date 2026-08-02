@@ -61,6 +61,7 @@ audit = _load(AUDIT_PATH, "security_audit")
 
 # ── check names, centralized (assertion convention 2) ───────────────────
 DEP_CHECK = "no calls to sunsetting endpoints"
+READ_CHECK = "every file in deprecation scope was read"
 ANCHOR_CHECK = "the v1-base anchor is readable in every bundle file"
 STALE_CHECK = "every audit-" + "allow marker excuses a real call"
 DATED_CHECK = "every audit-" + "allow marker is dated and current"
@@ -496,10 +497,6 @@ def test_unreadable_anchor_outside_the_bundle_is_ordinary(tmp_path):
     assert by_check()[ANCHOR_CHECK]["status"] == "PASS"
 
 
-@pytest.mark.xfail(strict=True, reason="tsanetgit/Zendesk_App#197: a single "
-                   "undecodable tracked file raises out of the scan and "
-                   "aborts every check; the correct behavior is to report "
-                   "the file and keep auditing")
 def test_one_undecodable_file_does_not_abort_the_scan_197(tmp_path):
     root, scan = tree(tmp_path, {
         "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call(),
@@ -507,6 +504,60 @@ def test_one_undecodable_file_does_not_abort_the_scan_197(tmp_path):
     })
     audit.check_deprecated_endpoints(root, scan, today=JAN1)
     assert by_check()[DEP_CHECK]["status"] == "WARN"
+
+
+def test_undecodable_file_is_named_and_fails_its_own_check_197(tmp_path):
+    """The abort is gone, but the file is still unscanned. Silence there
+    would trade a loud wrong answer for a quiet one: exit 3 flags coverage
+    in release.yml today, so anything short of FAIL opens that gate."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call(),
+        "zaf-build/assets/bad.js": b"\xff\xfe\x00broken",
+    })
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()[READ_CHECK]
+    assert r["status"] == "FAIL"
+    assert "bad.js" in r["detail"]          # named, not just counted
+    assert "1 read" in r["detail"]          # and the buckets reconcile
+    assert "of 2 in scope" in r["detail"]
+
+
+def test_every_file_readable_passes_with_a_tally_197(tmp_path):
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call()})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    assert by_check()[READ_CHECK]["status"] == "PASS"
+
+
+def test_both_buckets_are_named_not_just_counted_197(tmp_path):
+    """Reported as if/elif, the undecodable FAIL swallowed the unreadable
+    list: the tally said 1 unreadable and nothing said which file."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call(),
+        "zaf-build/assets/bad.js": b"\xff\xfe\x00broken",
+    })
+    scan = audit.Scan(scan.paths + ["zaf-build/assets/gone.js"],
+                      scan.source, scan.degraded)
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()[READ_CHECK]
+    assert r["status"] == "FAIL"            # undecodable still sets severity
+    assert "bad.js" in r["detail"]
+    assert "gone.js" in r["detail"]         # and the WARN bucket is not lost
+    assert "of 3 in scope" in r["detail"]
+
+
+def test_unopenable_file_warns_rather_than_passing_197(tmp_path):
+    """The pre-existing `except OSError: continue` dropped these silently.
+    WARN is the tightening; FAIL would move the release gate for a dirty
+    working tree rather than for a defect in the code under review."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call()})
+    scan = audit.Scan(scan.paths + ["zaf-build/assets/gone.js"],
+                      scan.source, scan.degraded)
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()[READ_CHECK]
+    assert r["status"] == "WARN"
+    assert "gone.js" in r["detail"]
 
 
 # ── enumeration: _tree_files / check_scanned_tree (#184, #185, #193-195) ─

@@ -1302,6 +1302,10 @@ def check_deprecated_endpoints(root, scan, today=None):
     superseded = []       # marked, but the escalation window withdrew the excuse
     degrading  = []       # audit-degrades: deliberate, and does NOT survive
     marked_dates = []
+    in_scope = 0          # suffix-matched and not excluded: the denominator
+    scanned = 0
+    undecodable = []      # in scope, but not valid UTF-8
+    unreadable = []       # in scope, but could not be opened at all
     # `scan.paths`, not a walk of `root`: a walk cannot tell this tree from a
     # second checkout inside it, and scanned both. See _tree_files().
     for rel in scan.paths:
@@ -1313,10 +1317,30 @@ def check_deprecated_endpoints(root, scan, today=None):
         # migration removed, so fixing the finding would not clear it.
         if rel in (AUDIT_SCRIPT, ".security-audit.json"):
             continue
+        in_scope += 1
         try:
             body = read(root, rel)
         except OSError:
+            # Counted rather than dropped. This clause skipped in silence
+            # before, so a tracked path with no file behind it removed itself
+            # from scope with nothing said and the numbers still reconciled.
+            unreadable.append(rel)
             continue
+        except UnicodeDecodeError:
+            # read() opens with strict encoding="utf-8", and UnicodeDecodeError
+            # is a ValueError, NOT an OSError, so the clause above never caught
+            # it. One non-UTF-8 file reaching here propagated to main()'s
+            # `except Exception` and exited 3 with RESULTS never printed: not
+            # this file skipped, but every check's result discarded, including
+            # the ones that had already completed (tsanetgit/Zendesk_App#197).
+            #
+            # Caught at the call site, NOT by loosening read(). That helper is
+            # shared with every other check, and errors="replace" there would
+            # hand each of them silently corrupted text to pattern-match
+            # against, converting one loud abort into several quiet misreads.
+            undecodable.append(rel)
+            continue
+        scanned += 1
         # Two readings, because either alone has a hole. The regex catches
         # the old inline-host shape ('https://connect2.tsanet.net/v1'); the
         # parsed default catches every spelling of the parameterised one.
@@ -1414,6 +1438,50 @@ def check_deprecated_endpoints(root, scan, today=None):
                     stale_markers.append(
                         f"{rel}:{i + 1}: audit-{mk.group('kind')}: "
                         f"{mk.group('key')}")
+
+    # Reported BEFORE the `not found` early return below, because a tree with
+    # no findings is exactly when this is the only signal that something went
+    # unscanned. Behind the return it would fire only on trees that already
+    # had something to say.
+    #
+    # FAIL rather than WARN for an undecodable file, and the exit code is the
+    # whole reason. This case exits 3 today, which release.yml's `*)` branch
+    # sends to flag_coverage; WARN exits 2, which that same case statement
+    # treats as "warnings only" and releases on. Restoring the report must not
+    # also open a gate that is currently shut, so the severity is picked to
+    # keep the exit code on the side of it that it is already on. It agrees
+    # with the unreadable_anchor FAIL below on the substance too: a file whose
+    # bytes were never read cannot be asserted to contain no v1 calls, and the
+    # suffix filter has already claimed this one is meant to be text.
+    read_check = "every file in deprecation scope was read"
+    tally = (f"{scanned} read, {len(undecodable)} not valid UTF-8, "
+             f"{len(unreadable)} unreadable, of {in_scope} in scope")
+    # Both buckets are NAMED whenever they are non-empty, and the severity is
+    # decided separately from the naming. Reporting them as if/elif instead
+    # left the unreadable files counted in the tally but never listed on any
+    # run that also had an undecodable one — the tally would say 1 unreadable
+    # and no line said which, which is the counted-but-not-named failure this
+    # check exists to stop.
+    if undecodable or unreadable:
+        parts = []
+        if undecodable:
+            parts.append("not decodable as UTF-8, so nothing in them was "
+                         "scanned for deprecated calls: "
+                         + "; ".join(sorted(set(undecodable))))
+        if unreadable:
+            # WARN when this is the ONLY bucket. An enumerated path that
+            # cannot be opened at all is most often a tracked file deleted
+            # from a dirty working tree, a condition of the checkout rather
+            # than a defect in the code under review. It was an unreported
+            # PASS before, so naming it is already the tightening, and exit 2
+            # is the side of the release gate that silence was on.
+            parts.append("enumerated but could not be opened, so they are "
+                         "outside the result: "
+                         + "; ".join(sorted(set(unreadable))))
+        record("FAIL" if undecodable else "WARN", read_check,
+               " | ".join(parts) + f" ({tally})", cat)
+    else:
+        record("PASS", read_check, f"every file in scope was read: {tally}", cat)
 
     # Assert the anchor rather than inferring it. needs_v1_base decides whether
     # a relative path counts as a v1 call, so a baseUrl() whose default cannot
