@@ -587,6 +587,11 @@ def check_no_embedded_secrets(root, scan):
     """
     cat = "credentials"
     name = "no embedded credentials anywhere in the repository"
+    # Spelled once and compared by identity below. Testing for the substring
+    # in the rendered "{path}: {label}" line instead meant a file path
+    # containing the word attached the remedy to a finding it does not apply
+    # to (docs/assignment-guide.md carrying a ghp_ literal, say).
+    assignment = "credential-shaped assignment"
     # Keyword assignments plus two vendor-prefixed token shapes. NOT an
     # entropy or hex-run detector, which is what this comment claimed before
     # and the patterns have never done. A bare high-entropy literal, with no
@@ -614,11 +619,12 @@ def check_no_embedded_secrets(root, scan):
         # `{{settings.client_secret}}` cannot match at all.
         (re.compile(r"(?i)(?:client_secret|api[_-]?token|password)\s*[:=]\s*"
                     r"[\"'][^\"'{}$\n][^\"'\n]{12,}"),
-         "credential-shaped assignment"),
+         assignment),
         (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "Slack token"),
         (re.compile(r"ghp_[A-Za-z0-9]{20,}"), "GitHub PAT"),
     ]
     hits = []
+    hit_labels = set()
     scanned = 0
     skipped = []      # enumerated, but not decodable as text
     unreadable = []   # enumerated, but could not be opened at all
@@ -651,6 +657,7 @@ def check_no_embedded_secrets(root, scan):
         for pat, label in patterns:
             for m in pat.finditer(body):
                 hits.append(f"{rel}: {label}")
+                hit_labels.add(label)
     # Report every bucket, and report them so they ADD UP to what was
     # enumerated. Two reasons. The blind spots become visible at runtime
     # instead of only in this docstring; and a reader can subtract, so a file
@@ -678,10 +685,17 @@ def check_no_embedded_secrets(root, scan):
         # `ghp_` literal as $NAME describes a form that pattern would never
         # have matched anyway.
         detail = "; ".join(sorted(set(hits)))
-        if any("assignment" in h for h in hits):
+        if assignment in hit_labels:
+            # "as the ENTIRE value" is load-bearing advice, not padding. The
+            # convention works by the value's FIRST character, so
+            # `Bearer {{setting.x}}` still fails; an author following this
+            # without that clause would make the edit, see no change, and
+            # conclude the check is broken.
             detail += (". If one of these is a documentation example rather "
                        "than a credential, write it as $NAME, ${NAME} or "
-                       "{{settings.name}}, which this check cannot match")
+                       "{{settings.name}} — as the ENTIRE value, since this "
+                       "check keys on the first character, so a prefix such "
+                       "as `Bearer ` still matches")
         record("FAIL", name, detail, cat)
     elif unreadable:
         # A judgement QA left open, decided here rather than left implicit. A
