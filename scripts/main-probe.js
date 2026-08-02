@@ -69,7 +69,12 @@ const SETTINGS = {
   field_id_respond_by: '555555'
 };
 
-const TOKEN = 'cd277fac1b44aa00';
+// Fabricated fixture, never a real case token. Kept at 16 lowercase hex so the
+// probe still exercises the real token shape, but written so that no reader has
+// to ask: the previous literal was realistic enough that a security review had
+// to probe BETA to find out, and that probe could not answer, because a made-up
+// control returned the same "not found".
+const TOKEN = 'deadbeefdeadbeef';
 
 function makeElement(id) {
   // appendChild RECORDS its children. It used to be a no-op, and that is not a detail:

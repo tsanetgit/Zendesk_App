@@ -566,36 +566,209 @@ def check_sdk_sri(root, network):
 
 # ── Category 2/3: credentials and authorization ─────────────────────────
 
-def check_no_embedded_secrets(root):
+def check_no_embedded_secrets(root, scan):
+    """No credential-shaped literal anywhere in the repository.
+
+    THE WHOLE TREE, not just zaf-build/. This walked
+    os.path.join(root, "zaf-build") and read three suffixes, so `scripts/`
+    was never looked at — in a repository that is PUBLIC
+    (`gh api repos/tsanetgit/Zendesk_App -q .visibility`) and whose scripts/
+    holds the credential-rotation tooling: rotate-inbound-webhook.py,
+    rotate-zendesk-oauth-secret.py, audit-connection-auth.py. Proved with a
+    control rather than argued: identical `password:` and `ghp_` literals
+    planted in zaf-build/assets/ FAILed and the same literals in scripts/
+    PASSed.
+
+    The old name said "in shipped bundle", so it was honest about its scope
+    while that scope was wrong. Widening the scan means the name has to move
+    with it, or the next reader trusts a narrower thing than they are getting.
+
+    No suffix allowlist. The previous three-suffix filter is the failure mode
+    SCANNED_SUFFIXES documents for the deprecation scan: a list nobody
+    remembers to extend, silently not covering whatever is added next. Every
+    enumerated file is read instead, and what cannot be decoded as text is
+    skipped, which needs no maintenance as the tree grows new file types.
+
+    AND NO EXCUSING MECHANISM AT ALL. Documentation writes a credential as
+    `$CLIENT_SECRET`, `${CLIENT_SECRET}` or `{{settings.client_secret}}`, all
+    of which are already invisible here because `$` and `{` sit in the excluded
+    first-character class. That is a convention, and it holds by construction.
+
+    It replaces a placeholder heuristic that this check carried briefly and
+    that was wrong twice in the same direction, both times SILENTLY EXCUSING A
+    REAL CREDENTIAL:
+
+      - it excused on the PRESENCE of a placeholder word rather than the
+        absence of key material, so `your_aB3xK9mQ2vL8pR4tZ7` passed while
+        `aB3xK9mQ2vL8pR4tZ7` failed. One token's difference, no adversary
+        required: a template says `your_<paste-here>` and someone pastes the
+        key and leaves the prefix;
+      - rewritten to excuse only on the absence of key material, it still let
+        through a 20-digit run, a uniform-case alphabetic run, and anything
+        non-ASCII, because the ASCII tokeniser treated those characters as
+        separators so the secret never reached the test.
+
+    Three rounds, two of them silently excusing live key material, is the point
+    at which the representation changes rather than the rule. A convention has
+    no failure mode to sweep: nothing here can excuse anything, so nothing here
+    can excuse a credential. The cost is that a doc must write `$VAR` rather
+    than `<your-client-secret>`, and the FAIL message says so.
+
+    That sentence is now literally true. A `{{`/`settings.` substring test on
+    the whole match outlived the heuristic, and it was the same shape one more
+    time: an assignment left without a closing quote runs to end of line, so a
+    real secret was excused whenever either of those two tokens appeared
+    anywhere further along that line, including in ordinary prose ending in a
+    full stop. It excused nothing real — measured across all 44 tracked files,
+    hits are 0 with it and 0 without — because the first-character class
+    already makes every legitimate spelling unmatchable. So it could only ever
+    have excused a credential, and it is gone.
+
+    Note for whoever edits this docstring: with that test deleted, THIS FILE is
+    scanned like any other and a credential-shaped example written here will
+    fail the check. That is the correct behaviour and it is not worked around
+    — the deprecation scan skips this file because it must NAME the endpoints
+    it hunts, and no such need exists here. Describe the shape in prose rather
+    than writing a matchable literal. Caught exactly this way: the paragraph
+    above originally spelled its example out and turned the clean tree red.
+
+    KNOWN LIMIT, and it is the flip side of the convention. `$` and `{` are
+    excluded from the value's first character unconditionally, which is exactly
+    what makes `$VAR` work, and it also makes any real value starting with
+    those characters invisible: `$2b$12$…` (bcrypt), `$argon2id$…`, and the PHP
+    crypt formats all begin with `$`, as does `$ecretValue123456789`. This
+    check therefore teaches that a leading `$` marks a non-secret, while a
+    leading `$` is also how several hash formats begin. Recorded rather than
+    fixed, because narrowing the exclusion would break the convention this
+    check now depends on, and detecting hash formats is a different rule with
+    its own false-positive budget.
+    """
     cat = "credentials"
-    # Long base64/hex runs and obvious credential assignments in shipped files.
+    name = "no embedded credentials anywhere in the repository"
+    # Spelled once and compared by identity below. Testing for the substring
+    # in the rendered "{path}: {label}" line instead meant a file path
+    # containing the word attached the remedy to a finding it does not apply
+    # to (docs/assignment-guide.md carrying a ghp_ literal, say).
+    assignment = "credential-shaped assignment"
+    # Keyword assignments plus two vendor-prefixed token shapes. NOT an
+    # entropy or hex-run detector, which is what this comment claimed before
+    # and the patterns have never done. A bare high-entropy literal, with no
+    # keyword in front of it and no vendor prefix, is invisible here. Probed:
+    # a file carrying both `cd277fac1b44aa00` and `deadbeefdeadbeef` PASSes —
+    # so the 16-hex fixture in scripts/main-probe.js that prompted this
+    # widening is precisely the shape this check cannot see, and relabelling
+    # that literal is a fix for human reviewers rather than something the
+    # audit enforces. Correcting the comment rather than adding an entropy
+    # rule: that is a different check with its own false-positive budget, and
+    # over-promising costs most on a check just renamed to claim the whole
+    # repository.
     patterns = [
-        (re.compile(r"(?i)(client_secret|api[_-]?token|password)\s*[:=]\s*[\"'][^\"'{}$][^\"']{12,}"), "credential-shaped assignment"),
+        # `\n` is excluded from the value on BOTH character classes, so a value
+        # cannot run past its own line. `[^\"']` matched newline and `{12,}` is
+        # greedy with no closing-quote requirement, so an unbalanced or curly
+        # quote let the match run to the next ASCII quote anywhere in the file,
+        # reporting a finding against unrelated prose. Kept after the
+        # placeholder rule was deleted: over-reporting across lines is the
+        # cheaper failure of the two, but it is still a wrong file and a wrong
+        # line for whoever has to act on it.
+        #
+        # The `{}$` in the first character class is what makes the convention
+        # work: `$CLIENT_SECRET`, `${CLIENT_SECRET}` and
+        # `{{settings.client_secret}}` cannot match at all.
+        (re.compile(r"(?i)(?:client_secret|api[_-]?token|password)\s*[:=]\s*"
+                    r"[\"'][^\"'{}$\n][^\"'\n]{12,}"),
+         assignment),
         (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "Slack token"),
         (re.compile(r"ghp_[A-Za-z0-9]{20,}"), "GitHub PAT"),
     ]
     hits = []
-    for base, _, files in os.walk(os.path.join(root, "zaf-build")):
-        for fn in files:
-            if not fn.endswith((".js", ".json", ".html")):
-                continue
-            rel = os.path.relpath(os.path.join(base, fn), root)
-            try:
-                body = read(root, rel)
-            except OSError:
-                continue
-            for pat, label in patterns:
-                for m in pat.finditer(body):
-                    # {{setting.x}} placeholders are the correct pattern
-                    if "{{" in m.group(0) or "settings." in m.group(0):
-                        continue
-                    hits.append(f"{rel}: {label}")
-    if hits:
-        record("FAIL", "no embedded credentials in shipped bundle",
-               "; ".join(sorted(set(hits))), cat)
+    hit_labels = set()
+    scanned = 0
+    skipped = []      # enumerated, but not decodable as text
+    unreadable = []   # enumerated, but could not be opened at all
+    for rel in scan.paths:
+        try:
+            body = read(root, rel)
+        except OSError:
+            # A third bucket, and it has to be counted or the numbers stop
+            # reconciling silently. A tracked path whose file is absent from
+            # disk lands here; before this was counted, deleting one tracked
+            # text file reported "37 readable; 6 skipped" against 44
+            # enumerated and nothing said where the 38th went.
+            unreadable.append(rel)
+            continue
+        except UnicodeDecodeError:
+            skipped.append(rel)
+            # Not text, so not scanned. Named separately rather than folded
+            # into the OSError catch, because the two mean different things
+            # and only this one is a deliberate blind spot: a credential-shaped
+            # LITERAL is a text artefact, and running these patterns over the
+            # tracked .png/.zip/.docx would yield noise, not findings.
+            #
+            # It also has to be caught at all. UnicodeDecodeError is a
+            # ValueError, NOT an OSError, so the existing catch does not cover
+            # it; widening the scan to every file without this line crashes the
+            # audit on the first tracked image (exit 3, every later check
+            # unrun).
+            continue
+        scanned += 1
+        for pat, label in patterns:
+            for m in pat.finditer(body):
+                hits.append(f"{rel}: {label}")
+                hit_labels.add(label)
+    # Report every bucket, and report them so they ADD UP to what was
+    # enumerated. Two reasons. The blind spots become visible at runtime
+    # instead of only in this docstring; and a reader can subtract, so a file
+    # that silently left scope shows up as an arithmetic gap rather than not
+    # showing up at all. It also separates vacuity failures that would
+    # otherwise read alike: "0 read of 6" means the scope became all-binary,
+    # "0 read of 0" means the enumeration itself is empty.
+    exts = sorted({os.path.splitext(p)[1].lower() or "(none)" for p in skipped})
+    tally = (f"{scanned} read, {len(skipped)} skipped as non-text"
+             f"{' (' + ', '.join(exts) + ')' if exts else ''}, "
+             f"{len(unreadable)} unreadable, of {len(scan.paths)} enumerated")
+    if not scanned:
+        record("FAIL", name,
+               f"nothing readable in scope — the check could not run, which "
+               f"is not a pass: {tally}", cat)
+    elif hits:
+        # Name the remedy in the finding. There is no marker and no heuristic
+        # to reach for, so an author who trips this on a documentation example
+        # has to be told the convention or they will go looking for an
+        # exemption that does not exist.
+        #
+        # Only on assignment hits. The convention is a property of the VALUE in
+        # a `keyword: "..."` assignment; a Slack or GitHub token is matched by
+        # its own prefix wherever it appears, and telling someone to rewrite a
+        # `ghp_` literal as $NAME describes a form that pattern would never
+        # have matched anyway.
+        detail = "; ".join(sorted(set(hits)))
+        if assignment in hit_labels:
+            # "as the ENTIRE value" is load-bearing advice, not padding. The
+            # convention works by the value's FIRST character, so
+            # `Bearer {{setting.x}}` still fails; an author following this
+            # without that clause would make the edit, see no change, and
+            # conclude the check is broken.
+            detail += (". If one of these is a documentation example rather "
+                       "than a credential, write it as $NAME, ${NAME} or "
+                       "{{settings.name}} — as the ENTIRE value, since this "
+                       "check keys on the first character, so a prefix such "
+                       "as `Bearer ` still matches")
+        record("FAIL", name, detail, cat)
+    elif unreadable:
+        # A judgement QA left open, decided here rather than left implicit. A
+        # file that was enumerated and could not be opened is a scan-integrity
+        # gap, not a clean result: the check cannot say "no credentials" about
+        # bytes it never read. Reporting the count made it visible; PASSing on
+        # it still asserted more than was checked. WARN, because the tree is
+        # not known bad either, and exit 2 keeps release.yml's "warnings only"
+        # branch rather than flagging coverage.
+        record("WARN", name,
+               f"clean over what could be read, but {len(unreadable)} "
+               f"enumerated file(s) could not be opened, so the result does "
+               f"not cover them: {tally}", cat)
     else:
-        record("PASS", "no embedded credentials in shipped bundle",
-               "no credential-shaped literals in zaf-build/", cat)
+        record("PASS", name, f"no credential-shaped literals: {tally}", cat)
 
 
 def check_secure_settings(root):
@@ -1346,7 +1519,7 @@ def main():
         check_workflow_expression_injection(root)
         check_action_pinning(root)
         check_sdk_sri(root, network=not args.no_network)
-        check_no_embedded_secrets(root)
+        check_no_embedded_secrets(root, scan)
         check_secure_settings(root)
         check_shared_helper_drift(root)
         check_scanned_tree(root, scan)
