@@ -914,6 +914,67 @@ ALLOW_MARKER = re.compile(
     r"(?:\s+tracked-by\s+(?P<tracker>\S+))?"
 )
 
+# How a bundle file DECLARES its default API version (#164):
+#
+#     // audit-anchor: default-api-version vN     <- a real version, e.g. v1
+#     var DEFAULT_API_VERSION = 'vN';
+#
+# (The example spells vN so this very comment cannot parse as an anchor —
+# the scan loop already excludes AUDIT_SCRIPT, but an inert example needs
+# no exclusion to stay inert.)
+#
+# The check reads the declaration instead of parsing JavaScript for it.
+# Three rounds of heuristic (#148, #158, #163) each closed the declaration
+# spellings someone had thought of, and object-method shorthand was still
+# one refactor away from turning the gate off silently; no refactor of
+# baseUrl — arrow, shorthand, class method, imported — can defeat a
+# comment that sits beside a constant. Same comment-opener idiom as
+# ALLOW_MARKER, including the (?<!:) guard on `//`.
+#
+# The anchor is a claim about the adjacent code, so it is held coherent:
+# a DEFAULT_API_VERSION assignment carrying the same quoted version must
+# sit on the anchor's line or the next one. The drift this closes has a
+# silent direction — marker v2 / code v1 turns scanning off while v1
+# calls ship — which is why incoherence FAILs instead of warning.
+ANCHOR_DECL = re.compile(
+    r"(?:(?<!:)//|#|/\*|<!--)[^\n]*?audit-anchor:\s*default-api-version\s+"
+    r"(?P<version>v\d+)")
+ANCHOR_ASSIGN_NAME = "DEFAULT_API_VERSION"
+
+
+def _anchor_status(body):
+    """(declared version, problem) for a file's audit-anchor, if any.
+
+    (None, None) means no anchor — the caller decides whether that is
+    ordinary (non-bundle file) or the finding itself (a bundle file that
+    constructs API URLs). A problem string always outranks the version:
+    a file whose anchors disagree, or whose anchor sits beside a
+    different assignment, has no trustworthy declaration.
+    """
+    anchors = list(ANCHOR_DECL.finditer(body))
+    if not anchors:
+        return None, None
+    versions = {m.group("version") for m in anchors}
+    if len(versions) > 1:
+        return None, ("audit-anchor declarations disagree: "
+                      + ", ".join(sorted(versions)))
+    v = anchors[0].group("version")
+    assign = re.compile(
+        rf"{ANCHOR_ASSIGN_NAME}\s*=\s*['\"]{re.escape(v)}['\"]")
+    for m in anchors:
+        line_end = body.find("\n", m.end())
+        if line_end < 0:
+            line_end = len(body)
+        next_end = body.find("\n", line_end + 1)
+        if next_end < 0:
+            next_end = len(body)
+        window = body[body.rfind("\n", 0, m.start()) + 1:next_end]
+        if not assign.search(window):
+            return None, (f"audit-anchor declares {v} but no "
+                          f"{ANCHOR_ASSIGN_NAME} = '{v}' assignment sits on "
+                          f"the anchor's line or the next one")
+    return v, None
+
 
 def _sunset_urgency(dates, today=None):
     """Days until the nearest sunset in `dates`, or None if there are none.
@@ -1317,14 +1378,49 @@ def check_deprecated_endpoints(root, scan, today=None):
             body = read(root, rel)
         except OSError:
             continue
-        # Two readings, because either alone has a hole. The regex catches
-        # the old inline-host shape ('https://connect2.tsanet.net/v1'); the
-        # parsed default catches every spelling of the parameterised one.
-        default = _baseurl_default(body)
-        on_v1_base = re.search(v1_base, body) is not None or default == "v1"
-        if (rel.startswith("zaf-build" + os.sep) and _has_baseurl(body)
-                and default is None and not on_v1_base):
-            unreadable_anchor.append(rel)
+        # Phase 1: resolve the file's default API version. The anchor
+        # declaration wins outright and the JS span/heuristic is never
+        # consulted for an anchored file (#164) — a declaration cannot be
+        # defeated by a refactor, which is the whole point. The heuristics
+        # survive as the backstop for non-bundle files, and inside
+        # zaf-build a file that constructs API URLs without an anchor is
+        # itself the finding, with scanning forced ON so its calls surface
+        # too (fail closed, noisy rather than silent). Phase 2, the
+        # call-site scan below, runs for every file regardless of how the
+        # default was resolved — an anchor is a declaration of the base,
+        # never an excuse for a call.
+        anchor_version, anchor_problem = _anchor_status(body)
+        in_bundle = rel.startswith("zaf-build" + os.sep)
+        if anchor_version and not anchor_problem:
+            default = anchor_version
+            # The host-literal alternative still counts: an absolute
+            # old-style base ('.../v1') resolves relative calls to v1 no
+            # matter what the anchor says about the parameterised path.
+            on_v1_base = default == "v1" or re.search(v1_base, body) is not None
+        else:
+            # Two readings, because either alone has a hole. The regex
+            # catches the old inline-host shape; the parsed default catches
+            # every spelling of the parameterised one that #158 enumerated.
+            default = _baseurl_default(body)
+            on_v1_base = re.search(v1_base, body) is not None or default == "v1"
+            # JSON cannot carry the anchor for the same reason it cannot
+            # carry an audit-allow marker: no comment syntax. The shipped
+            # ZIS bundle json holds connect2 host literals by design, so
+            # it keeps the heuristic resolution (host literal -> v1 ->
+            # scanned) and is exempt from the requirement, never from the
+            # scan.
+            if in_bundle and not rel.endswith(".json"):
+                api_signs = (_has_baseurl(body) or on_v1_base or any(
+                    re.search(p, body) for p, needs, *_ in deprecated if needs))
+                if anchor_problem:
+                    unreadable_anchor.append(f"{rel}: {anchor_problem}")
+                    on_v1_base = True
+                elif api_signs:
+                    unreadable_anchor.append(
+                        f"{rel}: constructs API URLs but declares no anchor — "
+                        f"add `// audit-anchor: default-api-version vN` above "
+                        f"a matching DEFAULT_API_VERSION assignment")
+                    on_v1_base = True
         lines = body.splitlines()
         used = set()
         for pat, needs_v1_base, key, label, date, repl in deprecated:
@@ -1421,12 +1517,13 @@ def check_deprecated_endpoints(root, scan, today=None):
     # relative v1 call in it goes unreported (tsanetgit/Zendesk_App#158).
     if unreadable_anchor:
         record("FAIL", "the v1-base anchor is readable in every bundle file",
-               "baseUrl() present but its default version could not be read, so "
-               "relative-path deprecation checks are silently disabled for: "
+               "the anchor contract is not met (scanning forced to v1 for the "
+               "affected files, so their calls still surface): "
                + "; ".join(sorted(set(unreadable_anchor))), cat)
     else:
         record("PASS", "the v1-base anchor is readable in every bundle file",
-               "every bundle baseUrl() declares a readable default version", cat)
+               "every bundle file that constructs API URLs carries a coherent "
+               "audit-anchor declaration", cat)
 
     if stale_markers:
         record("WARN", "every audit-allow marker excuses a real call",

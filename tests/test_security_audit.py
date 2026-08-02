@@ -258,16 +258,145 @@ def test_default_is_read_from_the_declaration_not_one_spelling_158(body, want):
     assert audit._baseurl_default(body) == want
 
 
-@pytest.mark.xfail(strict=True, reason="tsanetgit/Zendesk_App#164: the "
-                   "default is the first quoted version token in the span, "
-                   "so a comment naming another version shadows the real "
-                   "fallback; fixing #164 should XPASS this and force "
-                   "promotion to a plain test")
-def test_comment_token_inside_the_span_is_not_the_default_164():
-    body = ("function " + BASEURL + "(version) { /* move to '" + V2
-            + "' in Q3 */ return 'https://" + HOST + "' + '/' + (version "
-            + OR2 + " '" + V1 + "'); }")
-    assert audit._baseurl_default(body) == V1
+# ── the anchor declaration (#164, fixed): promoted from the strict xfail ─
+#
+# The heuristic's comment-shadowing stays flawed BY DESIGN as the backstop
+# for anchor-less non-bundle files — no test re-pins its internals, or the
+# eternal-xfail problem is recreated. What the fix guarantees, and what
+# these pin, is that anchored files never consult the heuristic at all and
+# bundle files cannot silently lack an anchor.
+
+ANCHOR_KW = "audit-" + "anchor"
+DAPIV = "DEFAULT_API_VERSION"
+
+
+def anchor_block(version=V1, var_version=None, var_name=None, opener="//"):
+    tail = " -->" if opener == "<!--" else ""
+    return (opener + " " + ANCHOR_KW + ": default-api-version " + version
+            + tail + "\nvar " + (var_name or DAPIV) + " = '"
+            + (var_version or version) + "';")
+
+
+def shorthand_api(default=V1):
+    """The declaration form #164 proved invisible to BASEURL_DECL."""
+    return ("var api = { " + BASEURL + "(version) { return 'https://" + HOST
+            + "/' + (version ?? '" + default + "'); } };")
+
+
+def test_anchor_beats_span_comment_shadowing_164():
+    """Promoted from the strict xfail: with an anchor, the span heuristic
+    (whose first-quoted-token flaw remains, by design, in the fallback) is
+    never consulted, so the shadowing comment cannot misgrade the file."""
+    body = (anchor_block(V1) + "\nfunction " + BASEURL
+            + "(version) { /* move to '" + V2 + "' in Q3 */ return 'https://"
+            + HOST + "' + '/' + (version " + OR2 + " " + DAPIV + "); }")
+    assert audit._anchor_status(body) == (V1, None)
+
+
+def test_anchor_status_reads_version_and_coherence():
+    assert audit._anchor_status(anchor_block(V1)) == (V1, None)
+    assert audit._anchor_status("no anchor here") == (None, None)
+    v, problem = audit._anchor_status(anchor_block(V1, var_version=V2))
+    assert v is None and "assignment" in problem
+    v, problem = audit._anchor_status(
+        anchor_block(V1) + "\n" + anchor_block(V2))
+    assert v is None and "disagree" in problem
+
+
+def test_anchor_html_comment_form_works():
+    assert audit._anchor_status(anchor_block(V1, opener="<!--")) == (V1, None)
+
+
+def test_brace_in_string_cannot_move_the_anchor_reading_164(tmp_path):
+    """Acceptance 3: the version comes from the anchor line, so a brace
+    inside a string literal in the body has nothing to unbalance."""
+    body = (anchor_block(V2) + "\nfunction " + BASEURL
+            + "(v) { var sep = '{'; return 'https://" + HOST
+            + "/' + (v ?? " + DAPIV + "); }\n" + rel_call())
+    root, scan = tree(tmp_path, {"zaf-build/assets/main.js": body})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[ANCHOR_CHECK]["status"] == "PASS"
+    assert r[DEP_CHECK]["status"] == "PASS"      # v2 base: migrated
+
+
+def test_shorthand_with_anchor_is_detected_164(tmp_path):
+    """Acceptance 1, detected half: object-method shorthand + ?? default,
+    invisible to every heuristic, and the v1 call still surfaces because
+    the anchor declares the base."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js":
+            anchor_block(V1) + "\n" + shorthand_api(V1) + "\n" + rel_call()})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[ANCHOR_CHECK]["status"] == "PASS"
+    assert r[DEP_CHECK]["status"] == "WARN"
+
+
+def test_shorthand_without_anchor_fails_closed_164(tmp_path):
+    """Acceptance 1, FAIL half: same file minus the anchor cannot reach a
+    clean PASS — the missing anchor is the finding, and scanning is forced
+    on so the call surfaces too."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": shorthand_api(V1) + "\n" + rel_call()})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[ANCHOR_CHECK]["status"] == "FAIL"
+    assert "no anchor" in r[ANCHOR_CHECK]["detail"]
+    assert r[DEP_CHECK]["status"] == "WARN"
+
+
+def test_incoherent_anchor_fails_and_still_scans(tmp_path):
+    """Marker v1 / code v2 drift: the silent direction is scanning OFF
+    while v1 ships, so incoherence FAILs and forces the scan on."""
+    body = (anchor_block(V2, var_version=V1) + "\n" + shorthand_api(V1)
+            + "\n" + rel_call())
+    root, scan = tree(tmp_path, {"zaf-build/assets/main.js": body})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[ANCHOR_CHECK]["status"] == "FAIL"
+    assert r[DEP_CHECK]["status"] == "WARN"
+
+
+def test_non_api_bundle_file_needs_no_anchor(tmp_path):
+    """deploy.js-shaped: talks to GitHub, never to TSANet — no baseUrl,
+    no host literal, no relative deprecated tokens, so the anchor
+    requirement does not fire and nothing is flagged."""
+    body = ("function fetchLatest() { return client.request({url: "
+            "'https://api.github.com/repos/x/releases/latest', cors: true}); }")
+    root, scan = tree(tmp_path, {"zaf-build/assets/deploy.js": body})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[ANCHOR_CHECK]["status"] == "PASS"
+    assert r[DEP_CHECK]["status"] == "PASS"
+
+
+def test_bundle_json_is_exempt_from_the_anchor_but_not_the_scan(tmp_path):
+    """JSON has no comment syntax, so it cannot carry an anchor — same
+    constraint the marker doc records for audit-allow. The shipped ZIS
+    bundle json keeps heuristic resolution and stays fully scanned."""
+    body = '{"url": "https://' + HOST.replace("org", "net") + "/" + V1 + '/x"}'
+    root, scan = tree(tmp_path, {"zaf-build/assets/bundle.json": body})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    assert by_check()[ANCHOR_CHECK]["status"] == "PASS"
+
+
+def test_real_bundle_files_carry_identical_coherent_anchors():
+    """Byte-parity of the anchor+constant region across the two shipped
+    bundle files, asserted against the REAL tree — a check, not a comment
+    (defect pattern 7)."""
+    bodies = {}
+    for rel in ("zaf-build/assets/main.js", "zaf-build/assets/background.html"):
+        body = (REPO / rel).read_text()
+        assert audit._anchor_status(body) == (V1, None), rel
+        m = audit.ANCHOR_DECL.search(body)
+        line_start = body.rfind("\n", 0, m.start()) + 1
+        end = body.find("\n", body.find("\n", m.end()) + 1)
+        # Per-line strip: background.html's script block indents the same
+        # two lines; indentation is presentation, the text is the contract.
+        bodies[rel] = [ln.strip() for ln in body[line_start:end].splitlines()]
+    vals = list(bodies.values())
+    assert vals[0] == vals[1]
 
 
 def test_sunset_urgency_math():
@@ -362,11 +491,16 @@ def test_unmarked_relative_call_on_v1_base_is_a_finding_144(tmp_path):
 
 def test_migrating_the_default_clears_relative_calls_148(tmp_path):
     """The design premise: a relative path counts only against a v1 base,
-    so migrating the base clears the finding instead of flagging forever."""
+    so migrating the base clears the finding instead of flagging forever.
+    Post-#164 the migrated base is declared by the anchor — a bundle file
+    without one cannot clear anything (see the fail-closed test)."""
     root, scan = tree(tmp_path, {
-        "zaf-build/assets/main.js": baseurl_fn(V2) + "\n" + rel_call()})
+        "zaf-build/assets/main.js":
+            anchor_block(V2) + "\n" + baseurl_fn(V2) + "\n" + rel_call()})
     audit.check_deprecated_endpoints(root, scan, today=JAN1)
-    assert by_check()[DEP_CHECK]["status"] == "PASS"
+    r = by_check()
+    assert r[DEP_CHECK]["status"] == "PASS"
+    assert r[ANCHOR_CHECK]["status"] == "PASS"
 
 
 def test_absolute_v1_call_needs_no_base_context_144(tmp_path):

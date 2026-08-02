@@ -102,11 +102,14 @@ if (typeof ZAFClient === 'undefined') {
 // matches how a call is WRITTEN, so a sample of the deprecated form in a comment is
 // indistinguishable from the call itself and makes the check report a call site that
 // no longer exists.
+// audit-anchor: default-api-version v1
+var DEFAULT_API_VERSION = 'v1';
+
 function baseUrl(version) {
   var host = (settings.tsanet_env === 'PRODUCTION')
     ? 'https://connect2.tsanet.org'
     : 'https://connect2.tsanet.net';
-  return host + '/' + (version || 'v1');
+  return host + '/' + (version || DEFAULT_API_VERSION);
 }
 
 function getJwt() {
