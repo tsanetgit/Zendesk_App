@@ -61,6 +61,7 @@ audit = _load(AUDIT_PATH, "security_audit")
 
 # ── check names, centralized (assertion convention 2) ───────────────────
 DEP_CHECK = "no calls to sunsetting endpoints"
+READ_CHECK = "every file in deprecation scope was read"
 ANCHOR_CHECK = "the v1-base anchor is readable in every bundle file"
 STALE_CHECK = "every audit-" + "allow marker excuses a real call"
 DATED_CHECK = "every audit-" + "allow marker is dated and current"
@@ -429,6 +430,17 @@ def test_js_functions_brace_matching_captures_nested_bodies():
 ADD_TAG = "function addTicketTag(id, tag) { return client.request(id, tag); }"
 
 
+def test_undecodable_page_does_not_abort_the_sri_check_197(tmp_path):
+    """The other pre-#197 abort site. check_sdk_sri reads .html, which is in
+    SCANNED_SUFFIXES, and runs at main():1589 — before the deprecation scan."""
+    tree(tmp_path, {"zaf-build/assets/background.html": b"\xff\xfe\x00broken"})
+    audit.check_sdk_sri(str(tmp_path), network=False)
+    hits = [r for r in audit.RESULTS if r["check"].startswith("SDK integrity")]
+    assert hits, "the check recorded nothing, so it did not run"
+    assert all(h["status"] == "FAIL" for h in hits)
+    assert any("background.html" in h["check"] for h in hits)
+
+
 def _bundle(tmp_path, main_extra="", bg_extra="", main_base=None, bg_base=None):
     return tree(tmp_path, {
         "zaf-build/assets/main.js":
@@ -451,6 +463,22 @@ def test_drifted_required_helper_fails_165(tmp_path):
     r = by_check()
     assert r[DRIFT_CHECK]["status"] == "FAIL"
     assert "drifted" in r[DRIFT_CHECK]["detail"]
+
+
+def test_undecodable_bundle_js_does_not_abort_the_drift_check_197(tmp_path):
+    """#197 as it reaches THIS check. main() runs the drift check two checks
+    before the deprecation scan, so an undecodable main.js aborted the whole
+    audit here and the #197 fix downstream never got a chance to run."""
+    root, _ = tree(tmp_path, {
+        "zaf-build/assets/main.js": b"\xff\xfe\x00broken",
+        "zaf-build/assets/background.html": ADD_TAG + "\n" + baseurl_fn(),
+    })
+    audit.check_shared_helper_drift(root)
+    r = by_check()[DRIFT_CHECK]
+    assert r["status"] == "FAIL"
+    # The file, not just a byte offset: the comprehension this replaced
+    # reported str(e) alone, which names a position in nothing.
+    assert "main.js" in r["detail"]
 
 
 def test_new_shared_helper_must_be_classified(tmp_path):
@@ -630,10 +658,6 @@ def test_unreadable_anchor_outside_the_bundle_is_ordinary(tmp_path):
     assert by_check()[ANCHOR_CHECK]["status"] == "PASS"
 
 
-@pytest.mark.xfail(strict=True, reason="tsanetgit/Zendesk_App#197: a single "
-                   "undecodable tracked file raises out of the scan and "
-                   "aborts every check; the correct behavior is to report "
-                   "the file and keep auditing")
 def test_one_undecodable_file_does_not_abort_the_scan_197(tmp_path):
     root, scan = tree(tmp_path, {
         "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call(),
@@ -641,6 +665,92 @@ def test_one_undecodable_file_does_not_abort_the_scan_197(tmp_path):
     })
     audit.check_deprecated_endpoints(root, scan, today=JAN1)
     assert by_check()[DEP_CHECK]["status"] == "WARN"
+
+
+def test_undecodable_file_is_named_and_fails_its_own_check_197(tmp_path):
+    """The abort is gone, but the file is still unscanned. Silence there
+    would trade a loud wrong answer for a quiet one: exit 3 flags coverage
+    in release.yml today, so anything short of FAIL opens that gate."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call(),
+        "zaf-build/assets/bad.js": b"\xff\xfe\x00broken",
+    })
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()[READ_CHECK]
+    assert r["status"] == "FAIL"
+    assert "bad.js" in r["detail"]          # named, not just counted
+    assert "1 read" in r["detail"]          # and the buckets reconcile
+    assert "of 2 in scope" in r["detail"]
+
+
+def test_every_file_readable_passes_with_a_tally_197(tmp_path):
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call()})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    assert by_check()[READ_CHECK]["status"] == "PASS"
+
+
+def test_the_read_record_survives_the_no_findings_return_197(tmp_path):
+    """The record sits BEFORE `if not found: return`. Behind it, a tree with
+    nothing deprecated in it reports no record at all and the run exits 0 —
+    the loosened gate the severity choice exists to prevent. Every other test
+    in this group uses a fixture that HAS a finding, so none of them would
+    notice the block being moved."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/clean.js": "let x = 1;",
+        "zaf-build/assets/bad.js": b"\xff\xfe\x00broken",
+    })
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[DEP_CHECK]["status"] == "PASS"       # nothing deprecated found
+    assert r[READ_CHECK]["status"] == "FAIL"      # and the skip still reports
+    assert "bad.js" in r[READ_CHECK]["detail"]
+
+
+def test_both_buckets_are_named_not_just_counted_197(tmp_path):
+    """Reported as if/elif, the undecodable FAIL swallowed the unreadable
+    list: the tally said 1 unreadable and nothing said which file."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call(),
+        "zaf-build/assets/bad.js": b"\xff\xfe\x00broken",
+    })
+    scan = audit.Scan(scan.paths + ["zaf-build/assets/gone.js"],
+                      scan.source, scan.degraded)
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()[READ_CHECK]
+    assert r["status"] == "FAIL"            # undecodable still sets severity
+    assert "bad.js" in r["detail"]
+    assert "gone.js" in r["detail"]         # and the WARN bucket is not lost
+    assert "of 3 in scope" in r["detail"]
+
+
+def test_unopenable_file_warns_rather_than_passing_197(tmp_path):
+    """The pre-existing `except OSError: continue` dropped these silently.
+    WARN is the tightening; FAIL would move the release gate for a dirty
+    working tree rather than for a defect in the code under review."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call()})
+    scan = audit.Scan(scan.paths + ["zaf-build/assets/gone.js"],
+                      scan.source, scan.degraded)
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()[READ_CHECK]
+    assert r["status"] == "WARN"
+    assert "gone.js" in r["detail"]
+
+
+def test_undecodable_bundle_file_yields_exactly_one_finding_197(tmp_path):
+    """Interplay with #200's anchor requirement: the undecodable `continue`
+    fires before phase-1 anchor resolution, so a bundle file that will not
+    decode is named once, by the read-coverage FAIL — never a second time
+    by the anchor check, about bytes nothing could read."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": b"\xff\xfe\x00broken"})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[READ_CHECK]["status"] == "FAIL"
+    assert "main.js" in r[READ_CHECK]["detail"]
+    assert r[ANCHOR_CHECK]["status"] == "PASS"
+    assert "main.js" not in r[ANCHOR_CHECK]["detail"]
 
 
 # ── enumeration: _tree_files / check_scanned_tree (#184, #185, #193-195) ─

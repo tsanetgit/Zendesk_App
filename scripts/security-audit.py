@@ -500,7 +500,14 @@ def check_sdk_sri(root, network):
     for page in pages:
         try:
             html = read(root, page)
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError is a ValueError, so `except OSError` did not
+            # cover it and an undecodable .html aborted the whole audit here,
+            # before check_deprecated_endpoints ever ran
+            # (tsanetgit/Zendesk_App#197). Folded into the existing clause
+            # rather than given its own: this one already FAILs and moves on,
+            # which is the behaviour that case wants, and the check name
+            # carries {page} so the file is named either way.
             record("FAIL", f"SDK integrity ({page})", str(e), cat)
             continue
         m = re.search(r'<script[^>]*zaf_sdk\.min\.js[^>]*>', html, re.S)
@@ -1234,11 +1241,22 @@ def _norm_js(src):
 def check_shared_helper_drift(root):
     cat = "supply-chain"
     name = "duplicated bundle helpers stay identical"
-    try:
-        defs = [_js_functions(read(root, f)) for f in SHARED_HELPER_FILES]
-    except OSError as e:
-        record("FAIL", name, str(e), cat)
-        return
+    # A loop rather than the comprehension this replaced, so the failure can
+    # name its file. The comprehension reported `str(e)` alone, and for a
+    # decode error that is a byte offset with no path attached — the reader
+    # is told position 0 of something. Naming the file is the whole ask in
+    # tsanetgit/Zendesk_App#197.
+    defs = []
+    for f in SHARED_HELPER_FILES:
+        try:
+            defs.append(_js_functions(read(root, f)))
+        except (OSError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError is a ValueError, not an OSError, so the
+            # previous clause did not catch it and an undecodable .js aborted
+            # the entire audit here — at main():1592, two checks before the
+            # deprecation scan that #197 was filed against.
+            record("FAIL", name, f"{f}: {e}", cat)
+            return
 
     shared = set(defs[0]) & set(defs[1])
     if SHARED_HELPER_SENTINEL not in shared:
@@ -1363,6 +1381,10 @@ def check_deprecated_endpoints(root, scan, today=None):
     superseded = []       # marked, but the escalation window withdrew the excuse
     degrading  = []       # audit-degrades: deliberate, and does NOT survive
     marked_dates = []
+    in_scope = 0          # suffix-matched and not excluded: the denominator
+    scanned = 0
+    undecodable = []      # in scope, but not valid UTF-8
+    unreadable = []       # in scope, but could not be opened at all
     # `scan.paths`, not a walk of `root`: a walk cannot tell this tree from a
     # second checkout inside it, and scanned both. See _tree_files().
     for rel in scan.paths:
@@ -1374,10 +1396,35 @@ def check_deprecated_endpoints(root, scan, today=None):
         # migration removed, so fixing the finding would not clear it.
         if rel in (AUDIT_SCRIPT, ".security-audit.json"):
             continue
+        in_scope += 1
         try:
             body = read(root, rel)
         except OSError:
+            # Counted rather than dropped. This clause skipped in silence
+            # before, so a tracked path with no file behind it removed itself
+            # from scope with nothing said and the numbers still reconciled.
+            unreadable.append(rel)
             continue
+        except UnicodeDecodeError:
+            # read() opens with strict encoding="utf-8", and UnicodeDecodeError
+            # is a ValueError, NOT an OSError, so the clause above never caught
+            # it. One non-UTF-8 file reaching here propagated to main()'s
+            # `except Exception` and exited 3 with RESULTS never printed: not
+            # this file skipped, but every check's result discarded, including
+            # the ones that had already completed (tsanetgit/Zendesk_App#197).
+            #
+            # Caught at the call site, NOT by loosening read(). That helper is
+            # shared with every other check, and errors="replace" there would
+            # hand each of them silently corrupted text to pattern-match
+            # against, converting one loud abort into several quiet misreads.
+            #
+            # The continue fires BEFORE the anchor resolution below, so an
+            # undecodable bundle file produces exactly one finding — the
+            # read-coverage FAIL that names it — never a second anchor FAIL
+            # about bytes nothing could read.
+            undecodable.append(rel)
+            continue
+        scanned += 1
         # Phase 1: resolve the file's default API version. The anchor
         # declaration wins outright and the JS span/heuristic is never
         # consulted for an anchored file (#164) — a declaration cannot be
@@ -1510,6 +1557,56 @@ def check_deprecated_endpoints(root, scan, today=None):
                     stale_markers.append(
                         f"{rel}:{i + 1}: audit-{mk.group('kind')}: "
                         f"{mk.group('key')}")
+
+    # Reported BEFORE the `not found` early return below, because a tree with
+    # no findings is exactly when this is the only signal that something went
+    # unscanned. Behind the return it would fire only on trees that already
+    # had something to say.
+    #
+    # FAIL rather than WARN for an undecodable file, and the exit code is the
+    # whole reason. This case exits 3 today, which release.yml's `*)` branch
+    # sends to flag_coverage; WARN exits 2, which that same case statement
+    # treats as "warnings only" and releases on. Restoring the report must not
+    # also open a gate that is currently shut, so the severity is picked to
+    # keep the exit code on the side of it that it is already on. It agrees
+    # with the unreadable_anchor FAIL below on the substance too: a file whose
+    # bytes were never read cannot be asserted to contain no v1 calls, and the
+    # suffix filter has already claimed this one is meant to be text.
+    read_check = "every file in deprecation scope was read"
+    # Counted over the SAME deduped sets the detail lines render, spelled once
+    # each. Counting len(list) while rendering sorted(set(...)) is how
+    # tsanetgit/Zendesk_App#194 produced a finding that said 3 and then listed
+    # 1; nothing can put a duplicate in these lists today, which is exactly
+    # what that defect had going for it too.
+    undecodable = sorted(set(undecodable))
+    unreadable = sorted(set(unreadable))
+    tally = (f"{scanned} read, {len(undecodable)} not valid UTF-8, "
+             f"{len(unreadable)} unreadable, of {in_scope} in scope")
+    # Both buckets are NAMED whenever they are non-empty, and the severity is
+    # decided separately from the naming. Reporting them as if/elif instead
+    # left the unreadable files counted in the tally but never listed on any
+    # run that also had an undecodable one — the tally would say 1 unreadable
+    # and no line said which, which is the counted-but-not-named failure this
+    # check exists to stop.
+    if undecodable or unreadable:
+        parts = []
+        if undecodable:
+            parts.append("not decodable as UTF-8, so nothing in them was "
+                         "scanned for deprecated calls: "
+                         + "; ".join(undecodable))
+        if unreadable:
+            # WARN when this is the ONLY bucket. An enumerated path that
+            # cannot be opened at all is most often a tracked file deleted
+            # from a dirty working tree, a condition of the checkout rather
+            # than a defect in the code under review. It was an unreported
+            # PASS before, so naming it is already the tightening, and exit 2
+            # is the side of the release gate that silence was on.
+            parts.append("enumerated but could not be opened, so they are "
+                         "outside the result: " + "; ".join(unreadable))
+        record("FAIL" if undecodable else "WARN", read_check,
+               " | ".join(parts) + f" ({tally})", cat)
+    else:
+        record("PASS", read_check, f"every file in scope was read: {tally}", cat)
 
     # Assert the anchor rather than inferring it. needs_v1_base decides whether
     # a relative path counts as a v1 call, so a baseUrl() whose default cannot
