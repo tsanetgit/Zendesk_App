@@ -500,7 +500,14 @@ def check_sdk_sri(root, network):
     for page in pages:
         try:
             html = read(root, page)
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError is a ValueError, so `except OSError` did not
+            # cover it and an undecodable .html aborted the whole audit here,
+            # before check_deprecated_endpoints ever ran
+            # (tsanetgit/Zendesk_App#197). Folded into the existing clause
+            # rather than given its own: this one already FAILs and moves on,
+            # which is the behaviour that case wants, and the check name
+            # carries {page} so the file is named either way.
             record("FAIL", f"SDK integrity ({page})", str(e), cat)
             continue
         m = re.search(r'<script[^>]*zaf_sdk\.min\.js[^>]*>', html, re.S)
@@ -1173,11 +1180,22 @@ def _norm_js(src):
 def check_shared_helper_drift(root):
     cat = "supply-chain"
     name = "duplicated bundle helpers stay identical"
-    try:
-        defs = [_js_functions(read(root, f)) for f in SHARED_HELPER_FILES]
-    except OSError as e:
-        record("FAIL", name, str(e), cat)
-        return
+    # A loop rather than the comprehension this replaced, so the failure can
+    # name its file. The comprehension reported `str(e)` alone, and for a
+    # decode error that is a byte offset with no path attached — the reader
+    # is told position 0 of something. Naming the file is the whole ask in
+    # tsanetgit/Zendesk_App#197.
+    defs = []
+    for f in SHARED_HELPER_FILES:
+        try:
+            defs.append(_js_functions(read(root, f)))
+        except (OSError, UnicodeDecodeError) as e:
+            # UnicodeDecodeError is a ValueError, not an OSError, so the
+            # previous clause did not catch it and an undecodable .js aborted
+            # the entire audit here — at main():1592, two checks before the
+            # deprecation scan that #197 was filed against.
+            record("FAIL", name, f"{f}: {e}", cat)
+            return
 
     shared = set(defs[0]) & set(defs[1])
     if SHARED_HELPER_SENTINEL not in shared:
@@ -1454,6 +1472,13 @@ def check_deprecated_endpoints(root, scan, today=None):
     # bytes were never read cannot be asserted to contain no v1 calls, and the
     # suffix filter has already claimed this one is meant to be text.
     read_check = "every file in deprecation scope was read"
+    # Counted over the SAME deduped sets the detail lines render, spelled once
+    # each. Counting len(list) while rendering sorted(set(...)) is how
+    # tsanetgit/Zendesk_App#194 produced a finding that said 3 and then listed
+    # 1; nothing can put a duplicate in these lists today, which is exactly
+    # what that defect had going for it too.
+    undecodable = sorted(set(undecodable))
+    unreadable = sorted(set(unreadable))
     tally = (f"{scanned} read, {len(undecodable)} not valid UTF-8, "
              f"{len(unreadable)} unreadable, of {in_scope} in scope")
     # Both buckets are NAMED whenever they are non-empty, and the severity is
@@ -1467,7 +1492,7 @@ def check_deprecated_endpoints(root, scan, today=None):
         if undecodable:
             parts.append("not decodable as UTF-8, so nothing in them was "
                          "scanned for deprecated calls: "
-                         + "; ".join(sorted(set(undecodable))))
+                         + "; ".join(undecodable))
         if unreadable:
             # WARN when this is the ONLY bucket. An enumerated path that
             # cannot be opened at all is most often a tracked file deleted
@@ -1476,8 +1501,7 @@ def check_deprecated_endpoints(root, scan, today=None):
             # PASS before, so naming it is already the tightening, and exit 2
             # is the side of the release gate that silence was on.
             parts.append("enumerated but could not be opened, so they are "
-                         "outside the result: "
-                         + "; ".join(sorted(set(unreadable))))
+                         "outside the result: " + "; ".join(unreadable))
         record("FAIL" if undecodable else "WARN", read_check,
                " | ".join(parts) + f" ({tally})", cat)
     else:

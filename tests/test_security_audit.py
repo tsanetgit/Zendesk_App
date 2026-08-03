@@ -301,6 +301,17 @@ def test_js_functions_brace_matching_captures_nested_bodies():
 ADD_TAG = "function addTicketTag(id, tag) { return client.request(id, tag); }"
 
 
+def test_undecodable_page_does_not_abort_the_sri_check_197(tmp_path):
+    """The other pre-#197 abort site. check_sdk_sri reads .html, which is in
+    SCANNED_SUFFIXES, and runs at main():1589 — before the deprecation scan."""
+    tree(tmp_path, {"zaf-build/assets/background.html": b"\xff\xfe\x00broken"})
+    audit.check_sdk_sri(str(tmp_path), network=False)
+    hits = [r for r in audit.RESULTS if r["check"].startswith("SDK integrity")]
+    assert hits, "the check recorded nothing, so it did not run"
+    assert all(h["status"] == "FAIL" for h in hits)
+    assert any("background.html" in h["check"] for h in hits)
+
+
 def _bundle(tmp_path, main_extra="", bg_extra="", main_base=None, bg_base=None):
     return tree(tmp_path, {
         "zaf-build/assets/main.js":
@@ -323,6 +334,22 @@ def test_drifted_required_helper_fails_165(tmp_path):
     r = by_check()
     assert r[DRIFT_CHECK]["status"] == "FAIL"
     assert "drifted" in r[DRIFT_CHECK]["detail"]
+
+
+def test_undecodable_bundle_js_does_not_abort_the_drift_check_197(tmp_path):
+    """#197 as it reaches THIS check. main() runs the drift check two checks
+    before the deprecation scan, so an undecodable main.js aborted the whole
+    audit here and the #197 fix downstream never got a chance to run."""
+    root, _ = tree(tmp_path, {
+        "zaf-build/assets/main.js": b"\xff\xfe\x00broken",
+        "zaf-build/assets/background.html": ADD_TAG + "\n" + baseurl_fn(),
+    })
+    audit.check_shared_helper_drift(root)
+    r = by_check()[DRIFT_CHECK]
+    assert r["status"] == "FAIL"
+    # The file, not just a byte offset: the comprehension this replaced
+    # reported str(e) alone, which names a position in nothing.
+    assert "main.js" in r["detail"]
 
 
 def test_new_shared_helper_must_be_classified(tmp_path):
@@ -527,6 +554,23 @@ def test_every_file_readable_passes_with_a_tally_197(tmp_path):
         "zaf-build/assets/main.js": baseurl_fn() + "\n" + rel_call()})
     audit.check_deprecated_endpoints(root, scan, today=JAN1)
     assert by_check()[READ_CHECK]["status"] == "PASS"
+
+
+def test_the_read_record_survives_the_no_findings_return_197(tmp_path):
+    """The record sits BEFORE `if not found: return`. Behind it, a tree with
+    nothing deprecated in it reports no record at all and the run exits 0 —
+    the loosened gate the severity choice exists to prevent. Every other test
+    in this group uses a fixture that HAS a finding, so none of them would
+    notice the block being moved."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/clean.js": "let x = 1;",
+        "zaf-build/assets/bad.js": b"\xff\xfe\x00broken",
+    })
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[DEP_CHECK]["status"] == "PASS"       # nothing deprecated found
+    assert r[READ_CHECK]["status"] == "FAIL"      # and the skip still reports
+    assert "bad.js" in r[READ_CHECK]["detail"]
 
 
 def test_both_buckets_are_named_not_just_counted_197(tmp_path):
