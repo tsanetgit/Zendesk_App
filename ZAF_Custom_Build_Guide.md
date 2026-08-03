@@ -127,12 +127,13 @@ Zendesk reads this file to understand what the app is, where it appears, what pe
 |---|---|
 | `private: true` | Marks the app as private — not for Marketplace distribution |
 | `location: ticket_sidebar` | App appears in the right sidebar on every ticket page |
-| `flexible_height: true` | Sidebar expands to fit content rather than a fixed height |
 | `frameworkVersion: "2.0"` | Use ZAF SDK v2 — required for `client.request()` API calls |
 | `parameters` | App settings. Three are filled in on install (TSANet username, password, environment). The custom-field IDs are declared `required: false` and left blank: the app's **Detect field IDs** screen reads them from the instance and writes them back itself, so nobody types them |
 | `secure: true` on password | Zendesk encrypts this value at rest and never shows it again after the admin saves it |
 
 If you customize the app, lock down your field schema and settings before first distribution to your own members — requirement-created fields (if you migrate to `requirements.json`) are not updatable or deletable once installed.
+
+**Do not add `flexible_height` to a location.** It is not a ZAF property, so Zendesk ignores it silently. A location takes `url`, `autoHide`, `autoLoad`, `flexible`, `signed` and `size`; `flexible` controls width, and only on `ticket_sidebar`. This manifest carried `flexible_height: true` for many releases with no effect and it was removed in v1.0.63. Panel height is set at runtime by `client.invoke('resize')` — see *Known constraints worth respecting if you customize* in `zaf-build/README.md`.
 
 ---
 

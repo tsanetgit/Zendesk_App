@@ -341,10 +341,25 @@ You do not edit the bundle JSON. The app fills these in from its own settings at
 ### 4c. Deploy the bundle
 
 1. In Zendesk Support, open **TSANet Connect** from the left nav bar.
-2. Check the **Pre-flight** results. All three must pass before the button enables.
-3. Click **Deploy bundle**.
+2. Read the **Current state** card at the top of the screen.
+3. Check the **Pre-flight** results. All three must pass before the button enables.
+4. Click **Deploy bundle**.
 
 The app substitutes your per-instance values, uploads the bundle, **installs every job spec in it**, then reads the registry back so you can see what is actually installed. Success is judged by that read-back, not by the upload response.
+
+> **The Current state card tells you whether you need to deploy at all** (app **v1.0.63 or later**). It has three rows:
+>
+> | Row | What it tells you |
+> |---|---|
+> | Bundle | Whether the bundle registered on this instance matches what this app would deploy |
+> | App version | Which version of the app is installed here |
+> | Latest release | Whether a newer version has been published |
+>
+> Only the Bundle row bears on the decision, and it is driven by comparing the bundle's **actual contents**, never by comparing version numbers. That distinction is deliberate: between v1.0.54 and v1.0.60 there were six releases in which the ZIS bundle did not change once, so a version comparison would have asked every member to redeploy six times for no functional change. The two version rows are reference only and can never disable the Deploy button.
+>
+> The Bundle row distinguishes three answers, because the remedy differs for each. *Older than the one this app ships* means a genuinely different bundle generation, so deploy. *App settings changed since it was deployed* means the bundle is the right generation but was built with different values, so deploy to pick them up. *Not deployed yet* means the registry has nothing to compare.
+>
+> **"Matches what this app would deploy" is not the same as "no deploy needed."** It establishes what is registered and nothing about whether the job specs are installed. A deploy interrupted between the upload and the installs leaves a matching registry on an integration that processes no events. Installed state is what Pre-flight and the post-deploy read-back are for.
 
 > **You must be a Zendesk administrator.** The nav bar screen is visible to any agent, so the app's own role check is a convenience gate rather than a security boundary. The boundary is server-side: Zendesk documents the ZIS registry endpoints as [Allowed for: Admins](https://developer.zendesk.com/api-reference/integration-services/registry/bundles/), and TSANet has now tested that claim. On 2026-07-28 a session holding the `Staff` custom role, the most privileged non-admin role on the test instance, was refused with `403 Only admin user is allowed` on the bundles endpoint and `403 Forbidden` on `PUT /api/v2/apps/installations/{id}`, which is what **Apply** on the same screen writes to. That is one role, on one instance, on one day (`tsanetgit/Zendesk_App#125`): evidence that the vendor documentation is accurate, not an exhaustive proof.
 
@@ -516,6 +531,10 @@ The sidebar adapts to whether the current ticket is linked to a TSANet collabora
 
 > **SLA scope.** The countdown and breach alerting apply only to the **initial acknowledgment** deadline. Once a case is Accepted, Rejected, or Info Requested, TSANet stops tracking the SLA and the countdown disappears.
 
+> **The panel sizes itself to what is on screen** (app **v1.0.63 or later**). It re-measures when the New Collaboration dialog opens and closes, when a partner's request form renders, when an active case's notes finish loading, and when a case closes. Before v1.0.63 it asked Zendesk for a fixed height regardless of content, so a partner form with six or more fields was cut off at the bottom, search results were clipped, and note threads were truncated mid-note. The height is bounded at both ends, so a very busy ticket carrying several cases with long note threads can still scroll. That is deliberate: the panel must not push your other sidebar apps out of reach.
+
+> **What "Submit failed" means on a new outbound request** (app **v1.0.63 or later**). It means nothing was sent, and retrying is the right response. Creating the case on TSANet and recording it on your own ticket are now reported separately, because the second step writes under Zendesk's safe-update guard and can legitimately refuse when a trigger, an automation, or another agent touches the ticket at the same moment. If that happens the dialog has already closed, and the message tells you the request **was** submitted, names the case token so it can be picked up by hand, and says not to submit again.
+
 ### Optional: an SLA breach trigger
 
 Emails the ticket assignee the moment a breach is detected.
@@ -560,6 +579,8 @@ Zendesk does not support API-based app binary updates.
 Settings are preserved across updates, so there is no need to re-enter credentials or re-run Detect.
 
 If the release notes say the ZIS bundle changed, run **Deploy bundle** again afterwards. The embedded bundle and the app's substitution table ship together and are kept identical to `zis/tsanet_connect_bundle.json` by CI, so the two can never drift, but the new bundle still has to be uploaded to take effect.
+
+On **v1.0.63 or later** you do not have to take the release notes' word for it. Open the nav bar screen and read the **Current state** card: the Bundle row compares what is registered on your instance against what the app you just installed would deploy, so it answers the question directly. Most releases do not change the bundle, and a needless deploy is not free, since the upload orphans the installed job specs before the new ones go in.
 
 ---
 
@@ -619,6 +640,8 @@ Those tags are also how the integration's own tickets are identified, so it is w
 | A TSANet action fails with a generic 500 in the flow execution log | All TSANet actions send `Accept: application/json, application/problem+json`, so check the actual response body: it carries `title` and `detail` describing the real rejection. TSANet's `/v1` API returns 500 by default for business-rule and authz rejections unless that header is present. This is documented, permanent behaviour, not a bug (`tsanetgit/Connect-API-Code#122`) |
 | A flow stopped firing after a redeploy | Check the deploy screen's read-back for stale job specs from an older bundle generation. They still intercept events until uninstalled |
 | Tags have gone missing from a TSANet ticket, or **TSANet Status** is blank on a case that is still open | An app older than **v1.0.60** removed them. Update, then see *Recovering tags removed before v1.0.60* below |
+| Deploy reports **Integration NOT operational**, naming `jobspec_field_action` as failed to install and then as not installed | The deploy worked. An app older than **v1.0.62** asked Zendesk to install a job spec it had correctly left out of the upload, then checked for it. If `jobspec_handle_ping` and `jobspec_forward_comment` both show `[ok]`, inbound handling and comment forwarding are live. This is the normal state for a first install, because field actions are off until the two optional fields exist. Update to v1.0.62 or later and deploy again |
+| An agent saw **Submit failed** on a new outbound collaboration, but the partner received the request anyway | An app older than **v1.0.63** shared one error handler between creating the case and recording it on your ticket, so a failure in the second step reported the whole submit as failed while leaving the dialog filled in. Pressing Submit again opened a **second** request to that partner. Update to v1.0.63 or later, where the dialog closes as soon as the case is created and a bookkeeping failure names the case token and says not to resubmit. To clean up, close the duplicate from the TSANet side |
 
 ### Recovering tags removed before v1.0.60
 

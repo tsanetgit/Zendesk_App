@@ -247,8 +247,7 @@ ZAF (Zendesk Apps Framework) apps run inside cross-origin sandboxed iframes insi
   "location": {
     "support": {
       "ticket_sidebar": {
-        "url": "assets/index.html",
-        "flexible_height": true
+        "url": "assets/index.html"
       },
       "background": "assets/background.html"
     }
@@ -411,32 +410,37 @@ document.getElementById('modal-cancel').addEventListener('click', function() {
 });
 ```
 
-### Adaptive Height (Compact Mode for Non-TSANet Tickets)
-ZAF apps load at their full configured height on every ticket. To avoid a 500px+ sidebar panel appearing on every regular support ticket:
+### Adaptive Height (Measure, Never Assert)
+
+**There is no manifest property that makes a ZAF panel fit its content.** A location accepts `url`, `autoHide`, `autoLoad`, `flexible`, `signed` and `size`; `flexible` governs *width*, and only on `ticket_sidebar`. `flexible_height` is not a ZAF property at all. This app's manifest carried `flexible_height: true` for many releases, was silently ignored by every one of them, and it was removed in v1.0.63 (`tsanetgit/Zendesk_App#179`). A key that looks like it solves the problem sitting next to the problem is worse than no key, so do not reintroduce it.
+
+Height comes only from `client.invoke('resize')`. **No panel state asserts its own height; every state measures.** Hardcoded constants are what v1.0.63 removed:
 
 ```javascript
-// On ticket load:
-// 1. Check if ticket has a TSANet token field value
-// 2. If no token → collapse to compact mode (44px bar)
-// 3. If token found → expand to full height
+var PANEL_MIN_H = 44;    // the compact bar
+var PANEL_MAX_H = 2000;  // ONE cap for every state
+var PANEL_PAD_H = 20;    // slack, so a fit landing a pixel short cannot grow a scrollbar
 
-var FULL_HEIGHT = 500;   // px
-var COMPACT_HEIGHT = 44; // px
+// The ONLY place this file asks ZAF to resize, so the guard cannot be bypassed by a
+// call site that forgets it.
+function setPanelHeight(h) {
+  try { client.invoke('resize', { width: '100%', height: h + 'px' }); }
+  catch (e) { /* a location that will not resize is a worse-looking panel, nothing more */ }
+}
 
-function checkToken() {
-  client.get('ticket.customField:custom_field_' + fieldIdToken)
-    .then(function(data) {
-      var token = data['ticket.customField:custom_field_' + fieldIdToken];
-      if (token) {
-        client.invoke('resize', { width: '100%', height: FULL_HEIGHT + 'px' });
-        showFullPanel(token);
-      } else {
-        client.invoke('resize', { width: '100%', height: COMPACT_HEIGHT + 'px' });
-        showCompactBar(); // show "+ New" button only
-      }
-    });
+function fitPanelToContent() {
+  var h = Math.ceil(document.body.scrollHeight) + PANEL_PAD_H;
+  if (h < PANEL_MIN_H) h = PANEL_MIN_H;
+  if (h > PANEL_MAX_H) h = PANEL_MAX_H;
+  setPanelHeight(h);
 }
 ```
+
+**Call it after the content is in the DOM, not before.** Measuring too early is most of why constants were needed in the first place: `loadCollaborations` used to fit while the panel was still a spinner, and `enterNewCollaboration` fitted the collapsed panel before showing the dialog. The transitions that need a fit are the dialog opening and closing, the partner form rendering, the notes resolving (they land a moment after the case card), and both close paths.
+
+**The try/catch is load-bearing, not defensive habit.** One call site sits inside `handleSubmit`'s post-creation region, which must never reject: a throw there reaches the outer `.catch` and renders "Submit failed" for a collaboration case the partner already has. Failing to resize is cosmetic; misreporting a created case is not. This is `#169` arriving back through the fix for `#179`, and the two meet at exactly that line.
+
+**Why 2000 and one cap.** Measured at the 320px sidebar width against all 110 live partner forms on BETA: 46 of them (41%) need more than 800px, and the tallest is 1409px (16 fields). An earlier revision used 800 for the list and 2000 for a form; 71 of the 110 forms need 793px and cleared 800 by seven pixels, so one label wrapping to a second line would have truncated most of the member base rather than 41% of it. The list turned out to need the same room as a form, so the split earned nothing and went away with the discriminator it required. The list is genuinely unbounded where a form is not, since a ticket can accrue arbitrarily many collaborations and notes, so a busy enough ticket still scrolls. That is correct: if the apps tray is shorter than the app asks for, the tray scrolls as one column rather than two nested scrollbars.
 
 ### Background Page (Inbound Polling + SLA Monitoring)
 The `background.html` page runs continuously while any Zendesk tab is open. Use it for polling — it survives ticket navigation.
@@ -587,6 +591,8 @@ curl -X POST \
 ```
 The integration name goes in the URL path under `/registry/` (the ZIS Registry API create-integration endpoint), not the request body. 409 Conflict = already exists, proceed.
 
+> **The name cannot be a constant you pick for everyone.** ZIS integration names are globally unique across all of Zendesk, so `tsanet_connect` is unavailable to any account where it is already claimed, and that account gets `400 {"message":"the integration: tsanet_connect is not available for upsert by this account"}` on this very call. It is not a permissions fault and retrying will not help. Since v1.0.61 the name is a per-instance app setting, `tsanet_integration_name` (default `tsanet_connect`, charset `^[a-z0-9_-]{1,64}$` matching Zendesk's documented rule), and `deploy.js` substitutes it through the bundle's 18 ARNs plus the top-level name. Two migration hazards, both advisory rather than blocking because neither is wrong to do deliberately: **a rename does not retire the old integration** (its job specs stay installed and keep intercepting the same events, so both act on every inbound collaboration and tickets get created twice), and **ZIS connections are integration-scoped**, so `tsanet_oauth` and `zendesk` both have to be recreated under the new name. `zis/tsanet_connect_bundle.json` is a repository filename, so a blanket find-and-replace of `tsanet_connect` corrupts it; the `zis_tsanet_connect` OAuth-client references do want replacing.
+
 ### Step 2 — Use the OAuth client ZIS created for the integration
 **Do not create one in Admin Center.** The registry create in Step 1 returns a
 `zendesk_oauth_client` object (`identifier: zis_<integration-name>`); its numeric
@@ -662,6 +668,14 @@ Key facts (full recipe in `zis/README.md` Prerequisites 2a–2c):
 
   **The documented path is now the app, not curl.** The TSANet Connect app's **nav_bar deploy screen** (v1.0.52+) uploads the bundle and installs its job specs on the admin's own session, then reads the registry back to confirm. Verified end to end on DEV 2026-07-27: 3 of 3 job specs installed, no API token or password involved. Do not tell members to mint an API token for this. API tokens are on a clock anyway: none for accounts created on/after 2026-07-28, none for anyone after 2026-10-27, all deactivated 2027-04-30.
 
+  **The screen opens with a Current state card** (v1.0.63+, `tsanetgit/Zendesk_App#171`): a Bundle row, an App version row (`GET /api/v2/apps/{app_id}.json` → `version`, unwrapped; key on `appId` from `client.metadata()`, never on the app's name), and a Latest release row (GitHub `releases/latest` via `client.request({cors: true})`, which needs no `domainWhitelist` entry because that property governs secure settings only).
+
+  **Never drive a redeploy recommendation from a version comparison.** The bundle and the app version move independently: v1.0.54 → v1.0.60 was six releases with zero bundle changes, so a version-compare card would have demanded six pointless redeploys, each taking the brief outage an upload causes by orphaning the installed job specs first. The Bundle row compares *content*: the substitution sites on the pristine side are wildcarded and matched structurally (settings-agnostic), and only if that passes does it compare `canon(substitute(pristine, settings))` against `canon(running)`. Structural mismatch means a different generation; structural match plus value mismatch means the settings changed since deploy. Do not "simplify" this into a version compare.
+
+  Two traps here. **Reverse-substituting the running bundle back to placeholders is unsound** — it needs the values live *at deploy time*, which in the settings-drift case is precisely what is missing, so it misreports every settings change as a new generation. And `zis_template_version` (`2019-10-14`) is **not** a bundle version; it is Zendesk's ZIS template schema constant, identical for every bundle on the platform. The copied deploy report used to print it as though it were one.
+
+  `GET /registry/{integration}/bundles` returns **metadata only** (uuid, name, description, `zis_template_version`) with no timestamp and no resources. Content requires `GET .../bundles/{uuid}`, which returns the bundle **unwrapped**, `resources` at top level.
+
 ---
 
 ## Zendesk Custom Fields
@@ -732,6 +746,10 @@ Full data map and recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_an
 | App upload fails with "Missing translation file for locale 'en'" | `translations/en.json` absent from ZIP | Add `translations/en.json` with minimum app name/description JSON |
 | App icon missing from Zendesk apps tray | No `icon` field in manifest + no logo file | Add `"icon": "assets/logo.png"` to manifest; include 128×128 transparent PNG |
 | App loads at full height on every ticket | No height check on load | Implement adaptive height: check token field on load; collapse to 44px if empty |
+| Sidebar content is cut off, or a short state leaves a gap | The panel asked for a constant height regardless of content, and `flexible_height` in the manifest is not a ZAF property so it never did anything | Route every resize through `fitPanelToContent()` and call it *after* the content is in the DOM. v1.0.63, `tsanetgit/Zendesk_App#179`/`#188`/`#191` |
+| "Submit failed" on an outbound case the partner actually received | Case creation and the follow-up bookkeeping on the member's own ticket shared one outer `.catch`, so a refused ticket write reported the whole submit as failed with the dialog still populated — and the natural retry opened a **second** collaboration request | Close the dialog the moment the POST resolves, then give the bookkeeping its own handler that reports partial success, names the token, and says not to resubmit. The outer catch must be reachable only *before* creation. v1.0.63, `tsanetgit/Zendesk_App#169` |
+| Deploy reports `jobspec_field_action` invalid, then not installed, on a deploy that worked | The install loop and `verify()` derived their job-spec list from the *embedded* bundle while `stripFieldActions()` had removed that spec from the text actually uploaded | Derive the expected list from the uploaded text (`JSON.parse(sub.text)`), not from `state.bundle`. Hits essentially every fresh install, since field actions are off until the fields exist. v1.0.62, `tsanetgit/Zendesk_App#176` |
+| `POST /registry/{name}` returns `400 ... is not available for upsert by this account` | ZIS integration names are globally unique across all of Zendesk, and `tsanet_connect` is already claimed | Not a permissions fault and not retryable. The name is a per-instance app setting (`tsanet_integration_name`) as of v1.0.61; register your own and set it. See *ZIS Bearer Token Setup* below |
 | `pillow`/PIL import errors on macOS Python 3.14+ | Homebrew pip3 installs to Python 3.9 site-packages | Use Node `sharp` for image generation instead |
 
 ---
