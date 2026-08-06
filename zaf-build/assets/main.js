@@ -1432,7 +1432,14 @@ function sanitizeHtml(html) {
       var next = child.nextSibling;
       if (child.nodeType === 1) {            // element
         clean(child);                        // sanitize descendants first
-        if (ALLOWED[child.tagName]) {
+        // hasOwnProperty, not a bare lookup: ALLOWED is an object literal, so
+        // `ALLOWED[tag]` also finds Object.prototype's members. HTML element
+        // tagNames are uppercased and miss them, but FOREIGN content is
+        // case-preserving — <svg><constructor> gives tagName 'constructor',
+        // which resolves to Object.prototype.constructor and reads as allowed
+        // (tsanetgit/Zendesk_App#156). An allowlist that answers yes for a
+        // name nobody put in it is not an allowlist.
+        if (Object.prototype.hasOwnProperty.call(ALLOWED, child.tagName)) {
           var attrs = Array.prototype.slice.call(child.attributes);
           for (var i = 0; i < attrs.length; i++) {
             var name = attrs[i].name.toLowerCase();
