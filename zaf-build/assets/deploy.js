@@ -786,6 +786,19 @@
     var sub = substitute(state.bundleText, state.settings);
     var pristineRes = (state.bundle && state.bundle.resources) || {};
 
+    // Shared-author mode (#178): with the setting blank, substitute() strips the
+    // author_id keys, so the pristine side must be normalized the same way or
+    // the self-check reads our own output as shape drift inside every
+    // comment-writing action. One-sided on purpose: a LIVE bundle still carrying
+    // author keys after the setting was cleared must NOT normalize away — that
+    // difference is real, and the "differs" verdict's advice (redeploy) is
+    // exactly what applies the strip.
+    if (!(state.settings.shared_author_user_id || '').toString().trim()) {
+      pristineRes = JSON.parse(
+        stripSharedAuthor(JSON.stringify({ resources: pristineRes })).text
+      ).resources;
+    }
+
     // Self-check, before any verdict about the member's instance. substitute()'s output
     // is a bundle this comparison MUST recognise, because we generated it one line ago
     // from the pristine side it is compared against. If it does not, substitute() has a
