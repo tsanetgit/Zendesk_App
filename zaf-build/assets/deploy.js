@@ -30,11 +30,19 @@
  *   surfaced as a warning instead of being ignored or silently removed.
  * - nav_bar is visible to every agent, and this project has not found an
  *   admin-only ZAF location. The role check below is therefore a UX gate, not a
- *   security boundary. The boundary is server-side: Zendesk documents the ZIS
- *   registry endpoints as "Allowed for: Admins"
- *   (https://developer.zendesk.com/api-reference/integration-services/registry/bundles/).
- *   That is vendor documentation, not a runtime probe by this project — an
- *   agent-role session has not been tested against these endpoints (#125).
+ *   security boundary. The boundary is server-side, and it was probed rather
+ *   than taken on the vendor's word (#125, closed 2026-07-28): a Staff
+ *   custom-role session — the most privileged non-admin role on that instance,
+ *   so a refusal there implies every lesser role — got 403 from both
+ *   POST /api/services/zis/registry/tsanet_connect/bundles ("Only admin user
+ *   is allowed") and PUT /api/v2/apps/installations/{id}. The two enforce
+ *   independently, so one proving out did not imply the other. Both probes
+ *   sent a deliberately malformed body, and the explicit authorization message
+ *   distinguishes a refusal from a CSRF failure.
+ *
+ *   Scoped honestly: one role, one instance, one day. It establishes that the
+ *   server refuses, not that it will refuse forever — a platform change would
+ *   need a fresh probe, which is why the finding names the date.
  */
 /* global ZAFClient */
 
