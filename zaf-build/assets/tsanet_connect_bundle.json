@@ -90,31 +90,7 @@
           ],
           "method": "PUT",
           "path": "/api/v2/tickets/{{$.ticket_id}}.json",
-          "requestBody": {
-            "ticket": {
-              "additional_tags": [
-                "tsanet_updated"
-              ],
-              "comment": {
-                "body": "TSANet update \u2014 status: {{$.collab_status}} \u2014 token: {{$.requestToken}}",
-                "public": false
-              },
-              "custom_fields": [
-                {
-                  "id": 1234567892,
-                  "value": "{{$.collab_status}}"
-                },
-                {
-                  "id": 1234567893,
-                  "value": "{{$.partner_name}}"
-                },
-                {
-                  "id": 1234567894,
-                  "value": "{{$.respond_by}}"
-                }
-              ]
-            }
-          },
+          "requestBody.$": "$.requestBody",
           "connectionName": "zendesk"
         },
         "name": "action_update_ticket"
@@ -197,10 +173,7 @@
               "ActionName": "zis:tsanet_connect:action:action_update_ticket",
               "End": true,
               "Parameters": {
-                "collab_status.$": "$.xform.status",
-                "partner_name.$": "$.collab.receiveCompanyName",
-                "requestToken.$": "$.collab.token",
-                "respond_by.$": "$.xform.respond_by",
+                "requestBody.$": "$.xform.body",
                 "ticket_id.$": "$.search.tickets[0].id"
               },
               "ResultPath": "$.update",
@@ -210,7 +183,7 @@
               "Type": "Action",
               "ActionName": "zis:common:transform:Jq",
               "Parameters": {
-                "expr": "{status: (\"tsanet_status_\" + (.collab.status // \"\" | ascii_downcase)), respond_by: ((.collab.respondBy // \"\")[0:10])}",
+                "expr": "(\"tsanet_status_\" + (.collab.status // \"\" | ascii_downcase)) as $status | ((.collab.respondBy // \"\")[0:10]) as $respond_by | {body: {ticket: {tags: (((.search.tickets[0].tags // []) + [\"tsanet_updated\"]) | unique), safe_update: true, updated_stamp: .search.tickets[0].updated_at, custom_fields: [{id: 1234567892, value: $status}, {id: 1234567893, value: .collab.receiveCompanyName}, {id: 1234567894, value: $respond_by}]}}}",
                 "data.$": "$"
               },
               "ResultPath": "$.xform",
