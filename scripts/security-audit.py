@@ -312,6 +312,38 @@ def check_scanned_tree(root, scan):
 
 # ── Category 1: supply chain and release integrity ──────────────────────
 
+def _read_workflow(root, name):
+    """(text, problem) for one workflow file — never raises (#201).
+
+    Four checks read `.github/workflows/*` and three of them caught nothing
+    at all, so a single undecodable byte in any workflow raised out of
+    `check_all_workflows_declare_permissions` — the FIRST check main() runs
+    — into its `except Exception`, exiting 3 before RESULTS was printed. Not
+    that file skipped: an EMPTY report, with no check having said anything.
+
+    `UnicodeDecodeError` is a `ValueError`, NOT an `OSError`, which is why
+    the one site that did catch (`:370`) missed it too. This file has
+    recorded that fact three times now (#196, #199, here); the helper exists
+    so the fourth reader cannot re-learn it.
+
+    Shared rather than four per-site guards because all three loop sites
+    want the SAME behaviour — name the file, keep going. #199 declined a
+    shared helper for its three sites on the stated grounds that those
+    wanted three DIFFERENT behaviours; the same rationale points the other
+    way here.
+
+    A problem string is returned, never recorded, so each check reports the
+    file in its own voice and decides its own severity.
+    """
+    try:
+        return read(root, f".github/workflows/{name}"), None
+    except UnicodeDecodeError as e:
+        return None, (f"{name}: not decodable as UTF-8, so it was not "
+                      f"checked ({e})")
+    except OSError as e:
+        return None, f"{name}: could not be read, so it was not checked ({e})"
+
+
 def check_all_workflows_declare_permissions(root):
     """Every workflow states its token scope explicitly.
 
@@ -333,13 +365,22 @@ def check_all_workflows_declare_permissions(root):
     cat = "supply-chain"
     wf_dir = os.path.join(root, ".github/workflows")
     undeclared = []
+    unread = []
     checked = 0
 
     for name in sorted(os.listdir(wf_dir)):
         if not name.endswith((".yml", ".yaml")):
             continue
+        # Counted BEFORE the read, so a directory whose only workflow is
+        # undecodable reports the naming FAIL below rather than the
+        # "no workflow files found" vacuity FAIL. Those two mean different
+        # things — "0 read of 1" is not "0 read of 0" — and reporting the
+        # second for the first would name no file at all.
         checked += 1
-        wf = read(root, f".github/workflows/{name}")
+        wf, problem = _read_workflow(root, name)
+        if problem:
+            unread.append(problem)
+            continue
         top = re.search(r"^permissions:", wf, re.M)
         job = re.search(r"^\s+permissions:", wf, re.M)
         if not top and not job:
@@ -348,10 +389,19 @@ def check_all_workflows_declare_permissions(root):
     if not checked:
         record("FAIL", "every workflow declares its token scope",
                "no workflow files found — the check could not run, which is not a pass", cat)
-    elif undeclared:
+    elif undeclared or unread:
+        # Both buckets are NAMED whenever non-empty, never one swallowing the
+        # other: an unread workflow is a file GitHub Actions will still parse
+        # and run, whose token scope has gone unverified, so it fails for the
+        # same reason an undeclared one does.
+        parts = []
+        if undeclared:
+            parts.append("no permissions block, so the repository default "
+                         "applies: " + "; ".join(undeclared))
+        if unread:
+            parts.append("not checked at all: " + "; ".join(unread))
         record("FAIL", "every workflow declares its token scope",
-               "no permissions block, so the repository default applies: "
-               + "; ".join(undeclared), cat)
+               " | ".join(parts), cat)
     else:
         record("PASS", "every workflow declares its token scope",
                f"all {checked} workflow(s) declare permissions explicitly", cat)
@@ -368,7 +418,11 @@ def check_workflow_permissions(root):
     cat = "supply-chain"
     try:
         wf = read(root, ".github/workflows/release.yml")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # Widened rather than routed through _read_workflow: this reads one
+        # fixed file and FAILs-and-returns, where the loop sites name the
+        # file and continue. UnicodeDecodeError is a ValueError, so the bare
+        # OSError clause never covered it (#201).
         record("FAIL", "release workflow present", str(e), cat)
         return
     # Workflow-scope permissions must be empty; jobs opt in.
@@ -426,11 +480,16 @@ def check_workflow_expression_injection(root):
     cat = "supply-chain"
     wf_dir = os.path.join(root, ".github/workflows")
     offenders = []
+    unread = []
 
     for name in sorted(os.listdir(wf_dir)):
         if not name.endswith((".yml", ".yaml")):
             continue
-        lines = read(root, f".github/workflows/{name}").splitlines()
+        wf, problem = _read_workflow(root, name)
+        if problem:
+            unread.append(problem)
+            continue
+        lines = wf.splitlines()
         base = None          # indent of the `run:` key while inside its block
         for n, line in enumerate(lines, 1):
             stripped = line.strip()
@@ -453,9 +512,14 @@ def check_workflow_expression_injection(root):
                 elif "${{" in rest:
                     offenders.append(f"{name}:{n}: {rest[:60]}")
 
-    if offenders:
+    if offenders or unread:
+        parts = []
+        if offenders:
+            parts.append("interpolated into shell: " + "; ".join(offenders))
+        if unread:
+            parts.append("not checked at all: " + "; ".join(unread))
         record("FAIL", "no Actions expressions inside run: scripts",
-               "interpolated into shell: " + "; ".join(offenders), cat)
+               " | ".join(parts), cat)
     else:
         record("PASS", "no Actions expressions inside run: scripts",
                "every ${{ }} is bound in env:/with:/if:, none reaches a shell script", cat)
@@ -465,16 +529,30 @@ def check_action_pinning(root):
     cat = "supply-chain"
     wf_dir = os.path.join(root, ".github/workflows")
     unpinned = []
+    unread = []
     for name in sorted(os.listdir(wf_dir)):
         if not name.endswith((".yml", ".yaml")):
             continue
-        for m in re.finditer(r"uses:\s*([\w.-]+/[\w.-]+)@(\S+)", read(root, f".github/workflows/{name}")):
+        wf, problem = _read_workflow(root, name)
+        if problem:
+            unread.append(problem)
+            continue
+        for m in re.finditer(r"uses:\s*([\w.-]+/[\w.-]+)@(\S+)", wf):
             action, ref = m.group(1), m.group(2)
             if not re.fullmatch(r"[0-9a-f]{40}", ref):
                 unpinned.append(f"{name}: {action}@{ref}")
-    if unpinned:
-        record("WARN", "third-party actions SHA-pinned",
-               "moving refs: " + "; ".join(unpinned), cat)
+    if unpinned or unread:
+        parts = []
+        if unpinned:
+            parts.append("moving refs: " + "; ".join(unpinned))
+        if unread:
+            parts.append("not checked at all: " + "; ".join(unread))
+        # An unread workflow outranks a moving ref. A moving tag is a known
+        # weakness in a file that WAS read; a file that was not read cannot
+        # be asserted to pin anything, so it takes the severity that keeps
+        # the release gate shut rather than the one that releases green.
+        record("FAIL" if unread else "WARN", "third-party actions SHA-pinned",
+               " | ".join(parts), cat)
     else:
         record("PASS", "third-party actions SHA-pinned",
                "all actions pinned to a full commit SHA", cat)
@@ -1645,10 +1723,20 @@ def check_deprecated_endpoints(root, scan, today=None):
     # REPORTED. #151: without this the suite returned PASS at exit 0 with a
     # live v1 call in the shipped bundle, because the marked call left both
     # `found` and `hit_dates`.
+    # Deduped ONCE, then counted and rendered off the same list. Spelling
+    # `sorted(set(x))` in the join while counting `len(x)` on the raw list is
+    # how a WARN came to say 3 and then list 1 (#194): two spellings of one
+    # set, and only one of them was deduped. Nothing puts a duplicate in
+    # these lists today — which is exactly what that defect had going for it
+    # too, until a second pattern matched the same call site.
+    degrading = sorted(set(degrading))
+    still_marked = sorted(set(still_marked))
+    superseded = sorted(set(superseded))
+
     if degrading:
         record("WARN", "no calls that die at their sunset remain",
                f"{len(degrading)} deliberate call(s) that do NOT survive their sunset, "
-               f"still reported as findings until deleted: " + "; ".join(sorted(set(degrading))), cat)
+               f"still reported as findings until deleted: " + "; ".join(degrading), cat)
     else:
         record("PASS", "no calls that die at their sunset remain",
                "no audit-degrades markers in the tree", cat)
@@ -1659,12 +1747,12 @@ def check_deprecated_endpoints(root, scan, today=None):
             days = _sunset_urgency(marked_dates, today)
             parts.append(
                 f"{len(still_marked)} deliberate call(s) still in the tree, "
-                f"nearest sunset in {days} days: " + "; ".join(sorted(set(still_marked))))
+                f"nearest sunset in {days} days: " + "; ".join(still_marked))
         if superseded:
             parts.append(
                 f"{len(superseded)} marker(s) no longer excusing, because the sunset "
                 f"is within {SUNSET_FAIL_WITHIN_DAYS} days; those calls are reported "
-                f"as findings rather than as deliberate: " + "; ".join(sorted(set(superseded))))
+                f"as findings rather than as deliberate: " + "; ".join(superseded))
         record("WARN", "no deliberate sunsetting calls remain", " | ".join(parts), cat)
     else:
         record("PASS", "no deliberate sunsetting calls remain",

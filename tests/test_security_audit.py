@@ -937,6 +937,128 @@ def test_clean_tree_passes_with_a_reconciling_tally(tmp_path):
     assert r["status"] == "PASS" and "of 1 enumerated" in r["detail"]
 
 
+# ── workflow readers survive what they read (#201) ──────────────────────
+#
+# Four checks read .github/workflows/* and three caught nothing at all, so
+# one undecodable byte in any workflow raised out of the FIRST check main()
+# runs and exited 3 with an EMPTY report. These pin: no abort, the file
+# NAMED (not silently skipped, never a pass), an ordinary OSError survived
+# at the two sites that caught nothing, and — the one that would regress
+# quietly — the naming FAIL not being swallowed by the vacuity FAIL.
+
+WF_PERMS_CHECK = "every workflow declares its token scope"
+WF_INJECT_CHECK = "no Actions expressions inside run: scripts"
+WF_PIN_CHECK = "third-party actions SHA-pinned"
+WF_RELEASE_CHECK = "release token least-privilege"
+
+# A minimal well-formed workflow. Assembled like every other fixture: the
+# audit reads this .py file too, and a spelled-out `uses: owner/repo@ref`
+# would read as an unpinned action in the tree.
+GOOD_WF = ("name: ok\n" + "permissions:\n  contents: read\n"
+           + "on: push\njobs:\n  a:\n    steps:\n      - " + "run" + ": echo hi\n")
+BAD_BYTES = b"name: broken\n# \xff\n"
+
+
+def _wf_tree(tmp_path, files):
+    for name, body in files.items():
+        p = tmp_path / ".github" / "workflows" / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(body) if isinstance(body, bytes) else p.write_text(body)
+    return str(tmp_path)
+
+
+def test_undecodable_workflow_does_not_abort_any_reader_201(tmp_path):
+    """All four sites, run against one poisoned tree — the acceptance
+    criterion says verify by poisoning, not by patching one and re-testing."""
+    root = _wf_tree(tmp_path, {"good.yml": GOOD_WF, "bad.yml": BAD_BYTES,
+                               "release.yml": GOOD_WF})
+    audit.check_all_workflows_declare_permissions(root)
+    audit.check_workflow_permissions(root)
+    audit.check_workflow_expression_injection(root)
+    audit.check_action_pinning(root)
+    r = by_check()
+    for check in (WF_PERMS_CHECK, WF_INJECT_CHECK, WF_PIN_CHECK):
+        assert check in r, f"{check} recorded nothing, so it did not run"
+        assert r[check]["status"] == "FAIL", check
+        assert "bad.yml" in r[check]["detail"], check   # named, not counted
+    # The single-file reader shares the tree but not the poisoned file, so it
+    # must still reach a verdict rather than being taken down by a sibling.
+    assert WF_RELEASE_CHECK in r, "the release check did not run"
+
+
+def test_undecodable_release_yml_fails_without_aborting_201(tmp_path):
+    """The one single-file reader. Its `except OSError` never covered a
+    decode error, because UnicodeDecodeError is a ValueError."""
+    root = _wf_tree(tmp_path, {"release.yml": BAD_BYTES})
+    audit.check_workflow_permissions(root)
+    hits = [x for x in audit.RESULTS if x["check"] == "release workflow present"]
+    assert hits and hits[0]["status"] == "FAIL"
+
+
+def test_unopenable_workflow_survives_an_ordinary_oserror_201(tmp_path):
+    """`:433` and `:471` caught NOTHING before, so a plain OSError aborted
+    them too. A directory named like a workflow raises IsADirectoryError —
+    a real OSError, unlike chmod, which does not fail when run as root."""
+    root = _wf_tree(tmp_path, {"good.yml": GOOD_WF})
+    (tmp_path / ".github" / "workflows" / "trap.yml").mkdir()
+    audit.check_workflow_expression_injection(root)
+    audit.check_action_pinning(root)
+    r = by_check()
+    assert r[WF_INJECT_CHECK]["status"] == "FAIL"
+    assert "trap.yml" in r[WF_INJECT_CHECK]["detail"]
+    assert r[WF_PIN_CHECK]["status"] == "FAIL"
+
+
+def test_only_workflow_undecodable_names_it_rather_than_reporting_vacuity_201(tmp_path):
+    """The regression that would be silent: `checked` counts BEFORE the read,
+    so a directory whose only workflow will not decode reports the naming
+    FAIL. Counting after would report 'no workflow files found', which names
+    no file and describes a different tree ('0 read of 1' is not '0 of 0')."""
+    root = _wf_tree(tmp_path, {"bad.yml": BAD_BYTES})
+    audit.check_all_workflows_declare_permissions(root)
+    r = by_check()[WF_PERMS_CHECK]
+    assert r["status"] == "FAIL"
+    assert "bad.yml" in r["detail"]
+    assert "no workflow files found" not in r["detail"]
+
+
+def test_readable_workflows_still_pass_201(tmp_path):
+    """The guards must not turn a clean tree into a finding."""
+    root = _wf_tree(tmp_path, {"good.yml": GOOD_WF})
+    audit.check_all_workflows_declare_permissions(root)
+    audit.check_workflow_expression_injection(root)
+    audit.check_action_pinning(root)
+    r = by_check()
+    assert r[WF_PERMS_CHECK]["status"] == "PASS"
+    assert r[WF_INJECT_CHECK]["status"] == "PASS"
+    assert r[WF_PIN_CHECK]["status"] == "PASS"
+
+
+# ── counts and their detail lines read the same list (#194) ─────────────
+
+def test_marked_call_count_matches_its_rendered_list_194(tmp_path):
+    """#194's shape: `len(raw_list)` beside `'; '.join(sorted(set(...)))` —
+    two spellings of one set, only one deduped, so the count can exceed the
+    list it prints.
+
+    The wrong-but-well-formed input is a line that produces the SAME entry
+    twice. Two `deprecated` patterns share the key `v1-webhooks` (the
+    relative form and the absolute one) and share a label, so a line
+    carrying both, excused by one marker, appends two identical strings.
+    Without the dedupe-once fix this reports 2 and then lists 1 — the exact
+    self-contradiction #194 names."""
+    both_forms = rel_call() + "; x('" + "/" + V1 + WH_REL + "') "
+    body = (anchor_block(V1) + "\n" + both_forms
+            + marker(kind=DEGRADES, tracker="#101"))
+    root, scan = tree(tmp_path, {"zaf-build/assets/main.js": body})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()[DEGRADES_CHECK]
+    assert r["status"] == "WARN"
+    stated = int(r["detail"].split(" ", 1)[0])
+    listed = r["detail"].count("zaf-build/assets/")
+    assert stated == listed, f"count says {stated}, list shows {listed}"
+
+
 # ── meta: this file is invisible to the audit it tests ──────────────────
 
 def test_meta_this_file_trips_none_of_the_audit_patterns():
