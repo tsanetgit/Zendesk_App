@@ -257,6 +257,7 @@ Zendesk validates the package and shows the installation settings screen.
 | **All field ID settings** | **Leave blank.** Step 3d fills them in | No |
 | **Allowed action roles** | Comma-separated Zendesk role names permitted to invoke TSANet actions, for example `admin, Support Lead`. Empty means all agents | No |
 | **TSANet integration name** | **Leave as `tsanet_connect`** unless Step 1b forced you onto a different name, in which case enter the exact name you registered | No |
+| **Shared author user id** | Numeric user id of a dedicated shared user (for example "IBM via TSANet") to author connector-written comments. Create the user first: email on your own domain (never the partner's), end user or light agent both work. Empty means comments show under the connection user | No |
 
 `BETA` maps to `connect2.tsanet.net` and `PRODUCTION` to `connect2.tsanet.org`. Set it to match where your account is provisioned.
 

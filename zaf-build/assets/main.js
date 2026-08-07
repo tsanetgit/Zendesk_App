@@ -715,6 +715,13 @@ function syncNotesToZendesk(notes, ourCompany) {
           var _lbl = noteAuthorLabel(note, ourCompany);
           var mine = _lbl.who === 'You';
           var who = _lbl.who;
+          // #178 Half B: the individual sender's email is already parsed off the
+          // note payload and was previously discarded right here — the one
+          // surface agents actually read. Only for received notes: our own
+          // mirrored notes already say "You".
+          if (!mine && note.creatorEmail) {
+            who += ' (' + note.creatorEmail + ')';
+          }
           var body = '[TSANet Note ' + (mine ? '→ sent' : '← received') + '] ' + who + ' — ' + dateStr
             + '\n\n' + summary;
           if (description && description !== summary) {
@@ -722,15 +729,33 @@ function syncNotesToZendesk(notes, ourCompany) {
           }
           body += '\n\ntsanet-note-id:' + note.id;
 
-          return client.request({
-            url: '/api/v2/tickets/' + ticketId + '.json',
-            type: 'PUT',
-            contentType: 'application/json',
-            data: JSON.stringify({
-              ticket: {
-                comment: { body: body, public: false }
-              }
-            })
+          // #178 Half A: attribute non-self content to the shared partner user
+          // when one is configured. 'mine' at ANY confidence keeps the acting
+          // agent: misattributing our own note to the partner user is the worse
+          // error, and unconfident-mine means name-equality matched. This runs
+          // in the logged-in agent's session, which may lack the privilege to
+          // set author_id, so a failed write retries once WITHOUT it — losing
+          // attribution is acceptable, losing the note is not.
+          var authorId = String(settings.shared_author_user_id || '').trim();
+          var attachAuthor = /^\d+$/.test(authorId) &&
+            noteOrigin(note, ourCompany).origin !== 'mine';
+          function mirrorPut(withAuthor) {
+            var comment = { body: body, public: false };
+            if (withAuthor) { comment.author_id = Number(authorId); }
+            return client.request({
+              url: '/api/v2/tickets/' + ticketId + '.json',
+              type: 'PUT',
+              contentType: 'application/json',
+              data: JSON.stringify({ ticket: { comment: comment } })
+            });
+          }
+          // Retry without the author ONLY when one was attached: with no author
+          // the two requests would be identical, and an ambiguous failure
+          // (server committed, response lost) would double-post the note —
+          // the marker dedup guards later syncs, not two writes in one run.
+          return mirrorPut(attachAuthor).catch(function(e) {
+            if (attachAuthor) { return mirrorPut(false); }
+            throw e;
           }).catch(function(e) {
             console.warn('[TSANet] Note sync failed for note', note.id, e.message);
           });
