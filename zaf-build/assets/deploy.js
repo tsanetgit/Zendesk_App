@@ -108,7 +108,12 @@
     '1234567892': 'field_id_status',
     '1234567893': 'field_id_partner',
     '1234567894': 'field_id_respond_by',
-    '1234567895': 'field_id_action_text'
+    '1234567895': 'field_id_action_text',
+    // Not a field id: the shared partner user (#178). Same substitution
+    // mechanism, but OPTIONAL — when blank, stripSharedAuthor removes the
+    // author_id keys instead, and every connector comment keeps today's
+    // attribution (the authenticated connection user).
+    '1234567896': 'shared_author_user_id'
   };
 
   var HOST_PLACEHOLDER = 'connect2.tsanet.org';   // bundle ships Production
@@ -176,6 +181,24 @@
       }
     });
     return { text: JSON.stringify(b, null, 2), dropped: dropped };
+  }
+
+  // With no shared author configured (#178), remove the author_id keys rather
+  // than leaving a placeholder for the leftovers check to trip on. Structural
+  // for the same reason as stripFieldActions: a textual cut would have to get
+  // the comma right in every comment object.
+  function stripSharedAuthor(text) {
+    var b = JSON.parse(text);
+    var stripped = [];
+    Object.keys(b.resources || {}).forEach(function (name) {
+      var def = ((b.resources[name].properties || {}).definition || {});
+      var comment = ((def.requestBody || {}).ticket || {}).comment;
+      if (comment && Object.prototype.hasOwnProperty.call(comment, 'author_id')) {
+        delete comment.author_id;
+        stripped.push(name);
+      }
+    });
+    return { text: JSON.stringify(b, null, 2), stripped: stripped };
   }
 
   // ------------------------------------------------------------ field detect
@@ -383,6 +406,19 @@
     var optional = {};
     if (mode !== 'on') { FIELD_ACTION_SETTINGS.forEach(function (k) { optional[k] = true; }); }
 
+    // Shared author (#178) is optional in BOTH modes: set, its id substitutes
+    // like a field id; blank, the author_id keys are stripped so the bundle
+    // carries no placeholder and every comment keeps today's attribution. A
+    // non-numeric value still fails below rather than being stripped — a typo
+    // is a mistake to surface, not a request to turn the feature off.
+    optional.shared_author_user_id = true;
+    var sharedAuthorStripped = [];
+    if (!(s.shared_author_user_id || '').toString().trim()) {
+      var authorStrip = stripSharedAuthor(out);
+      out = authorStrip.text;
+      sharedAuthorStripped = authorStrip.stripped;
+    }
+
     // Validate every field id BEFORE substituting anything, then replace all six
     // in a SINGLE pass. Replacing them one at a time re-scans text already
     // written: a value equal to another placeholder's token was expanded again by
@@ -398,10 +434,10 @@
       // With field actions off, these placeholders are gone from `out` along with
       // the resources that held them, so a blank value is correct, not missing.
       if (!val) { if (!optional[key]) { missing.push(key); } return; }
-      // Field ids land in an unquoted numeric position. Anything non-numeric
+      // These ids land in an unquoted numeric position. Anything non-numeric
       // either corrupts the JSON or injects structure, so refuse it here.
       if (!/^\d+$/.test(val)) {
-        invalid.push(key + ' must be digits only (Zendesk field id)');
+        invalid.push(key + ' must be digits only (a numeric Zendesk id)');
         return;
       }
       fieldValues[ph] = val;
@@ -749,6 +785,19 @@
   function compareBundle(runningRes) {
     var sub = substitute(state.bundleText, state.settings);
     var pristineRes = (state.bundle && state.bundle.resources) || {};
+
+    // Shared-author mode (#178): with the setting blank, substitute() strips the
+    // author_id keys, so the pristine side must be normalized the same way or
+    // the self-check reads our own output as shape drift inside every
+    // comment-writing action. One-sided on purpose: a LIVE bundle still carrying
+    // author keys after the setting was cleared must NOT normalize away — that
+    // difference is real, and the "differs" verdict's advice (redeploy) is
+    // exactly what applies the strip.
+    if (!(state.settings.shared_author_user_id || '').toString().trim()) {
+      pristineRes = JSON.parse(
+        stripSharedAuthor(JSON.stringify({ resources: pristineRes })).text
+      ).resources;
+    }
 
     // Self-check, before any verdict about the member's instance. substitute()'s output
     // is a bundle this comparison MUST recognise, because we generated it one line ago
@@ -1176,6 +1225,36 @@
                                  'field actions, set the two field IDs and Re-check. If you meant to ' +
                                  'remove them, uninstall it with DELETE /api/services/zis/registry/' +
                                  'job_specs/install?job_spec_name=' + jobSpecPrefix(s) + 'jobspec_field_action' });
+          }
+        });
+      })
+      .then(function () {
+        // 4b. shared author check (#178). Advisory: a wrong id cannot break
+        //     anything at runtime — Zendesk attributes a nonexistent author_id
+        //     to the authenticated user with a 200/201 (probed on d3v
+        //     2026-08-07) — but that failure is SILENT, so the one place to
+        //     catch a typo'd or suspended user is here, where the admin can
+        //     still see the name they actually selected.
+        var authorId = (s.shared_author_user_id || '').toString().trim();
+        if (!authorId || !/^\d+$/.test(authorId)) { return; }
+        return req({ url: '/api/v2/users/' + authorId + '.json', type: 'GET' }).then(function (r) {
+          if (!r.ok) {
+            steps.push({ ok: null, name: 'Shared author user not found',
+                         detail: 'shared_author_user_id ' + authorId + ' did not resolve (HTTP ' +
+                                 r.status + '). Zendesk will silently attribute connector comments ' +
+                                 'to the connection user instead. Check the id in Admin Center > ' +
+                                 'People before deploying.' });
+            return;
+          }
+          var u = (r.data && r.data.user) || {};
+          if (u.suspended) {
+            steps.push({ ok: null, name: 'Shared author user is suspended',
+                         detail: '"' + u.name + '" (' + authorId + ') is suspended. Attribution may ' +
+                                 'not behave as intended; unsuspend the user or pick another.' });
+          } else {
+            steps.push({ ok: true, name: 'Shared author: ' + u.name,
+                         detail: 'Connector comments will be attributed to "' + u.name + '" (' +
+                                 (u.role || 'unknown role') + ', id ' + authorId + ').' });
           }
         });
       })

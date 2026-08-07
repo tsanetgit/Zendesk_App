@@ -134,6 +134,14 @@
       "required": false,
       "default": "",
       "description": "Email used as engineerEmail on TSANet Accept calls. Must be on your member company's registered domain. Required only if you use field actions; the sidebar app does not need it."
+    },
+    {
+      "name": "shared_author_user_id",
+      "type": "text",
+      "secure": false,
+      "required": false,
+      "default": "",
+      "description": "Optional numeric Zendesk user id of a dedicated shared user (e.g. 'IBM via TSANet') to author connector-written comments: inbound descriptions, receipts and mirrored partner notes. Empty = comments show under the connection user, today's behavior. Create the user with an email on YOUR OWN domain, never the partner's. Either an end user (no seat) or a light agent works; comments stay private either way."
     }
   ],
   "domainWhitelist": [

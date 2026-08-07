@@ -18,6 +18,7 @@
           "requestBody": {
             "ticket": {
               "comment": {
+                  "author_id": 1234567896,
                 "body": "\u2b05\ufe0f New inbound TSANet Collaboration Request from {{$.partner_name}}.{{$.submitter_line}}\n\nPriority: {{$.priority}}\nToken: {{$.requestToken}}\n\n{{$.problem_description}}\n\nTo respond, set the TSANet Action field (Accept / Request Info / Reject) and submit the ticket, or use the TSANet Connect app if installed.",
                 "public": false
               },
@@ -231,6 +232,7 @@
           "requestBody": {
             "ticket": {
               "comment": {
+                  "author_id": 1234567896,
                 "body": "{{$.message}}",
                 "public": false
               },
@@ -266,6 +268,7 @@
           "requestBody": {
             "ticket": {
               "comment": {
+                  "author_id": 1234567896,
                 "body": "{{$.message}}",
                 "public": false
               },
@@ -297,6 +300,7 @@
           "requestBody": {
             "ticket": {
               "comment": {
+                  "author_id": 1234567896,
                 "body": "{{$.message}}",
                 "public": false
               },
