@@ -44,11 +44,11 @@ selectors every recipe in this guide keys on.
 |---|---|---|---|
 | Subject | Partner company name + case summary | Business-confidential; summaries can contain personal data | Rewrite via ticket update (Mode B) or ticket deletion (Mode A) |
 | Description (first comment) | Partner company, submitter name and email, priority, case token, full problem description | **Primary PII artifact** | Redaction API (Mode B) or deletion (Mode A) |
-| Internal comments | Creation and status-update notices; partner case notes (engineer names, emails, case narrative) | **Primary PII artifact** | Redaction API (Mode B) or deletion (Mode A) |
+| Internal comments | Creation notices; partner case notes (engineer names, emails, case narrative); status-update notices exist only on tickets last updated by pre-v1.0.64 bundles | **Primary PII artifact** | Redaction API (Mode B) or deletion (Mode A) |
 | Public comments | Partner notes an agent chose to post publicly (visible to your end customer) | Same as above, wider audience | Redaction API (Mode B) or deletion (Mode A) |
 | Attachments | Files exchanged on the case (if the attachment workflow is in use) | Varies; treat as PII | Redaction API removes attachments (Mode B) or deletion (Mode A) |
 | Custom fields | Case token (opaque), TSANet status (enum), partner company name, respond-by date, TSANet Action / Action Text | Company name is the only sensitive value; token and enums are not personal data | Field clear via ticket update (Mode B, with the audit-history caveat below) or deletion (Mode A) |
-| Tags | `tsanet_inbound` / `tsanet_outbound` / `tsanet_updated` / status tags | Not sensitive; these are your retention selectors. Do not remove before the sweep that uses them | n/a |
+| Tags | `tsanet_inbound` / `tsanet_outbound` / `tsanet_updated` / status tags | Not sensitive; these are your retention selectors. Do not remove before the sweep that uses them. **`tsanet_updated` applies from the v1.0.64 bundle onward** (redeploy the bundle after updating the app): earlier bundles never applied it, so a sweep keyed on it will not match tickets whose last status change predates your v1.0.64 deploy — scope those sweeps on `tsanet_inbound` / `tsanet_outbound`, which have applied since installation | n/a |
 | Ticket audit history | Previous and new values of every field change, retained indefinitely | Mirrors field-level values (company name at most; person PII lives in comments) | **Ticket deletion only** (see caveat) |
 
 **The audit-history caveat.** Zendesk retains every field change (old and
