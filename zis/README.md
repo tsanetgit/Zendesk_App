@@ -339,6 +339,7 @@ Bundle `tsanet_connect` · template `2019-10-14` · 12 actions, 3 flows, 3 job s
   - `GuardCreate` (Choice)
   - `NoOp` (Succeed)
   - `SearchTicket` (Action) → `action_search_ticket`
+  - `ShowTicket` (Action) → `action_zd_get_ticket`
   - `TransformForUpdate` (Action) → `Jq`
   - `UpdateTicket` (Action) → `action_update_ticket`
 <!-- END GENERATED: bundle reference -->
