@@ -17,6 +17,8 @@ There is **one download**. The ZIS flow bundle ships inside the app ZIP, and the
 
 ## Before You Start
 
+> **For your security reviewer:** [SECURITY_CONSIDERATIONS.md](SECURITY_CONSIDERATIONS.md) enumerates every outbound destination this integration talks to, who initiates each call, and with what credential. [PII_Retention_and_Data_Handling.md](PII_Retention_and_Data_Handling.md) covers what data is stored where, and for how long.
+
 ### From TSANet
 
 Two credentials that do two different jobs. You need both, and they are not interchangeable.
