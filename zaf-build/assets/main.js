@@ -1287,11 +1287,11 @@ function showConfirm(msg, callback) {
 // ── Action Handlers ───────────────────────────────────────────────────────────
 function handleAccept(token) {
   if (!agentMayAct()) { showError('Your Zendesk role is not authorized for TSANet actions.'); return; }
-  // Prefill the current ticket id — the sidebar runs on the inbound ticket, so it
-  // is the internal case number. Still editable; a failed lookup must not block
-  // Accept, so fall back to an empty prompt.
+  // The ticket id rides silently as caseNumber — the sidebar runs on the inbound
+  // ticket, so it IS the internal case number and agents no longer type or see it.
+  // A failed lookup must not block Accept; it degrades to an empty caseNumber.
   getTicketId().catch(function() { return ''; }).then(function(tid) {
-    showPrompt('Internal case number (optional):', function(cn) {
+    showPrompt('Additional Instructions (optional):', function(instructions) {
       // TSANet requires engineerEmail to match the company's registered domain.
       // settings.tsanet_username is always domain-valid; use it as the email.
       // Pull the agent's display name for context only (no domain restriction on name).
@@ -1300,12 +1300,12 @@ function handleAccept(token) {
         return tsanetPost('/collaboration-requests/' + token + '/approval', {
           engineerEmail: settings.tsanet_username,
           engineerName:  agent.name || '',
-          caseNumber:    cn || '',
-          nextSteps:     'Accepted.'
+          caseNumber:    tid ? String(tid) : '',
+          nextSteps:     instructions || 'Accepted.'
         });
       }).then(function() { showSuccess('Accepted.'); loadCollaborations(); })
         .catch(function(e) { showError('Accept failed: ' + e.message); });
-    }, tid ? String(tid) : '');
+    });
   });
 }
 function handleReject(token) {
