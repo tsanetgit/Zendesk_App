@@ -106,7 +106,7 @@
             "CheckTicketExists": {
               "Choices": [
                 {
-                  "Next": "TransformForUpdate",
+                  "Next": "ShowTicket",
                   "NumericGreaterThan": 0,
                   "Variable": "$.search.count"
                 }
@@ -180,11 +180,20 @@
               "ResultPath": "$.update",
               "Type": "Action"
             },
+            "ShowTicket": {
+              "ActionName": "zis:tsanet_connect:action:action_zd_get_ticket",
+              "Next": "TransformForUpdate",
+              "Parameters": {
+                "ticket_id.$": "$.search.tickets[0].id"
+              },
+              "ResultPath": "$.zd",
+              "Type": "Action"
+            },
             "TransformForUpdate": {
               "Type": "Action",
               "ActionName": "zis:common:transform:Jq",
               "Parameters": {
-                "expr": "(\"tsanet_status_\" + (.collab.status // \"\" | ascii_downcase)) as $status | ((.collab.respondBy // \"\")[0:10]) as $respond_by | {body: {ticket: {tags: (((.search.tickets[0].tags // []) + [\"tsanet_updated\"]) | unique), safe_update: true, updated_stamp: .search.tickets[0].updated_at, custom_fields: [{id: 1234567892, value: $status}, {id: 1234567893, value: .collab.receiveCompanyName}, {id: 1234567894, value: $respond_by}]}}}",
+                "expr": "(\"tsanet_status_\" + (.collab.status // \"\" | ascii_downcase)) as $status | ((.collab.respondBy // \"\")[0:10]) as $respond_by | {body: {ticket: {tags: (((.zd.ticket.tags // []) + [\"tsanet_updated\"]) | unique), safe_update: true, updated_stamp: .zd.ticket.updated_at, custom_fields: [{id: 1234567892, value: $status}, {id: 1234567893, value: .collab.receiveCompanyName}, {id: 1234567894, value: $respond_by}]}}}",
                 "data.$": "$"
               },
               "ResultPath": "$.xform",
