@@ -26,7 +26,7 @@ Notes for allowlist operators:
 
 Three controls that look alike and do different jobs:
 
-- **Install-time role and group restrictions** (Zendesk-native, per installation) decide who sees the app at all: Admin Center > Apps and integrations > Zendesk Support apps > gear menu on the app > Change settings. Admins and billing admins are two separate roles; select both if both need access. See Quick Start step 3f.
+- **Install-time role and group restrictions** (Zendesk-native, per installation) decide who sees the app at all: Admin Center > Apps and integrations > Zendesk Support apps > gear menu on the app > Change settings. Admins and billing admins are two separate roles; select both if both need access. The restriction applies to the whole installation, every location at once: excluding an agent removes the ticket-sidebar panel and the background poller along with the left-nav entry, so use it only for teams that should see no TSANet surface at all. See Quick Start step 3f.
 - **Allowed action roles** (app setting) decides which roles can invoke TSANet actions inside a visible panel. Defense-in-depth only.
 - **The TSANet Connect API and its credential** are the real authorization boundary. Everything browser-side is UI convenience by comparison.
 

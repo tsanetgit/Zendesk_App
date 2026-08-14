@@ -581,7 +581,9 @@ Two different controls, commonly confused:
 - **Install-time role/group restrictions** (Zendesk-native, per app installation) control **who sees the app at all**: Admin Center > Apps and integrations > Zendesk Support apps > gear menu on the app > Change settings > enable role and/or group restrictions. Admins and billing admins are two separate roles; select both if both need access.
 - **`allowed_action_roles`** (app setting) controls **who can invoke TSANet actions** inside a visible panel. Defense-in-depth only; it deliberately does not hide the app.
 
-Neither is a security boundary; the TSANet Connect API credential is the real authorization control. When a member asks "can we hide this from agents who don't work TSANet cases?", the answer is the install-time restriction, not an app setting.
+The restriction is installation-scoped: it hides EVERY surface at once (ticket sidebar, left-nav deploy screen, background poller). There is no way to hide only the left-nav entry for staff who work TSANet tickets. That is acceptable: the deploy screen refuses non-admins (role check in deploy.js) and Zendesk rejects its account-level ZIS calls for non-admins anyway, so for agents it is a read-only status page. Verified on d3v 2026-08-14: an excluded agent loses the sidebar panel and the nav entry together.
+
+Neither is a security boundary; the TSANet Connect API credential is the real authorization control. When a member asks "can we hide this from agents who don't work TSANet cases?", the answer is the install-time restriction. When they ask "can we hide just the left-nav entry from staff who DO work TSANet tickets?", the answer is no; point at the admin gate instead.
 
 ---
 

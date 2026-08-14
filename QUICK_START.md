@@ -295,12 +295,13 @@ By default every agent sees the TSANet Connect panel, and agents outside **Allow
 
 **Admin Center > Apps and integrations > Zendesk Support apps**, open the gear menu on **TSANet Connect**, choose **Change settings**, then enable **role restrictions** and/or **group restrictions** and select who should see the app. Agents outside the selection get no TSANet panel at all.
 
-Two things bite here:
+Three things to know before you enable it:
 
+- **The restriction hides every surface of the app, not just the left-nav entry.** Role and group restrictions apply to the whole installation: an excluded agent loses the ticket-sidebar panel and the background poller along with the left-nav entry. Use them only for teams that should see no TSANet surface at all.
+- **If your staff work TSANet tickets, the left-nav entry cannot be hidden separately.** Restricting them would take away the ticket panel they work in. That is acceptable as-is: the left-nav deploy screen requires administrator access (the app refuses non-admins, and Zendesk rejects its account-level calls for non-admins anyway), so for a support agent it is a read-only status page.
 - **Admins and billing admins are two separate roles.** Select both if both should keep access, or your billing admins lose the app.
-- **This is the visibility control; Allowed action roles (3c) is the action gate.** One hides the app, the other decides who may click its buttons, and neither is a security boundary: the TSANet Connect API and its credential remain the real authorization control.
 
-You can set this at install time or any time after, and changing it later does not touch the app's settings.
+You can set this at install time or any time after, and changing it later does not touch the app's settings. Visibility is this control, actions are gated by **Allowed action roles** (3c), and neither is a security boundary: the TSANet Connect API and its credential remain the real authorization control.
 
 ---
 
