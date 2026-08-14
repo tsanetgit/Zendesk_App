@@ -573,6 +573,15 @@ cd /path/to/your/app
 zip -r your-app-v1.0.0.zip manifest.json assets/ translations/ -x "*.DS_Store"
 ```
 
+### Hiding the App from Non-TSANet Agents
+
+Two different controls, commonly confused:
+
+- **Install-time role/group restrictions** (Zendesk-native, per app installation) control **who sees the app at all**: Admin Center > Apps and integrations > Zendesk Support apps > gear menu on the app > Change settings > enable role and/or group restrictions. Admins and billing admins are two separate roles; select both if both need access.
+- **`allowed_action_roles`** (app setting) controls **who can invoke TSANet actions** inside a visible panel. Defense-in-depth only; it deliberately does not hide the app.
+
+Neither is a security boundary; the TSANet Connect API credential is the real authorization control. When a member asks "can we hide this from agents who don't work TSANet cases?", the answer is the install-time restriction, not an app setting.
+
 ---
 
 ## ZIS Bearer Token Setup

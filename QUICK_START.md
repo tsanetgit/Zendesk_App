@@ -265,7 +265,7 @@ Zendesk validates the package and shows the installation settings screen.
 
 The **TSANet API password** is a Zendesk **secure setting**: it is stored encrypted, never reaches the front end, and requests using it are proxied server-side by Zendesk.
 
-> **Allowed action roles is a UI gate, not a security boundary.** It controls which roles see and can click the TSANet action buttons. The TSANet Connect API and its credential remain the real authorization control. Role matching is case-insensitive against the agent's Zendesk role name.
+> **Allowed action roles is a UI gate, not a security boundary.** It controls which roles see and can click the TSANet action buttons. The TSANet Connect API and its credential remain the real authorization control. Role matching is case-insensitive against the agent's Zendesk role name. It also does not hide the app itself; to remove the panel from non-TSANet agents entirely, see **3f**.
 
 Click **Install**.
 
@@ -288,6 +288,19 @@ Until this is done the sidebar tells any agent who opens a ticket that TSANet Co
 Open a ticket with **no** TSANet collaboration on it. The **TSANet Connect** panel should appear collapsed to a slim bar (about 44px) reading **"No active TSANet cases"** with a **+ New** button. Click **+ New** and the panel should expand and open the New Collaboration search dialog.
 
 If the sidebar shows an error instead of the compact bar, re-check the API credentials and that the environment setting matches where your account is provisioned.
+
+### 3f. Optional: hide the app from non-TSANet agents
+
+By default every agent sees the TSANet Connect panel, and agents outside **Allowed action roles** see it but cannot act in it ("Your Zendesk role is not authorized for TSANet actions"). If only some of your teams work TSANet cases, hide the app from everyone else with Zendesk's native install-time restrictions. No app setting is involved:
+
+**Admin Center > Apps and integrations > Zendesk Support apps**, open the gear menu on **TSANet Connect**, choose **Change settings**, then enable **role restrictions** and/or **group restrictions** and select who should see the app. Agents outside the selection get no TSANet panel at all.
+
+Two things bite here:
+
+- **Admins and billing admins are two separate roles.** Select both if both should keep access, or your billing admins lose the app.
+- **This is the visibility control; Allowed action roles (3c) is the action gate.** One hides the app, the other decides who may click its buttons, and neither is a security boundary: the TSANet Connect API and its credential remain the real authorization control.
+
+You can set this at install time or any time after, and changing it later does not touch the app's settings.
 
 ---
 
