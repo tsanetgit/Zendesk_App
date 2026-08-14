@@ -1491,12 +1491,20 @@ function sanitizeHtml(html) {
   return doc.body.innerHTML;
 }
 
+// To-text, not sanitize-for-HTML: strips tags, then decodes entities, so
+// markup-shaped TEXT survives decoding (and the &amp; decode runs first, so
+// even double-encoded input reaches a live '<'). The final replace therefore
+// neutralizes every tag opener — '<' followed by an ASCII letter, '/', '!'
+// or '?' — so no output of this function can open a tag in any sink. It is
+// NOT attribute-context safe: '"' and '&' pass through, and esc() remains
+// the rule at HTML sinks (tsanetgit/Zendesk_App#157).
 function stripHtml(html) {
   if (!html) return '';
   return html
     .replace(/<\/p>/gi, '\n').replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/<(?=[A-Za-z\/!?])/g, '&lt;')
     .replace(/\n{3,}/g, '\n\n').trim();
 }
 

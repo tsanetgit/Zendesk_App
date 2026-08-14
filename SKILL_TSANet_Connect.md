@@ -149,7 +149,7 @@ POST /v1/collaboration-requests/{token}/notes
 ```
 
 ### Notes: HTML in Responses
-TSANet returns **note** content (`summary` / `description`) as HTML (e.g. `<p>text</p>`, `<br/>` tags). Strip it to plain text before displaying. (The process form's `adminNote` is the exception — it is authored HTML meant to render, not strip; see **Process Form Rendering** below.)
+TSANet returns **note** content (`summary` / `description`) as HTML (e.g. `<p>text</p>`, `<br/>` tags). Strip it to plain text before displaying. (The process form's `adminNote` is the exception — it is authored HTML meant to render, not strip; see **Process Form Rendering** below.) Note the final replace: because entities decode after tags are stripped, encoded input like `&lt;img onerror=…&gt;` would otherwise decode into live markup, so any tag opener (`<` followed by a letter, `/`, `!` or `?`) is re-encoded. The output can never open a tag, but it is not attribute-context safe — still escape it at HTML sinks.
 ```javascript
 function stripHtml(html) {
   if (!html) return '';
@@ -159,6 +159,7 @@ function stripHtml(html) {
     .replace(/<[^>]+>/g, '')
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
+    .replace(/<(?=[A-Za-z\/!?])/g, '&lt;')
     .trim();
 }
 ```
