@@ -1502,7 +1502,10 @@
         resize();
         return null;
       }
-      return fetch('./tsanet_connect_bundle.json').then(function (r) { return r.text(); });
+      // no-store: ZAF asset URLs are stable across app updates, so a default-cache
+      // fetch right after a ZIP update can return the PREVIOUS version's bundle —
+      // which both fakes an in-sync verdict and gets deployed (#217).
+      return fetch('./tsanet_connect_bundle.json', { cache: 'no-store' }).then(function (r) { return r.text(); });
     }).then(function (text) {
       if (text == null) { return; }
       state.bundleText = text;
