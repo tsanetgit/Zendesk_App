@@ -1230,13 +1230,13 @@ function handleSubmit() {
 // ── Modal helpers ─────────────────────────────────────────────────────────────
 // ZAF runs in a cross-origin iframe — prompt() and confirm() are blocked by
 // the browser sandbox and always return null/false. Use these modal helpers instead.
-function showPrompt(msg, callback) {
+function showPrompt(msg, callback, defaultValue) {
   _modalCb = callback;
   document.getElementById('modal-msg').textContent = msg;
   document.getElementById('modal-input1-label').textContent = '';
   document.getElementById('modal-input1-label').style.display = 'none';
   var inp = document.getElementById('modal-input');
-  inp.value = '';
+  inp.value = defaultValue || '';
   inp.style.display = 'block';
   var wrap2 = document.getElementById('modal-input2-wrap');
   wrap2.style.display = 'none';
@@ -1244,7 +1244,8 @@ function showPrompt(msg, callback) {
   var pubWrap = document.getElementById('modal-public-wrap');
   if (pubWrap) pubWrap.style.display = 'none';
   document.getElementById('tsanet-modal').style.display = 'block';
-  setTimeout(function() { inp.focus(); }, 30);
+  // Select a prefilled value so typing replaces it instead of appending.
+  setTimeout(function() { inp.focus(); if (inp.value) inp.select(); }, 30);
 }
 
 function showPrompt2(msg, label1, label2, callback) {
@@ -1286,20 +1287,25 @@ function showConfirm(msg, callback) {
 // ── Action Handlers ───────────────────────────────────────────────────────────
 function handleAccept(token) {
   if (!agentMayAct()) { showError('Your Zendesk role is not authorized for TSANet actions.'); return; }
-  showPrompt('Internal case number (optional):', function(cn) {
-    // TSANet requires engineerEmail to match the company's registered domain.
-    // settings.tsanet_username is always domain-valid; use it as the email.
-    // Pull the agent's display name for context only (no domain restriction on name).
-    client.get('currentUser').then(function(d) {
-      var agent = d.currentUser || {};
-      return tsanetPost('/collaboration-requests/' + token + '/approval', {
-        engineerEmail: settings.tsanet_username,
-        engineerName:  agent.name || '',
-        caseNumber:    cn || '',
-        nextSteps:     'Accepted.'
-      });
-    }).then(function() { showSuccess('Accepted.'); loadCollaborations(); })
-      .catch(function(e) { showError('Accept failed: ' + e.message); });
+  // Prefill the current ticket id — the sidebar runs on the inbound ticket, so it
+  // is the internal case number. Still editable; a failed lookup must not block
+  // Accept, so fall back to an empty prompt.
+  getTicketId().catch(function() { return ''; }).then(function(tid) {
+    showPrompt('Internal case number (optional):', function(cn) {
+      // TSANet requires engineerEmail to match the company's registered domain.
+      // settings.tsanet_username is always domain-valid; use it as the email.
+      // Pull the agent's display name for context only (no domain restriction on name).
+      client.get('currentUser').then(function(d) {
+        var agent = d.currentUser || {};
+        return tsanetPost('/collaboration-requests/' + token + '/approval', {
+          engineerEmail: settings.tsanet_username,
+          engineerName:  agent.name || '',
+          caseNumber:    cn || '',
+          nextSteps:     'Accepted.'
+        });
+      }).then(function() { showSuccess('Accepted.'); loadCollaborations(); })
+        .catch(function(e) { showError('Accept failed: ' + e.message); });
+    }, tid ? String(tid) : '');
   });
 }
 function handleReject(token) {
