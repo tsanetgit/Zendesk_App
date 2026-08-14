@@ -245,8 +245,8 @@
   }
 
   // ── SLA Breach Detection ──────────────────────────────────────────────────
-  // Every poll cycle: find any OPEN/INFORMATION cases past their respondBy
-  // deadline and add tag tsanet_sla_breached to the corresponding Zendesk ticket.
+  // Every poll cycle: find inbound OPEN cases past their respondBy deadline
+  // and add tag tsanet_sla_breached to the corresponding Zendesk ticket.
   // The tag is only added once (idempotent check prevents repeat notifications).
   // A Zendesk trigger fires on tag addition → emails the assignee.
   function pollForSlaBreaches() {
@@ -261,7 +261,14 @@
       var now = Date.now();
 
       var breached = allActive.filter(function(c) {
-        return c.respondBy && c.responded === false && new Date(c.respondBy).getTime() < now;
+        // Inbound only (tsanetgit/Zendesk_App#166). ?status=OPEN is not
+        // direction-scoped, and on an OUTBOUND case respondBy with
+        // responded=false means the PARTNER has not acknowledged. The trigger
+        // this tag fires directs the assignee to Accept / Reject / Request
+        // Info — actions that do not exist on a case we submitted. Documented
+        // scope (QUICK_START "SLA scope") is the member's own
+        // initial-acknowledgment deadline, which is inbound by definition.
+        return c.direction === 'INBOUND' && c.respondBy && c.responded === false && new Date(c.respondBy).getTime() < now;
       });
 
       if (!breached.length) {
