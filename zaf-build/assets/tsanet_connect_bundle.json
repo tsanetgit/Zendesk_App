@@ -345,7 +345,7 @@
           "requestBody": {
             "engineerEmail": "YOUR_TSANET_API_EMAIL",
             "engineerName": "Zendesk Agent",
-            "caseNumber": "ZD-{{$.ticket_id}}",
+            "caseNumber": "{{$.ticket_id}}",
             "nextSteps": "Accepted via Zendesk."
           }
         }
