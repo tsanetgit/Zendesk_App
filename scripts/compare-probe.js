@@ -363,8 +363,8 @@ async function main() {
     check('no substitution shape contains another site\'s token',
           collisions.length === 0, JSON.stringify(collisions), 'no collisions');
     check('every substitution site is reachable from one table',
-          sites.length === 10, sites.length + ' sites',
-          '10 (6 field ids + shared author + host + email + ARN)');
+          sites.length === 12, sites.length + ' sites',
+          '12 (6 field ids + shared author + host + email + auto-accept mode + nextSteps + ARN)');
   }
 
   // 7. The bundle row is cleared at deploy start, which means a deploy that never
