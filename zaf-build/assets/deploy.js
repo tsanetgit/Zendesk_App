@@ -1294,6 +1294,34 @@
           });
       })
       .then(function () {
+        // 3b. the fixed-name "zendesk" connection, resolved by all seven of the
+        //     bundle's Zendesk-side actions (create/search/get/update ticket and
+        //     the three finish steps). Same advisory contract as 3 — the bundle deploys
+        //     without it — but the runtime consequence is harsher: ZIS refuses to
+        //     start the inbound and field-action flows ("Cannot start flow because
+        //     the connection named 'zendesk' does not exist"), and the engine names only ONE
+        //     missing connection per run, so this and 3 can be a single incident
+        //     that reads as two different errors (Zendesk_App#220). The name is a
+        //     literal on purpose: only the TSANet connection is per-instance (see
+        //     substitute()), and routing this through connName(s) would check the
+        //     wrong connection.
+        return req({ url: '/api/services/zis/connections/' + encodeURIComponent(integrationName(s)) + '?name=zendesk', type: 'GET' })
+          .then(function (r) {
+            if (r.ok) { steps.push({ ok: true, name: 'Zendesk connection "zendesk" exists' }); }
+            else {
+              var renamed = integrationName(s) !== DEFAULT_INTEGRATION;
+              steps.push({ ok: null, name: 'Zendesk connection "zendesk" not confirmed',
+                           detail: 'HTTP ' + r.status + '. The bundle will deploy, but ZIS refuses to start ' +
+                                   'the inbound and field-action flows while this connection is missing. ' +
+                                   'Create it per QUICK_START Step 4a. Not blocking.' +
+                                   (renamed ? ' This instance uses a non-default integration name (' +
+                                    integrationName(s) + '), and connections do not move between ' +
+                                    'integrations: a connection created under "' + DEFAULT_INTEGRATION +
+                                    '" has to be created again under this one.' : '') });
+            }
+          });
+      })
+      .then(function () {
         // 4. downgrade guard. Deploying with field actions off does not uninstall
         //    an already-installed jobspec_field_action — the upload orphans it, and
         //    an orphaned spec still intercepts events while its flow is gone. Say
