@@ -511,6 +511,22 @@ function renderCard(collab) {
   // on OPEN cases where the initial response is still outstanding.
   var showSla = collab.respondBy && collab.responded === false;
 
+  // Partner process-form fields (#221): one row per field with a non-empty
+  // value, flat and displayOrder-sorted. The DTO also carries `section`;
+  // deliberately ignored — a sidebar card doesn't need grouping. No direction
+  // branch: outbound cases carry the values we submitted, equally worth showing.
+  // Every string is partner-controlled, so esc() both halves; values are
+  // pre-stringified because esc() renders falsy input (a literal 0) as ''.
+  var cfRows = (collab.customFields || [])
+    .filter(function (f) { return f && f.value != null && String(f.value).trim() !== ''; })
+    .sort(function (a, b) { return (Number(a.displayOrder) || 0) - (Number(b.displayOrder) || 0); })
+    .map(function (f) {
+      return '<div class="card-row"><span class="card-label">' + esc(String(f.fieldName || 'Field')) +
+             '</span><span class="card-value" style="max-width:60%;white-space:normal;text-align:right;">' +
+             esc(String(f.value)) + '</span></div>';
+    })
+    .join('');
+
   var card = document.createElement('div');
   card.className = 'collab-card';
   card.innerHTML =
@@ -523,6 +539,7 @@ function renderCard(collab) {
       '<div class="card-row"><span class="card-label">Priority</span><span class="card-value">' + esc(collab.priority || '—') + '</span></div>' +
       (showSla ? '<div class="card-row"><span class="card-label">SLA</span><span class="card-value ' + sla.css + '">' + esc(sla.label) + '</span></div>' : '') +
       (collab.summary   ? '<div class="card-row"><span class="card-label">Summary</span><span class="card-value" style="max-width:60%;white-space:normal;text-align:right;">' + esc(collab.summary) + '</span></div>' : '') +
+      cfRows +
     '</div>' +
     '<div class="card-actions"></div>';
 
