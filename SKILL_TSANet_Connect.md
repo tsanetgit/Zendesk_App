@@ -690,6 +690,18 @@ Key facts (full recipe in `zis/README.md` Prerequisites 2a–2c):
 
 ---
 
+## Auto-Accept and Partner Form Fields (v1.0.69+)
+
+**Inbound customFields are surfaced (`tsanetgit/Zendesk_App#221`).** The collaboration READ (`GET /v1/collaboration-requests/{token}`) carries `customFields[]` (`fieldName`, `value`, `section`, `displayOrder`, `type`) — and it comes back **unordered**: sort by `displayOrder` before display, with numeric coercion (`displayOrder` can arrive as a string). Values can be typed (number/boolean) — `tostring` before rendering. The connector renders non-empty values as rows on the sidebar case card and appends a `Partner form fields:` block to the created ticket's description and first comment (searchable). Both surfaces are shape-guarded, and the guards are load-bearing: in the ZIS flow the jq is `(.collab.customFields // [])[]? | objects` — without it a malformed `customFields` kills `BuildSubmitter`, and `flow_handle_ping` has no `Catch`, so the ticket is never created and the webhook is not redelivered (silent data loss); in the sidebar it is `Array.isArray` plus an object-element filter — a throw there locks the panel on its loading spinner.
+
+**Auto-accept ships as an app setting, off by default (`tsanetgit/Zendesk_App#219`).** Two paths with different policies: the `tsanet_auto_accept` checkbox handles the **unconditional** case (the flag substitutes into `BuildSubmitter`'s jq as `AUTO_ACCEPT_MODE` → `on`/`off`, so toggling only takes effect at a bundle redeploy — the deploy screen's Current state card flags toggled-but-not-redeployed; polarity is fail-safe, an unsubstituted bundle evaluates off), and the Zendesk-trigger recipe handles the **conditional** case (trigger sets TSANet Action = Accept at ticket creation; requires field actions; conditions carry the policy). Both go through `action_ts_accept` with the Zendesk ticket id as the bare `caseNumber` and the `tsanet_auto_accept_next_steps` text as `nextSteps` (default "Accepted via Zendesk.", and the same text serves field-action accepts). An in-flow accept failure lands in `AutoAcceptFail`: the ticket gets a manual-accept-needed private comment, the status field stays open, and the case stays OPEN/unresponded on the TSANet side — a failed auto-accept never shows a false accepted state anywhere.
+
+**`engineerEmail` falls back to the TSANet API username** when the engineer-email setting is blank (both satisfy the member-domain rule). It substitutes on every deploy since v1.0.69, because the accept action is now in every bundle.
+
+**Strip-list lesson (`tsanetgit/Zendesk_App#225`):** field-actions-off deploys on v1.0.65–v1.0.67 stripped `action_zd_get_ticket` out from under `flow_handle_ping`'s `ShowTicket` state — updates broke while creates kept working. Fixed in v1.0.69: the strip list holds only the five genuinely `flow_field_action`-exclusive resources, and `scripts/config-matrix-probe.js` CI-enforces post-strip referential integrity (every flow `ActionName` must resolve).
+
+---
+
 ## Zendesk Custom Fields
 
 Create these in Admin Center → Objects and rules → Tickets → Fields:
@@ -788,6 +800,7 @@ Full data map and recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_an
 
 ## TSANet API Gotchas
 
+- **Collaboration-read `customFields` come back unordered** — sort by `displayOrder` (numeric-coerce; it can arrive as a string) before display; values can be typed (number/boolean). See *Auto-Accept and Partner Form Fields*.
 - **Inbound push registration is TWO calls, and the endpoint version matters.** Members read "send TSANet the ingest URL" as an email; it is not. (1) `POST /api/services/zis/inbound_webhooks/generic/{integration}` on **Zendesk** returns the ingest URL, Basic credentials and `uuid`, all shown once. (2) `POST /v1/webhooks` on **TSANet** with `{"callbackUrl": <ingest URL>, "callbackAuth": {"type":"BASIC","username":..,"password":..}}` subscribes TSANet to it. Omit `eventTypes` — the default is both `collaboration-request.created` and `note.created`, which is what the bundle wants. Save the response `id` (for later management) and `secret` (HMAC key, creation-only).
   - **`/v2/webhooks` silently breaks the bundle.** Both endpoints accept a subscription. `/v2/` delivers CloudEvents with prefixed type strings (`org.tsanet.connect.collaboration-request.created`); `flow_handle_ping`'s `GuardCreate` matches the bare `collaboration-request.created` and defaults to `NoOp`, so every delivery returns 200 and creates nothing, with no error anywhere. Verified against the shipped bundle: zero occurrences of `org.tsanet.connect`.
   - `POST /v1/webhooks` and `GET /v1/webhooks` are `deprecated` with `x-sunset: 2027-01-01` in the spec. The CloudEvents migration is `tsanetgit/Zendesk_App#101` (open). Until it ships, v1 is correct and v2 is wrong.
