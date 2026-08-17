@@ -517,13 +517,18 @@ function renderCard(collab) {
   // branch: outbound cases carry the values we submitted, equally worth showing.
   // Every string is partner-controlled, so esc() both halves; values are
   // pre-stringified because esc() renders falsy input (a literal 0) as ''.
-  var cfRows = (collab.customFields || [])
-    .filter(function (f) { return f && f.value != null && String(f.value).trim() !== ''; })
+  // Shape-guarded (QA on #223): customFields present-but-not-an-array, or array
+  // elements that aren't objects, must render nothing — `|| []` passes any
+  // truthy wrong type, and a throw here leaves the whole panel stuck on its
+  // loading spinner (renderAll clears the list first and nothing catches).
+  // Mirrors the jq side's `[]? | objects` guard; values trimmed to match too.
+  var cfRows = (Array.isArray(collab.customFields) ? collab.customFields : [])
+    .filter(function (f) { return f && typeof f === 'object' && f.value != null && String(f.value).trim() !== ''; })
     .sort(function (a, b) { return (Number(a.displayOrder) || 0) - (Number(b.displayOrder) || 0); })
     .map(function (f) {
       return '<div class="card-row"><span class="card-label">' + esc(String(f.fieldName || 'Field')) +
              '</span><span class="card-value" style="max-width:60%;white-space:normal;text-align:right;">' +
-             esc(String(f.value)) + '</span></div>';
+             esc(String(f.value).trim()) + '</span></div>';
     })
     .join('');
 

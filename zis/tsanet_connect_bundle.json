@@ -132,7 +132,7 @@
               "Type": "Action",
               "ActionName": "zis:common:transform:Jq",
               "Parameters": {
-                "expr": "([ (.collab.customFields // [])[] | select(.value != null) | . + {v: (.value | tostring | gsub(\"^\\\\s+|\\\\s+$\"; \"\"))} | select(.v != \"\") ] | sort_by((.displayOrder // 0) | tonumber? // 0)) as $cfs | {n: (.collab.submitterContactDetails.name // \"\"), e: (.collab.submitterContactDetails.email // \"\")} | {submitter_line: (if .n == \"\" and .e == \"\" then \"\" else (\"\\nSubmitter: \" + .n + (if .e == \"\" then \"\" else \" <\" + .e + \">\" end)) end), cf_block: (if ($cfs | length) == 0 then \"\" else (\"\\n\\nPartner form fields:\\n\" + ([$cfs[] | ((.fieldName // \"Field\") | tostring) + \": \" + .v] | join(\"\\n\"))) end), auto_accept: \"AUTO_ACCEPT_MODE\"}",
+                "expr": "([ (.collab.customFields // [])[]? | objects | select(.value != null) | . + {v: (.value | tostring | gsub(\"^\\\\s+|\\\\s+$\"; \"\"))} | select(.v != \"\") ] | sort_by((.displayOrder // 0) | tonumber? // 0)) as $cfs | {n: (.collab.submitterContactDetails.name // \"\"), e: (.collab.submitterContactDetails.email // \"\")} | {submitter_line: (if .n == \"\" and .e == \"\" then \"\" else (\"\\nSubmitter: \" + .n + (if .e == \"\" then \"\" else \" <\" + .e + \">\" end)) end), cf_block: (if ($cfs | length) == 0 then \"\" else (\"\\n\\nPartner form fields:\\n\" + ([$cfs[] | ((.fieldName // \"Field\") | tostring) + \": \" + .v] | join(\"\\n\"))) end), auto_accept: \"AUTO_ACCEPT_MODE\"}",
                 "data.$": "$"
               },
               "ResultPath": "$.submitter",
