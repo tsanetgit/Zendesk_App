@@ -260,6 +260,8 @@ Zendesk validates the package and shows the installation settings screen.
 | **Allowed action roles** | Comma-separated Zendesk role names permitted to invoke TSANet actions, for example `admin, Support Lead`. Empty means all agents | No |
 | **TSANet integration name** | **Leave as `tsanet_connect`** unless Step 1b forced you onto a different name, in which case enter the exact name you registered | No |
 | **Shared author user id** | Numeric user id of a dedicated shared user (for example "IBM via TSANet") to author connector-written comments. Create the user first: email on your own domain (never the partner's), end user or light agent both work. Empty means comments show under the connection user | No |
+| **Auto-accept inbound requests** | **Leave off** unless your team has decided to accept every inbound request automatically. See *Optional: Auto-Accept Inbound Requests* below before enabling | No |
+| **Auto-accept next steps** | The nextSteps text partners see on ZIS-driven accepts. Leave as the default unless auto-accepting, in which case something like `Case accepted automatically; an engineer will follow up shortly.` sets expectations better | No |
 
 `BETA` maps to `connect2.tsanet.net` and `PRODUCTION` to `connect2.tsanet.org`. Set it to match where your account is provisioned.
 
@@ -352,8 +354,10 @@ You do not edit the bundle JSON. The app fills these in from its own settings at
 |---|---|---|
 | Custom field IDs | ticket create / search / update actions | Filled in by **Detect field IDs** in Step 3d |
 | API host | **every** TSANet API action | Ships pointed at Production (`connect2.tsanet.org`); Beta is `connect2.tsanet.net`. It appears in all the TSANet API actions, not just the first, and they move together |
-| `engineerEmail` | the Accept action | Your TSANet API user's email. It must be on your member-registered domain: TSANet's Accept endpoint rejects any other domain |
+| `engineerEmail` | the Accept action | The **TSANet engineer email** setting, or, when that is blank, the TSANet API username. Either way it must be on your member-registered domain: TSANet's Accept endpoint rejects any other domain |
 | OAuth connection name | every TSANet API action | Ships as `tsanet_oauth`. This only differs if you named the Step 2c connection something else |
+| Auto-accept mode | the inbound flow's `GuardAutoAccept` branch | `on` or `off` from the **Auto-accept inbound requests** setting. Ships evaluating off, and an unsubstituted bundle also evaluates off, so the manual curl path can never auto-accept by surprise |
+| `nextSteps` | the Accept action | The **Auto-accept next steps** setting. Ships as `Accepted via Zendesk.`, which is also the default, so leaving the setting alone changes nothing |
 
 ### 4c. Deploy the bundle
 
@@ -523,6 +527,25 @@ curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/v2/macros.json" \
 ```
 
 Macros are per-instance Zendesk configuration and cannot be bundled with the integration, so each account creates its own. The field actions work without macros; the macros are purely a convenience.
+
+---
+
+## Optional: Auto-Accept Inbound Requests
+
+Off by default. When enabled, every inbound collaboration request is accepted the moment its ticket is created: the inbound flow continues past ticket creation into the Accept call, sets **TSANet Status** to accepted, and leaves a private confirmation comment. The partner sees the acceptance seconds after submitting, with your ticket number as the case reference.
+
+**Decide with eyes open before enabling.** Auto-accept satisfies the response SLA instantly, but it also commits you to every inbound case with no triage window: nobody looks at the request before your company accepts it, and the Reject / Request Information options are never exercised. The partner sees your API user as the accepting engineer, and the **Auto-accept next steps** text as the engineer's note, so set that text to something that tells the partner what actually happens next.
+
+There are two ways to get auto-accept, and they suit different policies:
+
+| Path | Suits | How |
+|---|---|---|
+| **The app setting** (this section) | Accepting **everything, unconditionally** | Turn on **Auto-accept inbound requests** in the app settings, set **Auto-accept next steps**, then redeploy the bundle (Step 4c). Acceptance happens inside the inbound flow itself: deterministic, server-side, no Zendesk trigger involved |
+| **A Zendesk trigger** | Accepting **conditionally** (only certain partners, priorities, or business hours) | Requires the *Native Field Actions* section above. Create a trigger: *Ticket Is Created* AND *Tags contain `tsanet_inbound`* (plus your conditions) → set *TSANet Action* to `Accept`. The trigger's field write fires the field-action flow. Your conditions live in the trigger, where Zendesk gives you the full condition builder |
+
+Setting changes take effect at the next bundle deploy, not at save: the flag is substituted into the bundle. The deploy screen's Current state card flags a toggled-but-not-redeployed instance.
+
+If an auto-accept attempt fails (TSANet rejects the call, transient error), the ticket gets a private comment saying the case was **not** accepted and needs a manual Accept; the case stays OPEN on the TSANet side with its SLA clock running, exactly as if auto-accept were off.
 
 ---
 

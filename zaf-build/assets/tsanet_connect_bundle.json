@@ -18,7 +18,7 @@
           "requestBody": {
             "ticket": {
               "comment": {
-                  "author_id": 1234567896,
+                "author_id": 1234567896,
                 "body": "\u2b05\ufe0f New inbound TSANet Collaboration Request from {{$.partner_name}}.{{$.submitter_line}}\n\nPriority: {{$.priority}}\nToken: {{$.requestToken}}\n\n{{$.problem_description}}{{$.custom_fields_block}}\n\nTo respond, set the TSANet Action field (Accept / Request Info / Reject) and submit the ticket, or use the TSANet Connect app if installed.",
                 "public": false
               },
@@ -132,7 +132,7 @@
               "Type": "Action",
               "ActionName": "zis:common:transform:Jq",
               "Parameters": {
-                "expr": "([ (.collab.customFields // [])[]? | objects | select(.value != null) | . + {v: (.value | tostring | gsub(\"^\\\\s+|\\\\s+$\"; \"\"))} | select(.v != \"\") ] | sort_by((.displayOrder // 0) | tonumber? // 0)) as $cfs | {n: (.collab.submitterContactDetails.name // \"\"), e: (.collab.submitterContactDetails.email // \"\")} | {submitter_line: (if .n == \"\" and .e == \"\" then \"\" else (\"\\nSubmitter: \" + .n + (if .e == \"\" then \"\" else \" <\" + .e + \">\" end)) end), cf_block: (if ($cfs | length) == 0 then \"\" else (\"\\n\\nPartner form fields:\\n\" + ([$cfs[] | ((.fieldName // \"Field\") | tostring) + \": \" + .v] | join(\"\\n\"))) end)}",
+                "expr": "([ (.collab.customFields // [])[]? | objects | select(.value != null) | . + {v: (.value | tostring | gsub(\"^\\\\s+|\\\\s+$\"; \"\"))} | select(.v != \"\") ] | sort_by((.displayOrder // 0) | tonumber? // 0)) as $cfs | {n: (.collab.submitterContactDetails.name // \"\"), e: (.collab.submitterContactDetails.email // \"\")} | {submitter_line: (if .n == \"\" and .e == \"\" then \"\" else (\"\\nSubmitter: \" + .n + (if .e == \"\" then \"\" else \" <\" + .e + \">\" end)) end), cf_block: (if ($cfs | length) == 0 then \"\" else (\"\\n\\nPartner form fields:\\n\" + ([$cfs[] | ((.fieldName // \"Field\") | tostring) + \": \" + .v] | join(\"\\n\"))) end), auto_accept: \"AUTO_ACCEPT_MODE\"}",
                 "data.$": "$"
               },
               "ResultPath": "$.submitter",
@@ -140,7 +140,6 @@
             },
             "CreateTicket": {
               "ActionName": "zis:tsanet_connect:action:action_create_ticket",
-              "End": true,
               "Parameters": {
                 "custom_fields_block.$": "$.submitter.cf_block",
                 "partner_name.$": "$.collab.submitCompanyName",
@@ -151,7 +150,8 @@
                 "summary.$": "$.collab.summary"
               },
               "ResultPath": "$.created",
-              "Type": "Action"
+              "Type": "Action",
+              "Next": "GuardAutoAccept"
             },
             "GetCollaboration": {
               "ActionName": "zis:tsanet_connect:action:action_get_collaboration",
@@ -199,6 +199,57 @@
               },
               "ResultPath": "$.xform",
               "Next": "UpdateTicket"
+            },
+            "GuardAutoAccept": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.submitter.auto_accept",
+                  "StringEquals": "on",
+                  "Next": "AutoAccept"
+                }
+              ],
+              "Default": "NoOp"
+            },
+            "AutoAccept": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_ts_accept",
+              "Parameters": {
+                "token.$": "$.collab.token",
+                "ticket_id.$": "$.created.ticket.id"
+              },
+              "ResultPath": "$.ts",
+              "Next": "FinishAutoAccept",
+              "Catch": [
+                {
+                  "ErrorEquals": [
+                    "States.ALL"
+                  ],
+                  "ResultPath": "$.err",
+                  "Next": "AutoAcceptFail"
+                }
+              ]
+            },
+            "FinishAutoAccept": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_zd_finish_status",
+              "Parameters": {
+                "ticket_id.$": "$.created.ticket.id",
+                "message": "TSANet: case accepted automatically (auto-accept setting).",
+                "new_status": "tsanet_status_accepted"
+              },
+              "ResultPath": "$.done",
+              "End": true
+            },
+            "AutoAcceptFail": {
+              "Type": "Action",
+              "ActionName": "zis:tsanet_connect:action:action_zd_finish_fail",
+              "Parameters": {
+                "ticket_id.$": "$.created.ticket.id",
+                "message": "TSANet auto-accept failed - the case was NOT accepted. Accept manually (sidebar Accept or the TSANet Action field). Details: Admin Center > Apps and integrations > Integration logs."
+              },
+              "ResultPath": "$.failnote",
+              "End": true
             }
           }
         },
@@ -242,7 +293,7 @@
           "requestBody": {
             "ticket": {
               "comment": {
-                  "author_id": 1234567896,
+                "author_id": 1234567896,
                 "body": "{{$.message}}",
                 "public": false
               },
@@ -278,7 +329,7 @@
           "requestBody": {
             "ticket": {
               "comment": {
-                  "author_id": 1234567896,
+                "author_id": 1234567896,
                 "body": "{{$.message}}",
                 "public": false
               },
@@ -310,7 +361,7 @@
           "requestBody": {
             "ticket": {
               "comment": {
-                  "author_id": 1234567896,
+                "author_id": 1234567896,
                 "body": "{{$.message}}",
                 "public": false
               },

@@ -119,6 +119,10 @@
   var HOST_PLACEHOLDER = 'connect2.tsanet.org';   // bundle ships Production
   var CONN_PLACEHOLDER = 'tsanet_oauth';
   var EMAIL_PLACEHOLDER = 'YOUR_TSANET_API_EMAIL';
+  var AUTO_ACCEPT_PLACEHOLDER = 'AUTO_ACCEPT_MODE';
+  // Also the shipped bundle's literal value, which is what makes default-value
+  // substitution a byte-identical no-op and keeps the curl path shipping sane text.
+  var NEXT_STEPS_DEFAULT = 'Accepted via Zendesk.';
 
   // Where the app's own releases are published (#171). Public and unauthenticated, so
   // this is read with cors:true — see checkLatestRelease. A repo rename would not break
@@ -136,25 +140,31 @@
   // path, which the docs title "no ZAF app required".
   //
   // These resources are owned EXCLUSIVELY by flow_field_action, so dropping them
-  // leaves the rest of the bundle intact. action_ts_note is deliberately NOT
-  // here: flow_forward_comment uses it too.
+  // leaves the rest of the bundle intact. Exclusivity is the membership test, and
+  // it has been violated silently once: action_zd_get_ticket joined this list
+  // when only flow_field_action's GetTicket used it, then #208 gave
+  // flow_handle_ping a ShowTicket state calling the same action, and the strip
+  // kept deleting it — breaking the update path on every field-actions-off
+  // install (#219 review found it). action_ts_note was deliberately never here
+  // (flow_forward_comment uses it), and since #219 the accept path
+  // (action_ts_accept, action_zd_finish_status, action_zd_finish_fail) is
+  // referenced by flow_handle_ping's auto-accept states — which exist in the
+  // bundle text whether or not the setting is on — so those three cannot be
+  // stripped either.
   var FIELD_ACTION_RESOURCES = [
     'flow_field_action',
     'jobspec_field_action',
-    'action_ts_accept',
     'action_ts_reject',
     'action_ts_info',
-    'action_zd_get_ticket',
-    'action_zd_finish_status',
-    'action_zd_finish_note_receipt',
-    'action_zd_finish_fail'
+    'action_zd_finish_note_receipt'
   ];
 
-  // Settings that only exist to serve FIELD_ACTION_RESOURCES. Every placeholder
-  // they fill lives inside that set — including YOUR_TSANET_API_EMAIL, which
-  // appears solely in action_ts_accept — so with the set dropped, none of them
-  // is needed and none can be left over.
-  var FIELD_ACTION_SETTINGS = ['field_id_action', 'field_id_action_text', 'tsanet_engineer_email'];
+  // Settings that only exist to serve FIELD_ACTION_RESOURCES.
+  // tsanet_engineer_email left this list with #219: YOUR_TSANET_API_EMAIL lives
+  // in action_ts_accept, which the auto-accept states keep in every bundle, so
+  // the email substitutes on every deploy (falling back to tsanet_username,
+  // which is domain-valid by the same rule and required by the manifest).
+  var FIELD_ACTION_SETTINGS = ['field_id_action', 'field_id_action_text'];
 
   // on | off | partial. `partial` is an error rather than a guess: the two field
   // ids are a functional pair, and picking a side would either half-wire the
@@ -181,6 +191,32 @@
       }
     });
     return { text: JSON.stringify(b, null, 2), dropped: dropped };
+  }
+
+  // With field actions off, the retained finish actions (action_zd_finish_status
+  // and action_zd_finish_fail stay in every bundle since #219 — the auto-accept
+  // states reference them) still carry the "clear the TSANet Action field" write.
+  // That field does not exist on a field-actions-off instance, so its placeholder
+  // has no value, survives substitution, and fails the deploy as a leftover
+  // (caught by the #219 config-matrix test). Remove exactly that custom_fields
+  // entry; structural for the same reason as the other strips. An emptied
+  // custom_fields array is deleted outright — a ticket update with only a
+  // comment is valid, an empty array is noise.
+  function stripActionFieldClears(text) {
+    var b = JSON.parse(text);
+    var stripped = [];
+    Object.keys(b.resources || {}).forEach(function (name) {
+      var def = ((b.resources[name].properties || {}).definition || {});
+      var ticket = ((def.requestBody || {}).ticket) || {};
+      if (!ticket.custom_fields) { return; }
+      var before = ticket.custom_fields.length;
+      ticket.custom_fields = ticket.custom_fields.filter(function (f) {
+        return String(f.id) !== '1234567891';
+      });
+      if (ticket.custom_fields.length !== before) { stripped.push(name); }
+      if (!ticket.custom_fields.length) { delete ticket.custom_fields; }
+    });
+    return { text: JSON.stringify(b, null, 2), stripped: stripped };
   }
 
   // With no shared author configured (#178), remove the author_id keys rather
@@ -401,6 +437,7 @@
       var strip = stripFieldActions(out);
       out = strip.text;
       dropped = strip.dropped;
+      out = stripActionFieldClears(out).text;
     }
     // Which settings count as required this run.
     var optional = {};
@@ -459,15 +496,44 @@
     var host = (s.tsanet_env === 'PRODUCTION') ? 'connect2.tsanet.org' : 'connect2.tsanet.net';
     out = out.split(HOST_PLACEHOLDER).join(host);
 
-    var email = (s.tsanet_engineer_email || '').trim();
+    // action_ts_accept is in every bundle since #219 (the auto-accept states
+    // reference it), so this placeholder always needs a value. Blank falls back
+    // to tsanet_username: the API user's email, domain-valid by the same TSANet
+    // rule (main.js uses it the same way for submitterContactDetails), and a
+    // required app setting — so `missing` fires only when BOTH are blank, which
+    // means credentials are absent and the deploy has bigger problems.
+    var email = (s.tsanet_engineer_email || '').trim() || (s.tsanet_username || '').trim();
     if (!email) {
-      // EMAIL_PLACEHOLDER lives only in action_ts_accept, which the strip removes,
-      // so with field actions off there is nothing left for this to fill.
-      if (!optional.tsanet_engineer_email) { missing.push('tsanet_engineer_email'); }
+      missing.push('tsanet_engineer_email (or tsanet_username, its fallback)');
     } else if (/["\\\u0000-\u001f]/.test(email)) {
       invalid.push('tsanet_engineer_email contains a quote, backslash or control character');
     } else {
       out = out.split(EMAIL_PLACEHOLDER).join(jsonStr(email));
+    }
+
+    // Auto-accept (#219). The mode token substitutes INSIDE BuildSubmitter's jq
+    // expression string, where it becomes the flow's $.submitter.auto_accept.
+    // AUTO_ACCEPT_MODE is uppercase, so the integration-name charset
+    // ([a-z0-9_-]) cannot collide with it, and non-numeric, so the field-id \b
+    // alternation cannot touch it. Polarity is fail-safe on purpose: on the
+    // documented curl path the token is unsubstituted, and an unsubstituted
+    // literal !== "on" evaluates to off. Never invert the Choice in the bundle.
+    var autoOn = String(s.tsanet_auto_accept == null ? '' : s.tsanet_auto_accept).trim().toLowerCase() === 'true';
+    out = out.split(AUTO_ACCEPT_PLACEHOLDER).join(autoOn ? 'on' : 'off');
+
+    // The acceptance text is key-anchored like connectionName (the default is a
+    // natural-language string, and a bare split/join would rewrite an identical
+    // phrase anywhere it appeared), replaced via function for the same $$ hazard.
+    // Trim-then-default: a cleared setting must fall back, not substitute "",
+    // because an empty nextSteps is a value TSANet may reject and no member wants.
+    var nextSteps = (s.tsanet_auto_accept_next_steps || '').trim() || NEXT_STEPS_DEFAULT;
+    if (/["\\\u0000-\u001f]/.test(nextSteps)) {
+      invalid.push('tsanet_auto_accept_next_steps contains a quote, backslash or control character');
+    } else {
+      out = out.replace(
+        new RegExp('("nextSteps"\\s*:\\s*)"' + reEsc(NEXT_STEPS_DEFAULT) + '"', 'g'),
+        function (whole, prefix) { return prefix + '"' + jsonStr(nextSteps) + '"'; }
+      );
     }
 
     // Only the TSANet connection is per-instance. The Zendesk-side connection is
@@ -497,6 +563,7 @@
       if (new RegExp('\\b' + ph + '\\b').test(out)) { leftovers.push(ph); }
     });
     if (out.indexOf(EMAIL_PLACEHOLDER) !== -1) { leftovers.push(EMAIL_PLACEHOLDER); }
+    if (out.indexOf(AUTO_ACCEPT_PLACEHOLDER) !== -1) { leftovers.push(AUTO_ACCEPT_PLACEHOLDER); }
     // A renamed instance must carry no trace of the default name. If one survives,
     // the bundle gained an ARN shape this pass does not know about, and half the
     // resources would deploy under a registry the other half does not reference.
@@ -700,6 +767,12 @@
   }).concat([
     { token: HOST_PLACEHOLDER,  shape: 'connect2\\.tsanet\\.(?:org|net)' },
     { token: EMAIL_PLACEHOLDER, shape: '[^"]*' },
+    // Lives inside BuildSubmitter's jq expression string; the deployed value is
+    // exactly on or off, so the shape says so rather than wildcarding wider.
+    { token: AUTO_ACCEPT_PLACEHOLDER, shape: '(?:on|off)' },
+    // The nextSteps site is the default TEXT, not an uppercase token: the deployed
+    // value is whatever the member typed, so the shape is any string content.
+    { token: NEXT_STEPS_DEFAULT, shape: '[^"]*' },
     // The live side's integration name was validated against /^[a-z0-9_-]{1,64}$/ before
     // it was deployed, so match that charset rather than re-validating it here. It
     // cannot match a colon, so it never over-runs into the ARN's later segments.
@@ -796,6 +869,20 @@
     if (!(state.settings.shared_author_user_id || '').toString().trim()) {
       pristineRes = JSON.parse(
         stripSharedAuthor(JSON.stringify({ resources: pristineRes })).text
+      ).resources;
+    }
+
+    // Same normalization for the action-field clears (#219): with field actions
+    // off, substitute() removes the retained finish actions' clear-the-Action-
+    // field entry, so the pristine side must drop it too or the self-check reads
+    // our own output as shape drift on action_zd_finish_status / _fail and every
+    // field-actions-off install sees the "cannot verify its own bundle" banner.
+    // One-sided for the same reason as shared-author: a LIVE bundle still
+    // carrying the clear entry after field actions were turned off is real
+    // drift, and the 'settings' verdict's advice (redeploy) is what removes it.
+    if (fieldActionMode(state.settings) === 'off') {
+      pristineRes = JSON.parse(
+        stripActionFieldClears(JSON.stringify({ resources: pristineRes })).text
       ).resources;
     }
 

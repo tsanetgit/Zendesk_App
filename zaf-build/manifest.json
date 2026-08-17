@@ -133,7 +133,23 @@
       "secure": false,
       "required": false,
       "default": "",
-      "description": "Email used as engineerEmail on TSANet Accept calls. Must be on your member company's registered domain. Required only if you use field actions; the sidebar app does not need it."
+      "description": "Email used as engineerEmail on ZIS-driven TSANet Accept calls (field actions and auto-accept). Must be on your member company's registered domain. Leave blank to use the TSANet API username, which satisfies the same rule."
+    },
+    {
+      "name": "tsanet_auto_accept",
+      "type": "checkbox",
+      "secure": false,
+      "required": false,
+      "default": false,
+      "description": "Automatically accept inbound collaboration requests the moment their ticket is created. Off by default. Changing this requires redeploying the ZIS bundle from the app's deploy screen. Note: auto-accept satisfies the response SLA instantly but skips the triage window (no Reject / Request Info before commitment)."
+    },
+    {
+      "name": "tsanet_auto_accept_next_steps",
+      "type": "text",
+      "secure": false,
+      "required": false,
+      "default": "Accepted via Zendesk.",
+      "description": "The nextSteps text sent to the partner on ZIS-driven accepts (auto-accept and the TSANet Action field). Example: \"Case accepted automatically; an engineer will follow up shortly.\" Changing this requires redeploying the ZIS bundle."
     },
     {
       "name": "shared_author_user_id",

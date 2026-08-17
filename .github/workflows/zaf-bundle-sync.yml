@@ -30,6 +30,7 @@ on:
       - 'zaf-build/assets/tsanet_connect_bundle.json'
       - 'zaf-build/assets/deploy.js'
       - 'scripts/compare-probe.js'
+      - 'scripts/config-matrix-probe.js'
       - '.github/workflows/zaf-bundle-sync.yml'
   pull_request:
     paths:
@@ -37,6 +38,7 @@ on:
       - 'zaf-build/assets/tsanet_connect_bundle.json'
       - 'zaf-build/assets/deploy.js'
       - 'scripts/compare-probe.js'
+      - 'scripts/config-matrix-probe.js'
       - '.github/workflows/zaf-bundle-sync.yml'
 
 jobs:
@@ -99,3 +101,11 @@ jobs:
         run: |
           node --version
           node scripts/compare-probe.js
+
+      # And the per-configuration matrix: field actions x auto-accept, asserting
+      # strip sets, referential integrity of every flow ActionName after the
+      # strip (the tsanetgit/Zendesk_App#225 class), substitution results, and
+      # that compareBundle reads substitute()'s own output as insync in every
+      # configuration -- green-on-default-config is not green (#219 review).
+      - name: Config matrix probes
+        run: node scripts/config-matrix-probe.js
