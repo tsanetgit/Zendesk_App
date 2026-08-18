@@ -26,6 +26,14 @@
 //   the "cannot verify its own bundle" banner. Green on the default config,
 //   broken on the other half of the matrix.
 //
+//   #226: preflight()'s "Verify custom field IDs" iterated every FIELD_PLACEHOLDERS
+//   key, including shared_author_user_id — a USER id that can never appear among
+//   ticket-field ids — so any install with the shared-author feature configured
+//   was hard-blocked from deploying. The correct check (4b, /api/v2/users) passed
+//   right below it. Green on the default config, broken the moment an optional
+//   feature was actually used: the same class as the two above, but in the
+//   pre-flight rather than the bundle.
+//
 // So this probe drives the REAL substitute() and compareBundle() through the full
 // field-actions x auto-accept matrix and asserts, per configuration: the output
 // parses, nothing is left over, the strip sets are exact, every flow state's
@@ -44,7 +52,7 @@ const ROOT = path.resolve(__dirname, '..');
 let src = fs.readFileSync(path.join(ROOT, 'zaf-build/assets/deploy.js'), 'utf8');
 const tail = '\n  boot();\n}());';
 if (!src.includes(tail)) { console.error('FAIL  deploy.js tail anchor not found (boot() call moved?)'); process.exit(1); }
-src = src.replace(tail, '\n  globalThis.__probe = { substitute, fieldActionMode, compareBundle, state };\n}());');
+src = src.replace(tail, '\n  globalThis.__probe = { substitute, fieldActionMode, compareBundle, state, preflight };\n}());');
 
 // Stubs: enough DOM/ZAF for the module to evaluate; boot() is not called.
 const elStub = () => ({ addEventListener() {}, classList: { add() {}, remove() {} }, style: {}, textContent: '', innerHTML: '' });
@@ -149,4 +157,136 @@ for (const fa of [false, true]) for (const aa of [false, true]) {
   report(cmp2.verdict === 'settings', 'drift: nextSteps edited, not redeployed -> settings', 'got ' + cmp2.verdict);
 }
 
-process.exit(failures ? 1 : 0);
+// ------------------------------------------------------------- preflight (#226)
+//
+// Drive the REAL preflight() against a stubbed healthy instance. The class this
+// guards: a pre-flight check false-positive on a valid configuration (#226 —
+// check 2 hard-blocked every shared-author install). Each scenario gets a FRESH
+// eval of deploy.js (fresh memoized DOM, fresh state) so nothing leaks between
+// scenarios, and every network call must hit an explicit route — an unrouted URL
+// throws, which rejects the scenario rather than hanging or passing vacuously.
+
+function freshModule() {
+  const els = {};
+  let router = (opts) => { throw new Error('unrouted: ' + opts.url); };
+  global.document = {
+    getElementById: (id) => els[id] || (els[id] = elStub()),
+    addEventListener() {}, createElement: elStub, querySelector: elStub
+  };
+  global.ZAFClient = { init: () => ({
+    on() {}, get: () => new Promise(() => {}), invoke() {},
+    request: (opts) => Promise.resolve().then(() => router(opts)),
+    metadata: () => new Promise(() => {})
+  }) };
+  (0, eval)(src);
+  return { probe: globalThis.__probe, els, setRouter: (fn) => { router = fn; } };
+}
+
+// Substring-matched routes; first hit wins. A route value is a thunk so a
+// rejection is built per call, matching req()'s reject contract ({status,
+// responseText}) exactly — client.request REJECTS on non-2xx.
+function routes(table) {
+  return (opts) => {
+    for (const [substr, thunk] of table) {
+      if (opts.url.indexOf(substr) !== -1) { return thunk(); }
+    }
+    throw new Error('unrouted: ' + opts.url);
+  };
+}
+
+const SA_ID = '90001122334455';
+const LIVE_FIELDS = () => Promise.resolve({
+  ticket_fields: [111, 222, 333, 444, 555, 666, 777].map((id) => ({ id, title: 'f' + id, type: 'text' }))
+});
+const HEALTHY_ROUTES = [
+  ['/api/v2/ticket_fields.json', LIVE_FIELDS],
+  ['/api/services/zis/connections/', () => Promise.resolve({})],
+  ['/api/v2/users/' + SA_ID + '.json',
+    () => Promise.resolve({ user: { name: 'Partner via TSANet', role: 'end-user', suspended: false } })]
+];
+
+function runPreflight(settings, table) {
+  const m = freshModule();
+  m.setRouter(routes(table));
+  m.probe.state.bundleText = bundle;
+  m.probe.state.settings = settings;
+  const watchdog = new Promise((_, rej) => setTimeout(() => rej(new Error('preflight timed out (5s) — a request neither resolved nor rejected')), 5000));
+  return Promise.race([m.probe.preflight(), watchdog]).then(() => ({
+    ok: m.probe.state.preflightOk,
+    deployDisabled: els(m, 'deploy-btn').disabled,
+    html: els(m, 'preflight-steps').innerHTML
+  }));
+  function els(mod, id) { return mod.els[id] || {}; }
+}
+
+(async () => {
+  const saBase = Object.assign({}, base, FA, {
+    tsanet_auto_accept: false, tsanet_auto_accept_next_steps: '',
+    shared_author_user_id: SA_ID
+  });
+
+  // (a) The #226 case: fully configured healthy instance, shared author SET.
+  //     Must be deployable, via the RIGHT check: 4b resolved the user.
+  try {
+    const r = await runPreflight(saBase, HEALTHY_ROUTES);
+    const problems = [];
+    if (r.ok !== true) problems.push('preflightOk=' + r.ok);
+    if (r.deployDisabled !== false) problems.push('deploy-btn.disabled=' + r.deployDisabled);
+    if (r.html.indexOf('No such field') !== -1) problems.push('check 2 false-positived: ' + r.html.match(/No such field[^<]*/));
+    if (r.html.indexOf('Shared author: Partner via TSANet') === -1) problems.push('check 4b did not resolve the shared author');
+    report(!problems.length, 'preflight: shared author configured, healthy instance -> Deploy enabled', problems.join('\n      '));
+  } catch (e) { report(false, 'preflight: shared author configured, healthy instance -> Deploy enabled', String(e)); }
+
+  // (b) Check 2 keeps its recall, with precision: a genuinely wrong field id
+  //     still blocks, and the failure names ONLY the field id, never the
+  //     shared author. This is the assertion the #226 fix's revert flips.
+  try {
+    const r = await runPreflight(Object.assign({}, saBase, { field_id_token: '999' }), HEALTHY_ROUTES);
+    const problems = [];
+    if (r.ok !== false) problems.push('preflightOk=' + r.ok + ' (bogus field id was not caught)');
+    if (r.deployDisabled !== true) problems.push('deploy-btn.disabled=' + r.deployDisabled);
+    if (r.html.indexOf('field_id_token=999') === -1) problems.push('failure detail does not name field_id_token=999');
+    if (r.html.indexOf('shared_author_user_id=') !== -1) problems.push('check 2 still flags shared_author_user_id');
+    report(!problems.length, 'preflight: bogus field id blocks; shared author not blamed', problems.join('\n      '));
+  } catch (e) { report(false, 'preflight: bogus field id blocks; shared author not blamed', String(e)); }
+
+  // (c) 4b's advisory polarity: an unresolvable shared author user warns but
+  //     never blocks (a wrong id is SILENT at runtime, not broken — probed on
+  //     d3v 2026-08-07; see the 4b comment in deploy.js).
+  try {
+    const table = [
+      ['/api/v2/users/', () => Promise.reject({ status: 404, responseText: '{"error":"RecordNotFound"}' })]
+    ].concat(HEALTHY_ROUTES);
+    const r = await runPreflight(saBase, table);
+    const problems = [];
+    if (r.ok !== true) problems.push('preflightOk=' + r.ok + ' (advisory check blocked the deploy)');
+    if (r.deployDisabled !== false) problems.push('deploy-btn.disabled=' + r.deployDisabled);
+    if (r.html.indexOf('Shared author user not found') === -1) problems.push('missing the advisory row');
+    report(!problems.length, 'preflight: shared author 404 warns, does not block', problems.join('\n      '));
+  } catch (e) { report(false, 'preflight: shared author 404 warns, does not block', String(e)); }
+
+  // (d) The coverage the #226 fix must NOT lose: a non-numeric shared author id
+  //     is still rejected — by check 1 (substitute()'s digits-only validation),
+  //     not by check 2's field lookup.
+  try {
+    const r = await runPreflight(Object.assign({}, saBase, { shared_author_user_id: 'abc' }), HEALTHY_ROUTES);
+    const problems = [];
+    if (r.ok !== false) problems.push('preflightOk=' + r.ok + ' (non-numeric id was not caught)');
+    if (r.html.indexOf('must be digits only') === -1) problems.push('check 1 did not reject the non-numeric id');
+    if (r.html.indexOf('shared_author_user_id=abc') !== -1) problems.push('check 2 flagged it (should be check 1)');
+    report(!problems.length, 'preflight: non-numeric shared author id still blocks via check 1', problems.join('\n      '));
+  } catch (e) { report(false, 'preflight: non-numeric shared author id still blocks via check 1', String(e)); }
+
+  // (e) The default half of the class: shared author UNSET must stay green,
+  //     with no shared-author row at all (4b skips blanks).
+  try {
+    const r = await runPreflight(Object.assign({}, saBase, { shared_author_user_id: '' }), HEALTHY_ROUTES);
+    const problems = [];
+    if (r.ok !== true) problems.push('preflightOk=' + r.ok);
+    if (r.deployDisabled !== false) problems.push('deploy-btn.disabled=' + r.deployDisabled);
+    if (r.html.indexOf('Shared author') !== -1) problems.push('a shared-author row rendered for a blank setting');
+    report(!problems.length, 'preflight: shared author unset stays green, no 4b row', problems.join('\n      '));
+  } catch (e) { report(false, 'preflight: shared author unset stays green, no 4b row', String(e)); }
+
+  process.exit(failures ? 1 : 0);
+})();
