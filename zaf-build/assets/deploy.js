@@ -1259,6 +1259,12 @@
         var bad = [];
         Object.keys(FIELD_PLACEHOLDERS).forEach(function (ph) {
           var key = FIELD_PLACEHOLDERS[ph];
+          // A USER id, not a ticket-field id (#178) — it can never appear in
+          // ticket_fields, so checking it here blocked every shared-author
+          // deploy (#226). Check 4b below validates it against /api/v2/users;
+          // a non-numeric value is still caught above by check 1 (substitute()
+          // rejects any non-blank FIELD_PLACEHOLDERS value that is not digits).
+          if (key === 'shared_author_user_id') { return; }
           var id = (s[key] || '').toString().trim();
           if (id && !live[id]) { bad.push(key + '=' + id); }
         });
