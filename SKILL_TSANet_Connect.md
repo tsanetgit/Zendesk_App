@@ -208,8 +208,8 @@ function sanitizeHtml(html) {
 }
 ```
 
-### Accept Endpoint — Hidden Required Field
-The `POST /v1/collaboration-requests/{token}/approval` endpoint has an **undocumented required field**: `engineerEmail`. Omitting it returns "Error processing request" with no helpful message.
+### Accept Endpoint — Required Field, Undocumented Domain Rule
+The `POST /v1/collaboration-requests/{token}/approval` endpoint requires `engineerEmail`. The specification marks it required, but omitting it still returns "Error processing request" with no helpful message.
 
 Additionally, `engineerEmail` **must be from your company's TSANet-registered domain**. You cannot use a Zendesk agent's personal email — it will fail domain validation. Use your TSANet API username (the dedicated API user email) as the value.
 
@@ -756,7 +756,7 @@ Full data map and recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_an
 | Symptom | Root Cause | Fix |
 |---|---|---|
 | Action buttons 2–4 do nothing silently | `prompt()`/`confirm()` blocked in cross-origin iframes | Replace with custom inline modal HTML |
-| Accept returns "Error processing request" | `engineerEmail` required but undocumented | Include `engineerEmail` in approval POST body |
+| Accept returns "Error processing request" | `engineerEmail` omitted (required by the spec; the error does not say so) | Include `engineerEmail` in approval POST body |
 | Accept fails with domain validation error | Agent's Zendesk email ≠ TSANet company domain | Use `settings.tsanet_username` as `engineerEmail` |
 | Notes show raw HTML tags | TSANet returns HTML-formatted note `summary`/`description` | Add `stripHtml()` helper; apply before display |
 | Picklist (SELECT) field shows all choices as one combined option | `options` string is newline-delimited (CRLF), not comma; `selections[]` often empty | Split `options` on `\r\n`/`\n` (fall back to commas); prefer `selections[].value` |
@@ -822,8 +822,8 @@ Full data map and recipes: [PII_Retention_and_Data_Handling.md](PII_Retention_an
 - [ ] Get TSANet API credentials from membership@tsanet.org
 - [ ] Create 5 Zendesk custom fields (Token, Tokens Multi, Status, Partner, Respond By)
 - [ ] Run **Detect field IDs** → **Apply** from the app's nav-bar screen (do not copy IDs from Admin Center URLs)
-- [ ] Create ZIS OAuth client in Admin Center
-- [ ] Create `tsanet_connect` ZIS integration via API
+- [ ] Create the ZIS integration via API under your own globally unique name (`tsanet_connect` is already claimed — see "ZIS Integration Naming")
+- [ ] Use the OAuth client ZIS creates for that integration — do not create one in Admin Center (hand-created clients are refused with `integration mismatch`)
 - [ ] Build ZAF app (use custom modal — no `prompt()`/`confirm()`)
 - [ ] Test Accept with `engineerEmail` = `tsanet_username`
 - [ ] Verify note add uses Subject+Details two-field pattern
