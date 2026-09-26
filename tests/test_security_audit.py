@@ -61,7 +61,7 @@ def _load(path: pathlib.Path, name: str):
 audit = _load(AUDIT_PATH, "security_audit")
 
 # ── check names, centralized (assertion convention 2) ───────────────────
-DEP_CHECK = "no calls to sunsetting endpoints"
+DEP_CHECK = "no unexcused calls to sunsetting endpoints"
 READ_CHECK = "every file in deprecation scope was read"
 ANCHOR_CHECK = "the v1-base anchor is readable in every bundle file"
 STALE_CHECK = "every audit marker follows exactly one call it names"
@@ -1096,6 +1096,40 @@ def test_allow_marker_check_passes_without_a_current_allow_marker_160(
     assert r[DELIBERATE_CHECK]["status"] == "PASS"
     assert r[DELIBERATE_CHECK]["detail"] == "no call carries a current allow marker"
     assert r[DEP_CHECK]["status"] == "WARN"
+
+
+def test_sunset_pass_does_not_deny_an_excused_call_160(tmp_path):
+    """#160: with every remaining call excused by a current allow marker,
+    the sunset check PASSed with "no known-deprecated endpoint usage found"
+    beside the WARN listing that very call. The PASS stays a PASS, so the
+    exit code does not move, but it now says what is true: nothing
+    unexcused, and where the excused call is reported."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js":
+            anchor_block(V1) + "\n" + rel_call() + "  "
+            + marker(until="2026-12-31")})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[DEP_CHECK]["status"] == "PASS"
+    assert r[DEP_CHECK]["detail"].startswith(
+        "no unexcused calls; 1 call(s) excused by a current allow marker")
+    assert DELIBERATE_CHECK in r[DEP_CHECK]["detail"]
+    assert r[DELIBERATE_CHECK]["status"] == "WARN"
+    assert not [c for c, rec in r.items()
+                if "no known-deprecated endpoint usage found" in rec["detail"]]
+    assert "FAIL" not in {rec["status"] for rec in r.values()}
+
+
+def test_sunset_pass_is_plain_with_no_calls_at_all_160(tmp_path):
+    """#160 acceptance: with nothing marked and nothing unmarked, the
+    sunset check still reads as a plain PASS."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": anchor_block(V1) + "\nvar x = 1;"})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[DEP_CHECK]["status"] == "PASS"
+    assert r[DEP_CHECK]["detail"] == "no known-deprecated endpoint usage found"
+    assert r[DELIBERATE_CHECK]["status"] == "PASS"
 
 
 # ── counts and their detail lines read the same list (#194) ─────────────

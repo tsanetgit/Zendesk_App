@@ -1770,9 +1770,23 @@ def check_deprecated_endpoints(root, scan, today=None):
         record("PASS", "no sunsetting calls carry a current allow marker",
                "no call carries a current allow marker", cat)
 
+    # Named for what `found` holds: calls no marker excuses. A degrades
+    # marker never excuses and an allow marker stops excusing inside the
+    # window, so both keep their call here, and the name is true in every
+    # state. It was "no calls to sunsetting endpoints", which PASSed with
+    # "no known-deprecated endpoint usage found" while a call excused by a
+    # current allow marker sat in the shipped bundle (#160). `found` empty
+    # with a marked call can only mean still_marked: a superseded or
+    # degrades-marked call is in `found`.
     if not found:
-        record("PASS", "no calls to sunsetting endpoints",
-               "no known-deprecated endpoint usage found", cat)
+        if still_marked:
+            record("PASS", "no unexcused calls to sunsetting endpoints",
+                   f"no unexcused calls; {len(still_marked)} call(s) excused by "
+                   f"a current allow marker are reported under 'no sunsetting "
+                   f"calls carry a current allow marker'", cat)
+        else:
+            record("PASS", "no unexcused calls to sunsetting endpoints",
+                   "no known-deprecated endpoint usage found", cat)
         return
 
     days = _sunset_urgency(hit_dates, today)
@@ -1781,10 +1795,10 @@ def check_deprecated_endpoints(root, scan, today=None):
         n = abs(days)
         unit = "day" if n == 1 else "days"
         when = f"{days} {unit} away" if days >= 0 else f"{n} {unit} PAST"
-        record("FAIL", "no calls to sunsetting endpoints",
+        record("FAIL", "no unexcused calls to sunsetting endpoints",
                f"nearest sunset is {when} (threshold {SUNSET_FAIL_WITHIN_DAYS}d): {detail}", cat)
     else:
-        record("WARN", "no calls to sunsetting endpoints",
+        record("WARN", "no unexcused calls to sunsetting endpoints",
                f"nearest sunset in {days} days: {detail}", cat)
 
 
