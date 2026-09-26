@@ -67,7 +67,7 @@ ANCHOR_CHECK = "the v1-base anchor is readable in every bundle file"
 STALE_CHECK = "every audit marker follows exactly one call it names"
 DATED_CHECK = "every audit marker is complete for its kind"
 DEGRADES_CHECK = "no calls that die at their sunset remain"
-DELIBERATE_CHECK = "no deliberate sunsetting calls remain"
+DELIBERATE_CHECK = "no sunsetting calls carry a current allow marker"
 TREE_CHECK = "the scanned tree is exactly this tree"
 DRIFT_CHECK = "duplicated bundle helpers stay identical"
 SECRETS_CHECK = "no embedded credentials anywhere in the repository"
@@ -1072,6 +1072,30 @@ def test_readable_workflows_still_pass_201(tmp_path):
     assert r[WF_PERMS_CHECK]["status"] == "PASS"
     assert r[WF_INJECT_CHECK]["status"] == "PASS"
     assert r[WF_PIN_CHECK]["status"] == "PASS"
+
+
+@pytest.mark.parametrize("line_marker", [
+    lambda: marker(kind=DEGRADES, tracker="#101"),
+    lambda: marker(until="soon"),
+    lambda: marker(until="2025-06-01"),
+], ids=["degrades", "malformed-allow", "expired-allow"])
+def test_allow_marker_check_passes_without_a_current_allow_marker_160(
+        tmp_path, line_marker):
+    """#160 review: the check was named "no deliberate sunsetting calls
+    remain" and PASSed beside the degrades WARN on "1 deliberate call(s)",
+    two opposite readings of one call, live in the shipped tree. It lists
+    calls under a CURRENT allow marker, so it is named for that. A degrades
+    marker is not an allow marker, and an expired or malformed allow marker
+    is not current, so each of these PASSes and the name is true. The call
+    itself stays a finding in every case."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js":
+            anchor_block(V1) + "\n" + rel_call() + "  " + line_marker()})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[DELIBERATE_CHECK]["status"] == "PASS"
+    assert r[DELIBERATE_CHECK]["detail"] == "no call carries a current allow marker"
+    assert r[DEP_CHECK]["status"] == "WARN"
 
 
 # ── counts and their detail lines read the same list (#194) ─────────────

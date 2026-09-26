@@ -1757,10 +1757,18 @@ def check_deprecated_endpoints(root, scan, today=None):
                 f"{len(superseded)} marker(s) no longer excusing, because the sunset "
                 f"is within {SUNSET_FAIL_WITHIN_DAYS} days; those calls are reported "
                 f"as findings rather than as deliberate: " + "; ".join(superseded))
-        record("WARN", "no deliberate sunsetting calls remain", " | ".join(parts), cat)
+        record("WARN", "no sunsetting calls carry a current allow marker",
+               " | ".join(parts), cat)
     else:
-        record("PASS", "no deliberate sunsetting calls remain",
-               "no audit-allow-marked calls in the tree", cat)
+        # Named for what it lists: calls under a current allow marker, whether
+        # the marker still excuses (still_marked) or no longer can because the
+        # sunset is inside the window (superseded). It was "no deliberate
+        # sunsetting calls remain", which PASSed beside the degrades WARN on
+        # "1 deliberate call(s)", two opposite readings of one call. An expired,
+        # undated or malformed allow marker is not current, so it is reported
+        # by the completeness check and not here (#160 review).
+        record("PASS", "no sunsetting calls carry a current allow marker",
+               "no call carries a current allow marker", cat)
 
     if not found:
         record("PASS", "no calls to sunsetting endpoints",
