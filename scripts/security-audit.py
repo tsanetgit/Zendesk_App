@@ -1701,23 +1701,27 @@ def check_deprecated_endpoints(root, scan, today=None):
                "audit-anchor declaration", cat)
 
     if stale_markers:
-        record("WARN", "every audit-allow marker excuses a real call",
-               "marker excused nothing — stale, misspelled key, or the call it "
-               "named has moved: " + "; ".join(sorted(set(stale_markers))), cat)
+        record("WARN", "every audit marker follows exactly one call it names",
+               "marker credits no call: a marker counts only when it follows "
+               "exactly one call to its endpoint on the same line. Check for a "
+               "misspelled key, a moved, migrated or deleted call, a second "
+               "call on the line, or a marker placed before its call: "
+               + "; ".join(sorted(set(stale_markers))), cat)
     else:
-        record("PASS", "every audit-allow marker excuses a real call",
-               "no unused audit-allow markers", cat)
+        record("PASS", "every audit marker follows exactly one call it names",
+               "no unused audit markers", cat)
 
     # An undated or expired marker is a FAIL rather than a WARN: it looks like
     # a considered exemption in review while granting nothing, so the call it
     # sits on is flagged AND the marker is called out, and neither reading is
     # left to be inferred from the other.
     if bad_markers:
-        record("FAIL", "every audit-allow marker is dated and current",
+        record("FAIL", "every audit marker is complete for its kind",
                "; ".join(sorted(set(bad_markers))), cat)
     else:
-        record("PASS", "every audit-allow marker is dated and current",
-               "no undated or expired audit-allow markers", cat)
+        record("PASS", "every audit marker is complete for its kind",
+               "no undated, malformed or expired allow markers, and no "
+               "untracked degrades markers", cat)
 
     # A valid marker stops a call being a FINDING; it never stops it being
     # REPORTED. #151: without this the suite returned PASS at exit 0 with a
