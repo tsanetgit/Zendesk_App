@@ -1702,7 +1702,7 @@ def check_deprecated_endpoints(root, scan, today=None):
 
     if stale_markers:
         record("WARN", "every audit marker names a real call",
-               "marker excused nothing — stale, misspelled key, or the call it "
+               "marker matched no call — stale, misspelled key, or the call it "
                "named has moved: " + "; ".join(sorted(set(stale_markers))), cat)
     else:
         record("PASS", "every audit marker names a real call",
@@ -1713,11 +1713,12 @@ def check_deprecated_endpoints(root, scan, today=None):
     # sits on is flagged AND the marker is called out, and neither reading is
     # left to be inferred from the other.
     if bad_markers:
-        record("FAIL", "every audit marker is dated and current",
+        record("FAIL", "every audit marker is complete for its kind",
                "; ".join(sorted(set(bad_markers))), cat)
     else:
-        record("PASS", "every audit marker is dated and current",
-               "no undated or expired audit markers", cat)
+        record("PASS", "every audit marker is complete for its kind",
+               "no undated, malformed or expired allow markers, and no "
+               "untracked degrades markers", cat)
 
     # A valid marker stops a call being a FINDING; it never stops it being
     # REPORTED. #151: without this the suite returned PASS at exit 0 with a
