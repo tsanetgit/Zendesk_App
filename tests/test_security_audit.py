@@ -32,6 +32,7 @@ import datetime
 import importlib.util
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -1096,6 +1097,47 @@ def test_marked_call_count_matches_its_rendered_list_194(tmp_path):
     stated = int(r["detail"].split(" ", 1)[0])
     listed = r["detail"].count("zaf-build/assets/")
     assert stated == listed, f"count says {stated}, list shows {listed}"
+
+
+@pytest.mark.parametrize("kind,today,check,label", [
+    (DEGRADES, JAN1, DEGRADES_CHECK,
+     "deliberate call(s) that do NOT survive their sunset"),
+    (None, JAN1, DELIBERATE_CHECK, "deliberate call(s) still in the tree"),
+    (None, datetime.date(2026, 10, 3), DELIBERATE_CHECK,
+     "marker(s) no longer excusing"),
+], ids=["degrading", "still-marked", "superseded"])
+def test_every_count_matches_its_list_on_a_duplicated_scan_194(
+        tmp_path, kind, today, check, label):
+    """#194 named two of these three counts and the fix (#202) covered all
+    three, but only the first was pinned: restoring the original shape
+    (count the raw list, render its deduped copy) at either of the other two
+    left the suite green.
+
+    The duplicate comes from the enumeration, as in #194's own receipt,
+    which repeated each path three times: here the same path is handed
+    over twice, so the same call is scanned twice. Deliberately not the
+    cross-spelling line the test above uses. That input only duplicates
+    because one marker is credited once per spelling, which
+    tsanetgit/Zendesk_App#230 proposes to change, and a test whose input
+    stops producing a duplicate passes on the defect it exists to catch.
+    The same limit applies here: if check_deprecated_endpoints ever
+    dedupes scan.paths itself, this input stops duplicating and this test
+    goes vacuous."""
+    body = (anchor_block(V1) + "\n" + rel_call() + "  "
+            + marker(kind=kind, until=None if kind else "2026-12-31",
+                     tracker="#101" if kind else None))
+    root, scan = tree(tmp_path, {"zaf-build/assets/main.js": body})
+    scan = scan._replace(paths=scan.paths * 2)
+    audit.check_deprecated_endpoints(root, scan, today=today)
+    r = by_check()[check]
+    assert r["status"] == "WARN"
+    part = [p for p in r["detail"].split(" | ") if label in p]
+    assert len(part) == 1, r["detail"]
+    m = re.match(r"(\d+) " + re.escape(label), part[0])
+    assert m, part[0]
+    stated = int(m.group(1))
+    listed = part[0].count("zaf-build/assets/main.js:")
+    assert stated == listed == 1, f"count says {stated}, list shows {listed}"
 
 
 # ── meta: this file is invisible to the audit it tests ──────────────────
