@@ -1701,11 +1701,14 @@ def check_deprecated_endpoints(root, scan, today=None):
                "audit-anchor declaration", cat)
 
     if stale_markers:
-        record("WARN", "every audit marker names a real call",
-               "marker matched no call — stale, misspelled key, or the call it "
-               "named has moved: " + "; ".join(sorted(set(stale_markers))), cat)
+        record("WARN", "every audit marker follows exactly one call it names",
+               "marker credits no call: a marker counts only when it follows "
+               "exactly one call to its endpoint on the same line. Check for a "
+               "misspelled key, a moved, migrated or deleted call, a second "
+               "call on the line, or a marker placed before its call: "
+               + "; ".join(sorted(set(stale_markers))), cat)
     else:
-        record("PASS", "every audit marker names a real call",
+        record("PASS", "every audit marker follows exactly one call it names",
                "no unused audit markers", cat)
 
     # An undated or expired marker is a FAIL rather than a WARN: it looks like

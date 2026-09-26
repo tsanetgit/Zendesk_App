@@ -63,7 +63,7 @@ audit = _load(AUDIT_PATH, "security_audit")
 DEP_CHECK = "no calls to sunsetting endpoints"
 READ_CHECK = "every file in deprecation scope was read"
 ANCHOR_CHECK = "the v1-base anchor is readable in every bundle file"
-STALE_CHECK = "every audit marker names a real call"
+STALE_CHECK = "every audit marker follows exactly one call it names"
 DATED_CHECK = "every audit marker is complete for its kind"
 DEGRADES_CHECK = "no calls that die at their sunset remain"
 DELIBERATE_CHECK = "no deliberate sunsetting calls remain"
@@ -634,6 +634,32 @@ def test_stale_marker_warn_names_the_key_168(tmp_path):
     audit.check_deprecated_endpoints(root, scan, today=JAN1)
     r = by_check()[STALE_CHECK]
     assert r["status"] == "WARN" and "v1-typo-key" in r["detail"]
+
+
+@pytest.mark.parametrize("line,cause,call_status", [
+    (lambda: rel_call() + "; " + rel_call() + "  " + marker(until="2026-12-31"),
+     "a second call on the line", "WARN"),
+    (lambda: "/* " + ALLOW + ": v1-webhooks until 2026-12-31 */ " + rel_call(),
+     "a marker placed before its call", "WARN"),
+    (lambda: rel_call(version=V2) + "  " + marker(until="2026-12-31"),
+     "a moved, migrated or deleted call", "PASS"),
+], ids=["two-calls", "marker-before-call", "migrated-call"])
+def test_uncredited_marker_warn_states_the_rule_168(tmp_path, line, cause,
+                                                    call_status):
+    """#168 round 3: a correctly keyed marker on a two-call line, or ahead of
+    its call, is uncredited, and the WARN blamed a typo or a moved call. The
+    detail now states the crediting rule itself, so it is true whatever the
+    cause, and names each of these so the author knows whether to fix the
+    line, delete the marker, or hunt for a typo."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": baseurl_fn() + "\n" + line()})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[STALE_CHECK]["status"] == "WARN"
+    assert "follows exactly one call to its endpoint" in r[STALE_CHECK]["detail"]
+    assert cause in r[STALE_CHECK]["detail"]
+    # A call still on v1 flags whatever its marker says; a migrated one is clear.
+    assert r[DEP_CHECK]["status"] == call_status
 
 
 @pytest.mark.parametrize("until,token", [
