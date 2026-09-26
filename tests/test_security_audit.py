@@ -1074,20 +1074,22 @@ def test_readable_workflows_still_pass_201(tmp_path):
     assert r[WF_PIN_CHECK]["status"] == "PASS"
 
 
-@pytest.mark.parametrize("line_marker", [
-    lambda: marker(kind=DEGRADES, tracker="#101"),
-    lambda: marker(until="soon"),
-    lambda: marker(until="2025-06-01"),
-], ids=["degrades", "malformed-allow", "expired-allow"])
+@pytest.mark.parametrize("line_marker,completeness", [
+    (lambda: marker(kind=DEGRADES, tracker="#101"), "PASS"),
+    (lambda: marker(until="soon"), "FAIL"),
+    (lambda: marker(until="2025-06-01"), "FAIL"),
+    (lambda: marker(), "FAIL"),
+], ids=["degrades", "malformed-allow", "expired-allow", "undated-allow"])
 def test_allow_marker_check_passes_without_a_current_allow_marker_160(
-        tmp_path, line_marker):
+        tmp_path, line_marker, completeness):
     """#160 review: the check was named "no deliberate sunsetting calls
     remain" and PASSed beside the degrades WARN on "1 deliberate call(s)",
     two opposite readings of one call, live in the shipped tree. It lists
     calls under a CURRENT allow marker, so it is named for that. A degrades
     marker is not an allow marker, and an expired or malformed allow marker
     is not current, so each of these PASSes and the name is true. The call
-    itself stays a finding in every case."""
+    itself stays a finding in every case, and an allow marker that is not
+    current is reported by the completeness check instead."""
     root, scan = tree(tmp_path, {
         "zaf-build/assets/main.js":
             anchor_block(V1) + "\n" + rel_call() + "  " + line_marker()})
@@ -1096,6 +1098,7 @@ def test_allow_marker_check_passes_without_a_current_allow_marker_160(
     assert r[DELIBERATE_CHECK]["status"] == "PASS"
     assert r[DELIBERATE_CHECK]["detail"] == "no call carries a current allow marker"
     assert r[DEP_CHECK]["status"] == "WARN"
+    assert r[DATED_CHECK]["status"] == completeness
 
 
 def test_sunset_pass_does_not_deny_an_excused_call_160(tmp_path):
