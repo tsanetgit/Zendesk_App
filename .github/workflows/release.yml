@@ -85,11 +85,12 @@ jobs:
 
           # 2. An audit record must exist, parse, and cover this commit.
           #
-          # Validated in ONE python call that either prints both fields or exits
-          # nonzero. A partial read is the dangerous case: a missing key that
-          # becomes an empty string, compared numerically, errors and reads as
-          # "no findings" — assurance manufactured from a parse failure, which is
-          # the #108 failure mode in a new place.
+          # Validated in ONE python call that either prints its fields as one
+          # keyed JSON object or exits nonzero (#140). A partial read is the
+          # dangerous case: a missing key that becomes an empty string,
+          # compared numerically, errors and reads as "no findings" — assurance
+          # manufactured from a parse failure, which is the #108 failure mode in
+          # a new place.
           ACCEPTED=""
           NV_OPEN=""
           LINEAGE=""
@@ -122,10 +123,12 @@ jobs:
             else
               # Keyed JSON, not positional lines (#140).
               field() { printf '%s' "$AUDIT_FIELDS" | python3 -c "import json,sys; v=json.load(sys.stdin)['$1']; print(' '.join(map(str, v)) if isinstance(v, list) else v)"; }
-              REVIEWED=$(field reviewed_commit)
-              ACCEPTED=$(field accepted_issues)
-              NV_OPEN=$(field not_verified_open)
-              RECORD_VALID=true
+              if REVIEWED=$(field reviewed_commit) && ACCEPTED=$(field accepted_issues) \
+                  && NV_OPEN=$(field not_verified_open); then
+                RECORD_VALID=true
+              else
+                flag_coverage "Audit record fields could not be read from the validator's output. Security status is INDETERMINATE, not clean."
+              fi
               if ! git merge-base --is-ancestor "$REVIEWED" HEAD 2>/dev/null; then
                 flag_coverage "Audit record references commit $REVIEWED, which is not an ancestor of this tag."
               else
