@@ -199,10 +199,10 @@ def test_escalation_window_withdraws_the_excuse_151():
 
 PAT_REL = r"""['"`]/webhooks['"`](?!\s*,\s*['"`]v2['"`])"""
 PAT_ABS = r"(?<!\s)/" + V1 + WH_REL      # assembled: fixture convention 1
-REL_ENTRY = (PAT_REL, True, "v1-webhooks", "v1 webhook registration/list",
-             "2027-01-01", "/v2/webhooks")
-ABS_ENTRY = (PAT_ABS, False, "v1-webhooks", "v1 webhook registration/list",
-             "2027-01-01", "/v2/webhooks")
+REL_ENTRY = audit._Deprecated(
+    pattern=PAT_REL, needs_v1_base=True, key="v1-webhooks",
+    label="v1 webhook registration/list", sunset="2027-01-01", repl="/v2/webhooks")
+ABS_ENTRY = REL_ENTRY._replace(pattern=PAT_ABS, needs_v1_base=False)
 
 
 def credit(lines, entries=(REL_ENTRY,)):
@@ -1233,6 +1233,21 @@ def test_second_marker_for_one_call_is_named_a_duplicate_230(tmp_path):
     assert r[DEP_CHECK]["status"] == "PASS"
     assert r[DELIBERATE_CHECK]["status"] == "WARN"
     assert r[DATED_CHECK]["status"] == "PASS"
+
+
+def test_marker_ahead_of_a_marked_call_is_not_called_a_duplicate_230(tmp_path):
+    """A marker ahead of its call, on a line where a second marker after the
+    call is credited, is uncredited for being ahead of the call. Calling it
+    a duplicate would name the wrong cause (#230 gate review)."""
+    ahead = "/* " + ALLOW + ": v1-webhooks until 2026-12-31 */ "
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": anchor_block(V1) + "\n" + ahead + rel_call()
+        + "  " + marker(until="2026-12-31")})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[STALE_CHECK]["status"] == "WARN"
+    assert "a second marker on a line whose call already has one" not in r[STALE_CHECK]["detail"]
+    assert r[DEP_CHECK]["status"] == "PASS"
 
 
 # ── counts and their detail lines read the same list (#194) ─────────────

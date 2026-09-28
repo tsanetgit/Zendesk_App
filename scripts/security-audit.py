@@ -64,6 +64,13 @@ AUDIT_SCRIPT = os.path.join("scripts", "security-audit.py")
 # Named fields, so a swapped unpacking cannot quietly misreport the source.
 Scan = collections.namedtuple("Scan", "paths source degraded")
 
+# One endpoint spelling with a published sunset. Named fields for the same
+# reason as Scan: the entries were read by position, and this file has paid
+# for a positional contract once already (#162 -> #168). Two entries can
+# share a `key`, which is what crediting groups by (#230).
+_Deprecated = collections.namedtuple(
+    "_Deprecated", "pattern needs_v1_base key label sunset repl")
+
 
 def _tree_files(root):
     """The files belonging to THIS repository tree, and where the list came from.
@@ -924,7 +931,8 @@ SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 #      does not cover a different sunsetting call sharing the line.
 #   3. It must sit in a COMMENT and BEGIN AFTER the call it excuses. The token
 #      inside a string literal, or in prose ahead of the call, is not a grant.
-#   4. It excuses a line carrying exactly ONE matching call. Two calls and one
+#   4. It excuses a line carrying exactly ONE call to its key, in either
+#      spelling (#230). Two calls and one
 #      marker means the second was never granted anything, so the line flags;
 #      put the second call on its own line and mark it too if it is deliberate.
 #   5. It must carry an EXPIRY (`until <YYYY-MM-DD>`). An undated marker excuses
@@ -1206,9 +1214,9 @@ def _credit_calls(lines, entries):
         window = ln if i + 1 >= len(lines) else ln + "\n" + lines[i + 1]
         by_key = {}
         for entry in entries:
-            for m in re.finditer(entry[0], window):
+            for m in re.finditer(entry.pattern, window):
                 if m.start() < len(ln):
-                    by_key.setdefault(entry[2], []).append((m, entry))
+                    by_key.setdefault(entry.key, []).append((m, entry))
         for key, hits in by_key.items():
             excuse = None
             if len(hits) == 1:
@@ -1454,7 +1462,7 @@ def check_deprecated_endpoints(root, scan, today=None):
     # v1 call would not have been flagged. Demonstrated by injecting one and
     # watching the check pass, which is the only reason it was caught.
     v1_base = r"""connect2\.tsanet\.(?:net|org)/v1|\|\|\s*['"]v1['"]"""
-    # (pattern, needs_v1_base, key, label, sunset, replacement)
+    # _Deprecated(pattern, needs_v1_base, key, label, sunset, repl)
     #
     # `key` is the name an audit-allow marker must use to excuse this entry.
     # The two webhook entries share one key on purpose: they are two spellings
@@ -1466,7 +1474,7 @@ def check_deprecated_endpoints(root, scan, today=None):
     # webhooks call, so its v1 webhooks calls are fine" would hide a NEW v1-only
     # call added to that file later.
     deprecated = [
-        (r"/collaboration-requests\?", True, "v1-collaboration-list",
+        _Deprecated(r"/collaboration-requests\?", True, "v1-collaboration-list",
          "GET /v1/collaboration-requests (list)",
          "2027-01-01", "GET /v2/collaboration-requests"),
         # The lookahead is what makes a relative path readable as versioned:
@@ -1477,7 +1485,7 @@ def check_deprecated_endpoints(root, scan, today=None):
         # The quote class includes the backtick because these are .js and .html
         # files, where a backtick is a template literal and tsanetGet(`/webhooks`)
         # is an ordinary call. Omitting it left that form invisible to the scan.
-        (r"""['"`]/webhooks['"`](?!\s*,\s*['"`]v2['"`])""", True, "v1-webhooks",
+        _Deprecated(r"""['"`]/webhooks['"`](?!\s*,\s*['"`]v2['"`])""", True, "v1-webhooks",
          "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
         # A URL expression joins the path to something without a space
         # (f"{ts}/v1/webhooks", "https://host/v1/webhooks"); prose puts a space
@@ -1491,7 +1499,7 @@ def check_deprecated_endpoints(root, scan, today=None):
         # written as `/v1/webhooks`, and that also excused fetch(`/v1/webhooks`)
         # — real code, silently unscanned. Backticked prose flagging is the
         # cheaper mistake of the two, and nothing in the tree writes it.
-        (r"(?<!\s)/v1/webhooks", False, "v1-webhooks",
+        _Deprecated(r"(?<!\s)/v1/webhooks", False, "v1-webhooks",
          "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
     ]
     found = []
@@ -1583,7 +1591,7 @@ def check_deprecated_endpoints(root, scan, today=None):
             # scan.
             if in_bundle and not rel.endswith(".json"):
                 api_signs = (_has_baseurl(body) or on_v1_base or any(
-                    re.search(p, body) for p, needs, *_ in deprecated if needs))
+                    re.search(e.pattern, body) for e in deprecated if e.needs_v1_base))
                 if anchor_problem:
                     unreadable_anchor.append(f"{rel}: {anchor_problem}")
                     on_v1_base = True
@@ -1595,9 +1603,10 @@ def check_deprecated_endpoints(root, scan, today=None):
                     on_v1_base = True
         lines = body.splitlines()
         now = today or datetime.date.today()
-        entries = [e for e in deprecated if not (e[1] and not on_v1_base)]
+        entries = [e for e in deprecated if on_v1_base or not e.needs_v1_base]
         calls, used = _credit_calls(lines, entries)
-        for i, (pat, needs_v1_base, key, label, date, repl), mk in calls:
+        for i, e, mk in calls:
+            key, label, date, repl = e.key, e.label, e.sunset, e.repl
             if mk is not None and _excuses(mk, key, date, today):
                 still_marked.append(
                     f"{rel}:{i + 1}: {label} (deliberate until {mk.group('date')}, "
@@ -1629,7 +1638,7 @@ def check_deprecated_endpoints(root, scan, today=None):
         # A marker that credited nothing is not harmless. It reads in review
         # as a considered exemption while protecting nothing, and it is what
         # a typo'd key, a call that moved or a duplicate leaves behind.
-        credited_keys = {(i, mk.group("key")) for i, _, mk in calls if mk is not None}
+        credited_at = {(i, mk.group("key")): mk.start() for i, _, mk in calls if mk is not None}
         for i, ln in enumerate(lines):
             for mk in ALLOW_MARKER.finditer(ln):
                 problem = _marker_problem(mk, rel, i + 1, now)
@@ -1642,8 +1651,11 @@ def check_deprecated_endpoints(root, scan, today=None):
                     # the match. A second marker for a call that already has
                     # one says so, rather than leaving the author to hunt for
                     # a typo that does not exist (#230).
+                    # Only a marker AFTER the credited one is a duplicate; one
+                    # ahead of it is ahead of the call too, a different cause.
+                    first = credited_at.get((i, mk.group("key")))
                     dup = (" (a second marker on a line whose call already "
-                           "has one)" if (i, mk.group("key")) in credited_keys else "")
+                           "has one)" if first is not None and mk.start() > first else "")
                     stale_markers.append(
                         f"{rel}:{i + 1}: audit-{mk.group('kind')}: "
                         f"{mk.group('key')}{dup}")
@@ -1725,9 +1737,10 @@ def check_deprecated_endpoints(root, scan, today=None):
                "no unused audit markers", cat)
 
     # An undated or expired marker is a FAIL rather than a WARN: it looks like
-    # a considered exemption in review while granting nothing, so the call it
-    # sits on is flagged AND the marker is called out, and neither reading is
-    # left to be inferred from the other.
+    # a considered exemption in review while granting nothing. Any call it sits
+    # on is flagged AND the marker is called out, and neither reading is left
+    # to be inferred from the other. A marker on no call is called out all the
+    # same, since #230 checks every marker, credited or not.
     if bad_markers:
         record("FAIL", "every audit marker is complete for its kind",
                "; ".join(sorted(set(bad_markers))), cat)
