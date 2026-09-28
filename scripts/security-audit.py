@@ -64,6 +64,13 @@ AUDIT_SCRIPT = os.path.join("scripts", "security-audit.py")
 # Named fields, so a swapped unpacking cannot quietly misreport the source.
 Scan = collections.namedtuple("Scan", "paths source degraded")
 
+# One endpoint spelling with a published sunset. Named fields for the same
+# reason as Scan: the entries were read by position, and this file has paid
+# for a positional contract once already (#162 -> #168). Two entries can
+# share a `key`, which is what crediting groups by (#230).
+_Deprecated = collections.namedtuple(
+    "_Deprecated", "pattern needs_v1_base key label sunset repl")
+
 
 def _tree_files(root):
     """The files belonging to THIS repository tree, and where the list came from.
@@ -924,7 +931,8 @@ SCANNED_SUFFIXES = (".js", ".json", ".py", ".html")
 #      does not cover a different sunsetting call sharing the line.
 #   3. It must sit in a COMMENT and BEGIN AFTER the call it excuses. The token
 #      inside a string literal, or in prose ahead of the call, is not a grant.
-#   4. It excuses a line carrying exactly ONE matching call. Two calls and one
+#   4. It excuses a line carrying exactly ONE call to its key, in either
+#      spelling (#230). Two calls and one
 #      marker means the second was never granted anything, so the line flags;
 #      put the second call on its own line and mark it too if it is deliberate.
 #   5. It must carry an EXPIRY (`until <YYYY-MM-DD>`). An undated marker excuses
@@ -1157,15 +1165,28 @@ def _has_baseurl(body):
     return BASEURL_DECL.search(body) is not None
 
 
-def _matches_unmarked(lines, pat, key, date, used=None, marked=None, today=None):
-    """True when `pat` hits a call site that no `audit-allow: <key>` excuses.
+def _credit_calls(lines, entries):
+    """Every call to a sunsetting endpoint in `lines`, with the marker credited
+    to it, if any. Returns (calls, credited): `calls` is a list of
+    (line_index, entry, marker_or_None), line by line, and `credited` is the
+    set of (line_index, marker_start) for every marker credited to a call.
 
-    Matching is per call site rather than per file, so a marker clears the call
-    it sits on and nothing else. `used` collects the (line, column) of every
-    marker that was applied to a call, and `marked` collects
-    (line_number, key, until) for every marked call site so the caller can
-    report calls that are excused but still present. `date` is the entry's
-    sunset, which decides whether a marker is still allowed to excuse at all.
+    Crediting is per KEY, not per spelling (#230). The webhooks endpoint has
+    two spellings sharing the key `v1-webhooks`, and counting per spelling let
+    one marker excuse a relative and an absolute call on the same line, one
+    per spelling. So every entry is matched first, the calls on a line are
+    grouped by key, and a marker is credited only when its line holds exactly
+    one call to its key. With two, the marker was granted for at most one of
+    them and which one is not knowable, so neither is credited, the line
+    flags, and the author splits it, whatever the spelling. The first marker
+    with that key after the call is credited, so a second one on the same
+    line is left uncredited, and the caller reports it as a duplicate.
+
+    Credit says which call a marker was written for. Whether it EXCUSES the
+    call is _excuses's decision, so an expired or undated marker is still
+    credited, and it is then reported as the problem it is rather than
+    additionally as crediting nothing, which would send the author chasing
+    the wrong edit.
 
     Two details make the per-line approach workable:
 
@@ -1187,40 +1208,71 @@ def _matches_unmarked(lines, pat, key, date, used=None, marked=None, today=None)
     - A match must START on the line being judged, so each call is considered
       once, and the marker is read from that line only. A marker on the
       following line belongs to whatever sits there.
-
-    Every line is walked even after a hit, rather than returning early, so that
-    markers further down the file are still credited as used.
     """
-    hit = False
+    calls = []
     for i, ln in enumerate(lines):
         window = ln if i + 1 >= len(lines) else ln + "\n" + lines[i + 1]
-        starts_here = [m for m in re.finditer(pat, window) if m.start() < len(ln)]
-        if not starts_here:
-            continue
-        # One marker excuses one call. With two matching calls on a line the
-        # marker was granted for at most one of them, and which one is not
-        # knowable, so the line flags and the author splits it.
-        excuse = None
-        if len(starts_here) == 1:
-            for mk in ALLOW_MARKER.finditer(ln):
-                if mk.group("key") == key and mk.start() >= starts_here[0].end():
-                    excuse = mk
-                    break
-        if excuse is not None:
-            # Credit the marker as used even when it does not excuse, so an
-            # expired or undated one is reported as the problem it is rather
-            # than additionally as "excused nothing", which sends the author
-            # chasing the wrong edit.
-            if used is not None:
-                used.add((i, excuse.start()))
-            if marked is not None:
-                marked.append((i + 1, excuse.group("kind"), excuse.group("key"),
-                               excuse.group("date"), excuse.group("malformed"),
-                               excuse.group("tracker")))
-            if _excuses(excuse, key, date, today):
-                continue
-        hit = True
-    return hit
+        by_key = {}
+        for entry in entries:
+            for m in re.finditer(entry.pattern, window):
+                if m.start() < len(ln):
+                    by_key.setdefault(entry.key, []).append((m, entry))
+        for key, hits in by_key.items():
+            excuse = None
+            if len(hits) == 1:
+                for mk in ALLOW_MARKER.finditer(ln):
+                    if mk.group("key") == key and mk.start() >= hits[0][0].end():
+                        excuse = mk
+                        break
+            calls.extend((i, entry, excuse) for _, entry in hits)
+    credited = {(i, mk.start()) for i, _, mk in calls if mk is not None}
+    return calls, credited
+
+
+def _marker_problem(mk, rel, lineno, today):
+    """Why a marker is incomplete for its kind, or None when it is complete.
+
+    Asked of EVERY marker in a scanned file, credited to a call or not
+    (#230). Asking only of credited markers let an undated or expired marker
+    that also credited nothing (a misspelled key, a moved call, a second call
+    on its line) pass the completeness check while it sat in the tree.
+    """
+    kw = f"audit-{mk.group('kind')}"
+    mkey = mk.group("key")
+    # audit-degrades never clears, so it needs no expiry logic to decide
+    # anything. What it does need is the tracker, because naming where the
+    # deletion is owed is its entire job (#152, #153). Without one it is a
+    # shrug in a comment.
+    if mk.group("kind") == "degrades":
+        if not mk.group("tracker"):
+            return (f"{rel}:{lineno}: {kw}: {mkey} has no "
+                    f"`tracked-by <issue>`, so it names no owner for "
+                    f"the deletion it admits is owed")
+        return None
+    # Three different mistakes, three different messages. They all FAIL and
+    # none excuses its call, but "has no expiry" on a line that visibly reads
+    # `until soon` sends the author looking for the wrong thing (#159 review).
+    until, malformed = mk.group("date"), mk.group("malformed")
+    if not until and malformed:
+        return (f"{rel}:{lineno}: {kw}: {mkey} has a malformed "
+                f"expiry {malformed!r}, expected "
+                f"`until <YYYY-MM-DD>`, so it excuses nothing")
+    if not until:
+        return (f"{rel}:{lineno}: {kw}: {mkey} has no "
+                f"`until <YYYY-MM-DD>` expiry, so it excuses nothing")
+    # ALLOW_MARKER only checks the SHAPE of the date, so an ordinary typo like
+    # 2026-02-30 reaches this parse. Left unguarded it raised out of the whole
+    # audit: exit 3, no finding, no file, no line, and the other checks never
+    # ran (#159 review).
+    try:
+        expires = datetime.date.fromisoformat(until)
+    except ValueError:
+        return (f"{rel}:{lineno}: {kw}: {mkey} has an expiry "
+                f"of {until!r}, which is the right shape but not a "
+                f"real date, so it excuses nothing")
+    if expires < today:
+        return f"{rel}:{lineno}: {kw}: {mkey} expired {until}"
+    return None
 
 
 def _excuses(marker, key, sunset, today=None):
@@ -1410,7 +1462,7 @@ def check_deprecated_endpoints(root, scan, today=None):
     # v1 call would not have been flagged. Demonstrated by injecting one and
     # watching the check pass, which is the only reason it was caught.
     v1_base = r"""connect2\.tsanet\.(?:net|org)/v1|\|\|\s*['"]v1['"]"""
-    # (pattern, needs_v1_base, key, label, sunset, replacement)
+    # _Deprecated(pattern, needs_v1_base, key, label, sunset, repl)
     #
     # `key` is the name an audit-allow marker must use to excuse this entry.
     # The two webhook entries share one key on purpose: they are two spellings
@@ -1422,7 +1474,7 @@ def check_deprecated_endpoints(root, scan, today=None):
     # webhooks call, so its v1 webhooks calls are fine" would hide a NEW v1-only
     # call added to that file later.
     deprecated = [
-        (r"/collaboration-requests\?", True, "v1-collaboration-list",
+        _Deprecated(r"/collaboration-requests\?", True, "v1-collaboration-list",
          "GET /v1/collaboration-requests (list)",
          "2027-01-01", "GET /v2/collaboration-requests"),
         # The lookahead is what makes a relative path readable as versioned:
@@ -1433,7 +1485,7 @@ def check_deprecated_endpoints(root, scan, today=None):
         # The quote class includes the backtick because these are .js and .html
         # files, where a backtick is a template literal and tsanetGet(`/webhooks`)
         # is an ordinary call. Omitting it left that form invisible to the scan.
-        (r"""['"`]/webhooks['"`](?!\s*,\s*['"`]v2['"`])""", True, "v1-webhooks",
+        _Deprecated(r"""['"`]/webhooks['"`](?!\s*,\s*['"`]v2['"`])""", True, "v1-webhooks",
          "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
         # A URL expression joins the path to something without a space
         # (f"{ts}/v1/webhooks", "https://host/v1/webhooks"); prose puts a space
@@ -1447,14 +1499,17 @@ def check_deprecated_endpoints(root, scan, today=None):
         # written as `/v1/webhooks`, and that also excused fetch(`/v1/webhooks`)
         # — real code, silently unscanned. Backticked prose flagging is the
         # cheaper mistake of the two, and nothing in the tree writes it.
-        (r"(?<!\s)/v1/webhooks", False, "v1-webhooks",
+        _Deprecated(r"(?<!\s)/v1/webhooks", False, "v1-webhooks",
          "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
     ]
     found = []
     hit_dates = []
     unreadable_anchor = []
     stale_markers = []
-    bad_markers = []      # undated or expired: they excuse nothing
+    bad_markers = []      # incomplete for their kind: undated, malformed,
+                          # impossible-date or expired allow markers, and
+                          # untracked degrades markers; every marker, credited
+                          # to a call or not (#230)
     still_marked = []     # excused, and the call is still in the tree
     superseded = []       # marked, but the escalation window withdrew the excuse
     degrading  = []       # audit-degrades: deliberate, and does NOT survive
@@ -1536,7 +1591,7 @@ def check_deprecated_endpoints(root, scan, today=None):
             # scan.
             if in_bundle and not rel.endswith(".json"):
                 api_signs = (_has_baseurl(body) or on_v1_base or any(
-                    re.search(p, body) for p, needs, *_ in deprecated if needs))
+                    re.search(e.pattern, body) for e in deprecated if e.needs_v1_base))
                 if anchor_problem:
                     unreadable_anchor.append(f"{rel}: {anchor_problem}")
                     on_v1_base = True
@@ -1547,94 +1602,63 @@ def check_deprecated_endpoints(root, scan, today=None):
                         f"a matching DEFAULT_API_VERSION assignment")
                     on_v1_base = True
         lines = body.splitlines()
-        used = set()
-        for pat, needs_v1_base, key, label, date, repl in deprecated:
-            if needs_v1_base and not on_v1_base:
-                continue
-            marked = []
-            unmarked = _matches_unmarked(
-                lines, pat, key, date, used, marked, today)
-            now = today or datetime.date.today()
-            for lineno, kind, mkey, until, malformed, tracker in marked:
-                kw = f"audit-{kind}"
-                # audit-degrades never clears, so it needs no expiry logic to
-                # decide anything. What it does need is the tracker, because
-                # naming where the deletion is owed is its entire job
-                # (#152, #153). Without one it is a shrug in a comment.
-                if kind == "degrades":
-                    if not tracker:
-                        bad_markers.append(
-                            f"{rel}:{lineno}: {kw}: {mkey} has no "
-                            f"`tracked-by <issue>`, so it names no owner for "
-                            f"the deletion it admits is owed")
-                    else:
-                        degrading.append(
-                            f"{rel}:{lineno}: {label} (deliberate, does NOT "
-                            f"survive its {date} sunset, tracked by {tracker})")
-                    continue
-                # Three different mistakes, three different messages. They
-                # all FAIL and none excuses its call, but "has no expiry"
-                # on a line that visibly reads `until soon` sends the author
-                # looking for the wrong thing (#159 review).
-                if not until and malformed:
-                    bad_markers.append(
-                        f"{rel}:{lineno}: {kw}: {mkey} has a malformed "
-                        f"expiry {malformed!r}, expected "
-                        f"`until <YYYY-MM-DD>`, so it excuses nothing")
-                    continue
-                if not until:
-                    bad_markers.append(
-                        f"{rel}:{lineno}: {kw}: {mkey} has no "
-                        f"`until <YYYY-MM-DD>` expiry, so it excuses nothing")
-                    continue
-                # ALLOW_MARKER only checks the SHAPE of the date, so an
-                # ordinary typo like 2026-02-30 reaches this parse. Left
-                # unguarded it raised out of the whole audit: exit 3, no
-                # finding, no file, no line, and the other checks never ran.
-                # _excuses already guarded the same call; this caller did
-                # not (#159 review).
-                try:
-                    expires = datetime.date.fromisoformat(until)
-                except ValueError:
-                    bad_markers.append(
-                        f"{rel}:{lineno}: {kw}: {mkey} has an expiry "
-                        f"of {until!r}, which is the right shape but not a "
-                        f"real date, so it excuses nothing")
-                    continue
-                if expires < now:
-                    bad_markers.append(
-                        f"{rel}:{lineno}: {kw}: {mkey} expired {until}")
-                    continue
-                # A marker inside the escalation window has stopped
-                # excusing (condition 6), so its call is already a finding
-                # below. Reporting it here as "deliberate" too would put two
-                # lines about one call in the same run saying opposite
-                # things (#159 review).
-                if (datetime.date.fromisoformat(date) - now).days <= SUNSET_FAIL_WITHIN_DAYS:
-                    superseded.append(f"{rel}:{lineno}: {kw}: {mkey}")
-                    continue
+        now = today or datetime.date.today()
+        entries = [e for e in deprecated if on_v1_base or not e.needs_v1_base]
+        calls, used = _credit_calls(lines, entries)
+        for i, e, mk in calls:
+            key, label, date, repl = e.key, e.label, e.sunset, e.repl
+            if mk is not None and _excuses(mk, key, date, today):
                 still_marked.append(
-                    f"{rel}:{lineno}: {label} (deliberate until {until}, "
+                    f"{rel}:{i + 1}: {label} (deliberate until {mk.group('date')}, "
                     f"sunset {date}, use {repl})")
                 marked_dates.append(date)
-            if unmarked:
-                found.append(f"{rel}: {label} (sunset {date}, use {repl})")
-                hit_dates.append(date)
-        # A marker that excused nothing is not harmless. It reads in review
+                continue
+            # Not excused, so the call is a finding. A complete marker on it
+            # still says why: degrades admits the call does not survive, and a
+            # current allow marker inside the escalation window has stopped
+            # excusing (condition 6). An incomplete marker is reported once,
+            # by the marker pass below, whether or not it was credited.
+            if mk is not None and _marker_problem(mk, rel, i + 1, now) is None:
+                if mk.group("kind") == "degrades":
+                    degrading.append(
+                        f"{rel}:{i + 1}: {label} (deliberate, does NOT "
+                        f"survive its {date} sunset, tracked by "
+                        f"{mk.group('tracker')})")
+                else:
+                    # Listed here as no longer excusing, and as a finding
+                    # below; never as deliberate too, which would put two
+                    # lines about one call in the same run saying opposite
+                    # things (#159 review).
+                    superseded.append(
+                        f"{rel}:{i + 1}: audit-{mk.group('kind')}: {mk.group('key')}")
+            found.append(f"{rel}: {label} (sunset {date}, use {repl})")
+            hit_dates.append(date)
+        # Every marker, credited or not: completeness is a property of the
+        # marker (#230), and crediting only decides whether it is also stale.
+        # A marker that credited nothing is not harmless. It reads in review
         # as a considered exemption while protecting nothing, and it is what
-        # a typo'd key or a call that moved leaves behind.
+        # a typo'd key, a call that moved or a duplicate leaves behind.
+        credited_at = {(i, mk.group("key")): mk.start() for i, _, mk in calls if mk is not None}
         for i, ln in enumerate(lines):
             for mk in ALLOW_MARKER.finditer(ln):
+                problem = _marker_problem(mk, rel, i + 1, now)
+                if problem:
+                    bad_markers.append(problem)
                 if (i, mk.start()) not in used:
                     # The key is what the author needs in order to find the
                     # typo, and the kind is what this reported instead until
-                    # #168. Both are named now, and the prefix is derived
-                    # from the match rather than hardcoded to `audit-allow`,
-                    # so a stale `audit-degrades:` marker is not reported
-                    # under the other vocabulary's name.
+                    # #168. Both are named, and the prefix is derived from
+                    # the match. A second marker for a call that already has
+                    # one says so, rather than leaving the author to hunt for
+                    # a typo that does not exist (#230).
+                    # Only a marker AFTER the credited one is a duplicate; one
+                    # ahead of it is ahead of the call too, a different cause.
+                    first = credited_at.get((i, mk.group("key")))
+                    dup = (" (a second marker on a line whose call already "
+                           "has one)" if first is not None and mk.start() > first else "")
                     stale_markers.append(
                         f"{rel}:{i + 1}: audit-{mk.group('kind')}: "
-                        f"{mk.group('key')}")
+                        f"{mk.group('key')}{dup}")
 
     # Reported BEFORE the `not found` early return below, because a tree with
     # no findings is exactly when this is the only signal that something went
@@ -1705,16 +1729,18 @@ def check_deprecated_endpoints(root, scan, today=None):
                "marker credits no call: a marker counts only when it follows "
                "exactly one call to its endpoint on the same line. Check for a "
                "misspelled key, a moved, migrated or deleted call, a second "
-               "call on the line, or a marker placed before its call: "
+               "call on the line, a second marker on the line, or a marker "
+               "placed before its call: "
                + "; ".join(sorted(set(stale_markers))), cat)
     else:
         record("PASS", "every audit marker follows exactly one call it names",
                "no unused audit markers", cat)
 
     # An undated or expired marker is a FAIL rather than a WARN: it looks like
-    # a considered exemption in review while granting nothing, so the call it
-    # sits on is flagged AND the marker is called out, and neither reading is
-    # left to be inferred from the other.
+    # a considered exemption in review while granting nothing. Any call it sits
+    # on is flagged AND the marker is called out, and neither reading is left
+    # to be inferred from the other. A marker on no call is called out all the
+    # same, since #230 checks every marker, credited or not.
     if bad_markers:
         record("FAIL", "every audit marker is complete for its kind",
                "; ".join(sorted(set(bad_markers))), cat)

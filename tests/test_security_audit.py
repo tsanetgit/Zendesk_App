@@ -195,9 +195,20 @@ def test_escalation_window_withdraws_the_excuse_151():
     assert audit._excuses(m, "v1-webhooks", "2027-01-01", today=JAN1) is True
 
 
-# ── _matches_unmarked: grant mechanics ───────────────────────────────────
+# ── _credit_calls: grant mechanics (per key since #230) ──────────────────
 
 PAT_REL = r"""['"`]/webhooks['"`](?!\s*,\s*['"`]v2['"`])"""
+PAT_ABS = r"(?<!\s)/" + V1 + WH_REL      # assembled: fixture convention 1
+REL_ENTRY = audit._Deprecated(
+    pattern=PAT_REL, needs_v1_base=True, key="v1-webhooks",
+    label="v1 webhook registration/list", sunset="2027-01-01", repl="/v2/webhooks")
+ABS_ENTRY = REL_ENTRY._replace(pattern=PAT_ABS, needs_v1_base=False)
+
+
+def credit(lines, entries=(REL_ENTRY,)):
+    """(calls, credited), with each call reduced to its credited marker."""
+    calls, credited = audit._credit_calls(lines, list(entries))
+    return [mk for _, _, mk in calls], credited
 
 
 def test_wrapped_migrated_call_is_not_flagged():
@@ -205,36 +216,51 @@ def test_wrapped_migrated_call_is_not_flagged():
     is not misread as the deprecated form (whose predictable 'fix' is a
     marker asserting something false)."""
     lines = [rel_call()[:-1] + ",", "          '" + V2 + "')"]
-    assert audit._matches_unmarked(lines, PAT_REL, "v1-webhooks",
-                                   "2027-01-01", today=JAN1) is False
+    assert credit(lines) == ([], set())
 
 
 def test_marker_on_the_previous_line_is_not_a_grant():
     lines = [marker(until="2026-12-31"), rel_call()]
-    assert audit._matches_unmarked(lines, PAT_REL, "v1-webhooks",
-                                   "2027-01-01", today=JAN1) is True
+    assert credit(lines) == ([None], set())
 
 
 def test_marker_ahead_of_the_call_on_the_same_line_is_not_a_grant():
     lines = ["/* " + ALLOW + ": v1-webhooks until 2026-12-31 */ " + rel_call()]
-    assert audit._matches_unmarked(lines, PAT_REL, "v1-webhooks",
-                                   "2027-01-01", today=JAN1) is True
+    assert credit(lines) == ([None], set())
 
 
 def test_two_calls_one_marker_flags_the_line():
     lines = [rel_call() + "; " + rel_call() + " " + marker(until="2026-12-31")]
-    assert audit._matches_unmarked(lines, PAT_REL, "v1-webhooks",
-                                   "2027-01-01", today=JAN1) is True
+    assert credit(lines) == ([None, None], set())
 
 
 def test_non_excusing_marker_is_still_credited_as_used():
     """An expired marker must be reported as expired, not additionally as
     'excused nothing' — two contradictory findings for one edit."""
-    used, marked = set(), []
     lines = [rel_call() + " " + marker(until="2025-01-01")]
-    hit = audit._matches_unmarked(lines, PAT_REL, "v1-webhooks",
-                                  "2027-01-01", used, marked, today=JAN1)
-    assert hit is True and len(used) == 1 and len(marked) == 1
+    marks, credited = credit(lines)
+    assert len(marks) == 1 and marks[0] is not None and len(credited) == 1
+    assert not audit._excuses(marks[0], "v1-webhooks", "2027-01-01", JAN1)
+
+
+def test_a_lone_call_in_either_spelling_is_credited_230():
+    """The positive half of per-key crediting: one call in either spelling
+    with its marker is credited, so the test below cannot pass by never
+    crediting when two entries share a key."""
+    for call in (rel_call(), "x('" + "/" + V1 + WH_REL + "')"):
+        marks, credited = credit([call + " " + marker(until="2026-12-31")],
+                                 (REL_ENTRY, ABS_ENTRY))
+        assert len(marks) == 1 and marks[0] is not None and len(credited) == 1
+
+
+def test_one_marker_never_credits_two_spellings_230():
+    """#230 item 1: one call in each webhooks spelling plus one marker. Per
+    spelling, each saw one call and the same marker was credited twice,
+    excusing both. Per key the line holds two calls, so neither is credited,
+    exactly as for two calls in the same spelling."""
+    lines = [rel_call() + "; x('" + "/" + V1 + WH_REL + "') "
+             + marker(until="2026-12-31")]
+    assert credit(lines, (REL_ENTRY, ABS_ENTRY)) == ([None, None], set())
 
 
 # ── baseUrl parsing: the anchor (#148 → #158 → #163, #164 open) ─────────
@@ -1135,30 +1161,96 @@ def test_sunset_pass_is_plain_with_no_calls_at_all_160(tmp_path):
     assert r[DELIBERATE_CHECK]["status"] == "PASS"
 
 
-# ── counts and their detail lines read the same list (#194) ─────────────
+def test_mixed_spelling_line_reads_like_a_same_spelling_line_230(tmp_path):
+    """#230 item 1, end to end: a marker on a line with one call in each
+    webhooks spelling produces exactly the results of a line with two calls
+    in one spelling. Both calls are findings and the marker is stale."""
+    runs = []
+    for name, second in (("same", rel_call()),
+                         ("mixed", "x('" + "/" + V1 + WH_REL + "')")):
+        d = tmp_path / name
+        d.mkdir()
+        root, scan = tree(d, {"zaf-build/assets/main.js":
+                              anchor_block(V1) + "\n" + rel_call() + "; "
+                              + second + "  " + marker(until="2026-12-31")})
+        audit.RESULTS.clear()
+        audit.check_deprecated_endpoints(root, scan, today=JAN1)
+        runs.append(by_check())
+    same, mixed = runs
+    assert mixed == same
+    assert mixed[DEP_CHECK]["status"] == "WARN"
+    assert mixed[STALE_CHECK]["status"] == "WARN"
+    assert mixed[DELIBERATE_CHECK]["status"] == "PASS"
 
-def test_marked_call_count_matches_its_rendered_list_194(tmp_path):
-    """#194's shape: `len(raw_list)` beside `'; '.join(sorted(set(...)))` —
-    two spellings of one set, only one deduped, so the count can exceed the
-    list it prints.
 
-    The wrong-but-well-formed input is a line that produces the SAME entry
-    twice. Two `deprecated` patterns share the key `v1-webhooks` (the
-    relative form and the absolute one) and share a label, so a line
-    carrying both, excused by one marker, appends two identical strings.
-    Without the dedupe-once fix this reports 2 and then lists 1 — the exact
-    self-contradiction #194 names."""
-    both_forms = rel_call() + "; x('" + "/" + V1 + WH_REL + "') "
-    body = (anchor_block(V1) + "\n" + both_forms
-            + marker(kind=DEGRADES, tracker="#101"))
-    root, scan = tree(tmp_path, {"zaf-build/assets/main.js": body})
+@pytest.mark.parametrize("line,token", [
+    (lambda: rel_call() + "  " + marker(key="v1-typo-key"), "no `until"),
+    (lambda: rel_call() + "; " + rel_call() + "  " + marker(until="2025-06-01"),
+     "expired"),
+], ids=["undated-misspelled", "expired-on-two-call-line"])
+def test_uncredited_incomplete_marker_fails_completeness_230(
+        tmp_path, line, token):
+    """#230 item 2: completeness was asked only of markers credited to a
+    call, so these PASSed "no undated, malformed or expired allow markers"
+    while one sat in the tree. It is a property of the marker, so it FAILs
+    here, and the marker is still reported as crediting nothing."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": anchor_block(V1) + "\n" + line()})
     audit.check_deprecated_endpoints(root, scan, today=JAN1)
-    r = by_check()[DEGRADES_CHECK]
-    assert r["status"] == "WARN"
-    stated = int(r["detail"].split(" ", 1)[0])
-    listed = r["detail"].count("zaf-build/assets/")
-    assert stated == listed, f"count says {stated}, list shows {listed}"
+    r = by_check()
+    assert r[DATED_CHECK]["status"] == "FAIL"
+    assert token in r[DATED_CHECK]["detail"]
+    assert r[STALE_CHECK]["status"] == "WARN"
 
+
+def test_incomplete_marker_with_no_call_fails_completeness_230(tmp_path):
+    """#230 item 2 where the call has moved away entirely: no call is found,
+    so the sunset check takes its early return, and the completeness and
+    stale records must already have been written before it."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": anchor_block(V1) + "\n" + marker()})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[DEP_CHECK]["status"] == "PASS"
+    assert r[DATED_CHECK]["status"] == "FAIL"
+    assert "no `until" in r[DATED_CHECK]["detail"]
+    assert r[STALE_CHECK]["status"] == "WARN"
+
+
+def test_second_marker_for_one_call_is_named_a_duplicate_230(tmp_path):
+    """#230 item 4: the first marker after the call is credited and excuses
+    it; the second credits nothing, and its report says it is a duplicate
+    rather than leaving the author to hunt for a typo."""
+    second = " /* " + ALLOW + ": v1-webhooks until 2026-12-31 */"
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": anchor_block(V1) + "\n" + rel_call() + "  "
+        + marker(until="2026-12-31") + second})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[STALE_CHECK]["status"] == "WARN"
+    assert "a second marker on a line whose call already has one" in r[STALE_CHECK]["detail"]
+    assert "a second marker on the line" in r[STALE_CHECK]["detail"]
+    assert r[DEP_CHECK]["status"] == "PASS"
+    assert r[DELIBERATE_CHECK]["status"] == "WARN"
+    assert r[DATED_CHECK]["status"] == "PASS"
+
+
+def test_marker_ahead_of_a_marked_call_is_not_called_a_duplicate_230(tmp_path):
+    """A marker ahead of its call, on a line where a second marker after the
+    call is credited, is uncredited for being ahead of the call. Calling it
+    a duplicate would name the wrong cause (#230 gate review)."""
+    ahead = "/* " + ALLOW + ": v1-webhooks until 2026-12-31 */ "
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": anchor_block(V1) + "\n" + ahead + rel_call()
+        + "  " + marker(until="2026-12-31")})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[STALE_CHECK]["status"] == "WARN"
+    assert "a second marker on a line whose call already has one" not in r[STALE_CHECK]["detail"]
+    assert r[DEP_CHECK]["status"] == "PASS"
+
+
+# ── counts and their detail lines read the same list (#194) ─────────────
 
 @pytest.mark.parametrize("kind,today,check,label", [
     (DEGRADES, JAN1, DEGRADES_CHECK,
@@ -1176,11 +1268,12 @@ def test_every_count_matches_its_list_on_a_duplicated_scan_194(
 
     The duplicate comes from the enumeration, as in #194's own receipt,
     which repeated each path three times: here the same path is handed
-    over twice, so the same call is scanned twice. Deliberately not the
-    cross-spelling line the test above uses. That input only duplicates
-    because one marker is credited once per spelling, which
-    tsanetgit/Zendesk_App#230 proposes to change, and a test whose input
-    stops producing a duplicate passes on the defect it exists to catch.
+    over twice, so the same call is scanned twice. This input replaced a
+    line with both webhooks spellings under one marker, which duplicated
+    only because one marker was credited once per spelling. #230 credits
+    per key, so that line no longer produces a duplicate, and a test whose
+    input stops producing a duplicate passes on the defect it exists to
+    catch.
     The same limit applies here: if check_deprecated_endpoints ever
     dedupes scan.paths itself, this input stops duplicating and this test
     goes vacuous."""
