@@ -243,6 +243,16 @@ def test_non_excusing_marker_is_still_credited_as_used():
     assert not audit._excuses(marks[0], "v1-webhooks", "2027-01-01", JAN1)
 
 
+def test_a_lone_call_in_either_spelling_is_credited_230():
+    """The positive half of per-key crediting: one call in either spelling
+    with its marker is credited, so the test below cannot pass by never
+    crediting when two entries share a key."""
+    for call in (rel_call(), "x('" + "/" + V1 + WH_REL + "')"):
+        marks, credited = credit([call + " " + marker(until="2026-12-31")],
+                                 (REL_ENTRY, ABS_ENTRY))
+        assert len(marks) == 1 and marks[0] is not None and len(credited) == 1
+
+
 def test_one_marker_never_credits_two_spellings_230():
     """#230 item 1: one call in each webhooks spelling plus one marker. Per
     spelling, each saw one call and the same marker was credited twice,
@@ -1190,6 +1200,20 @@ def test_uncredited_incomplete_marker_fails_completeness_230(
     r = by_check()
     assert r[DATED_CHECK]["status"] == "FAIL"
     assert token in r[DATED_CHECK]["detail"]
+    assert r[STALE_CHECK]["status"] == "WARN"
+
+
+def test_incomplete_marker_with_no_call_fails_completeness_230(tmp_path):
+    """#230 item 2 where the call has moved away entirely: no call is found,
+    so the sunset check takes its early return, and the completeness and
+    stale records must already have been written before it."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": anchor_block(V1) + "\n" + marker()})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[DEP_CHECK]["status"] == "PASS"
+    assert r[DATED_CHECK]["status"] == "FAIL"
+    assert "no `until" in r[DATED_CHECK]["detail"]
     assert r[STALE_CHECK]["status"] == "WARN"
 
 

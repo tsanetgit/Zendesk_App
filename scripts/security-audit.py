@@ -1160,7 +1160,7 @@ def _has_baseurl(body):
 def _credit_calls(lines, entries):
     """Every call to a sunsetting endpoint in `lines`, with the marker credited
     to it, if any. Returns (calls, credited): `calls` is a list of
-    (line_index, entry, marker_or_None) in line order, and `credited` is the
+    (line_index, entry, marker_or_None), line by line, and `credited` is the
     set of (line_index, marker_start) for every marker credited to a call.
 
     Crediting is per KEY, not per spelling (#230). The webhooks endpoint has
@@ -1172,7 +1172,7 @@ def _credit_calls(lines, entries):
     them and which one is not knowable, so neither is credited, the line
     flags, and the author splits it, whatever the spelling. The first marker
     with that key after the call is credited, so a second one on the same
-    line is left uncredited and reported as a duplicate.
+    line is left uncredited, and the caller reports it as a duplicate.
 
     Credit says which call a marker was written for. Whether it EXCUSES the
     call is _excuses's decision, so an expired or undated marker is still
@@ -1500,7 +1500,8 @@ def check_deprecated_endpoints(root, scan, today=None):
     stale_markers = []
     bad_markers = []      # incomplete for their kind: undated, malformed,
                           # impossible-date or expired allow markers, and
-                          # untracked degrades markers (#230)
+                          # untracked degrades markers; every marker, credited
+                          # to a call or not (#230)
     still_marked = []     # excused, and the call is still in the tree
     superseded = []       # marked, but the escalation window withdrew the excuse
     degrading  = []       # audit-degrades: deliberate, and does NOT survive
