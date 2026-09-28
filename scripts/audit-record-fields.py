@@ -35,9 +35,11 @@ out of a parse failure. Same class as tsanetgit/Zendesk_App#108.
 entry is {id, summary, first_seen, status, refs?, resolution?}: `id` is
 NV-<3+ digits> and never reused, `status` is open, resolved or not_applicable,
 and `resolution` is required exactly when the status is not open. An entry is
-never removed. A later review may change its status, but every id the prior
-record held must still be present, so a known unknown cannot evaporate the way
-the v1.0.50 record's did, as prose in `notes`.
+never removed or rewritten. A later review may change its status, refs and
+resolution, but every id the prior record held must still be present with the
+same summary and first_seen, so a known unknown cannot evaporate the way the
+v1.0.50 record's did, as prose in `notes`, nor by being edited into a
+different claim and then resolved.
 
 Exit codes:
   0  valid; fields printed on stdout
@@ -121,17 +123,17 @@ def _not_verified(record: dict) -> list:
     return entries
 
 
-def _prior_ids(prior: dict) -> set:
-    """Ids the prior record held. A record from before #140 has none."""
+def _prior_entries(prior: dict) -> dict:
+    """The prior record's entries by id. A record from before #140 has none."""
     entries = prior.get("not_verified", [])
     if not isinstance(entries, list):
         raise RecordError("prior record's not_verified is not a list")
-    ids = set()
+    by_id = {}
     for e in entries:
         if not isinstance(e, dict) or not isinstance(e.get("id"), str):
             raise RecordError("prior record has a not_verified entry without an id")
-        ids.add(e["id"])
-    return ids
+        by_id[e["id"]] = e
+    return by_id
 
 
 def main(argv=None) -> int:
@@ -160,8 +162,18 @@ def main(argv=None) -> int:
 
         entries = _not_verified(record)
         if args.prior:
-            dropped = sorted(_prior_ids(_load(args.prior))
-                             - {e["id"] for e in entries})
+            prior = _prior_entries(_load(args.prior))
+            current = {e["id"]: e for e in entries}
+            dropped = sorted(set(prior) - set(current))
+            # The claim itself is fixed once recorded: status, refs and
+            # resolution are how a review moves an entry on.
+            for nv_id in sorted(set(prior) & set(current)):
+                for k in ("summary", "first_seen"):
+                    if prior[nv_id].get(k) != current[nv_id][k]:
+                        raise RecordError(
+                            f"{nv_id} {k} changed from the prior record. A "
+                            f"carried entry keeps its claim; record a new entry "
+                            f"for a different claim")
             if dropped:
                 raise RecordError(
                     f"not_verified entr{'y' if len(dropped) == 1 else 'ies'} "

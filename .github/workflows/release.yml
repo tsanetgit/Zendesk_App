@@ -106,7 +106,9 @@ jobs:
             PRIOR_ARGS="--no-prior"
             PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
               | awk -v cur="$GITHUB_REF_NAME" 'hit { print; exit } $0 == cur { hit = 1 }')
-            if [ -z "$PREV_TAG" ]; then
+            if ! printf '%s' "$GITHUB_REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              LINEAGE="not checked: $GITHUB_REF_NAME is not a vX.Y.Z tag"
+            elif [ -z "$PREV_TAG" ]; then
               LINEAGE="not checked: no version tag precedes $GITHUB_REF_NAME"
             elif git show "$PREV_TAG:.security-audit.json" > /tmp/prior-audit.json 2>/dev/null; then
               PRIOR_ARGS="--prior /tmp/prior-audit.json"

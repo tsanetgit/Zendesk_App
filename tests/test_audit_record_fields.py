@@ -134,6 +134,23 @@ def test_reopening_a_resolved_entry_passes(tmp_path):
     assert ok(run(tmp_path, record([nv("NV-001")]), prior))["not_verified_open"] == ["NV-001"]
 
 
+@pytest.mark.parametrize("field,value", [
+    ("summary", "a narrower claim that is easy to resolve"),
+    ("first_seen", "review Y"),
+])
+def test_rewriting_a_carried_entry_fails(tmp_path, field, value):
+    """An entry must not evaporate by edit: keep the id, swap the claim,
+    then resolve the new one."""
+    prior = record([nv("NV-001")])
+    fails(run(tmp_path, record([nv("NV-001", **{field: value})]), prior),
+          f"NV-001 {field} changed")
+
+
+def test_refs_may_change_on_a_carried_entry(tmp_path):
+    prior = record([nv("NV-001")])
+    assert ok(run(tmp_path, record([nv("NV-001", refs=["tsanetgit/Zendesk_App#96"])]), prior))
+
+
 def test_a_prior_from_before_the_list_has_nothing_to_drop(tmp_path):
     prior = record()
     del prior["not_verified"]
