@@ -1757,14 +1757,36 @@ def check_deprecated_endpoints(root, scan, today=None):
                 f"{len(superseded)} marker(s) no longer excusing, because the sunset "
                 f"is within {SUNSET_FAIL_WITHIN_DAYS} days; those calls are reported "
                 f"as findings rather than as deliberate: " + "; ".join(superseded))
-        record("WARN", "no deliberate sunsetting calls remain", " | ".join(parts), cat)
+        record("WARN", "no sunsetting calls carry a current allow marker",
+               " | ".join(parts), cat)
     else:
-        record("PASS", "no deliberate sunsetting calls remain",
-               "no audit-allow-marked calls in the tree", cat)
+        # Named for what it lists: calls under a current allow marker, whether
+        # the marker still excuses (still_marked) or no longer can because the
+        # sunset is inside the window (superseded). It was "no deliberate
+        # sunsetting calls remain", which PASSed beside the degrades WARN on
+        # "1 deliberate call(s)", two opposite readings of one call. An expired,
+        # undated or malformed allow marker is not current, so it is reported
+        # by the completeness check and not here (#160 review).
+        record("PASS", "no sunsetting calls carry a current allow marker",
+               "no call carries a current allow marker", cat)
 
+    # Named for what `found` holds: calls no marker excuses. A degrades
+    # marker never excuses and an allow marker stops excusing inside the
+    # window, so both keep their call here, and the name is true in every
+    # state. It was "no calls to sunsetting endpoints", which PASSed with
+    # "no known-deprecated endpoint usage found" while a call excused by a
+    # current allow marker sat in the shipped bundle (#160). `found` empty
+    # with a marked call can only mean still_marked: a superseded or
+    # degrades-marked call is in `found`.
     if not found:
-        record("PASS", "no calls to sunsetting endpoints",
-               "no known-deprecated endpoint usage found", cat)
+        if still_marked:
+            record("PASS", "no unexcused calls to sunsetting endpoints",
+                   f"no unexcused calls; {len(still_marked)} call(s) excused by "
+                   f"a current allow marker are reported under 'no sunsetting "
+                   f"calls carry a current allow marker'", cat)
+        else:
+            record("PASS", "no unexcused calls to sunsetting endpoints",
+                   "no known-deprecated endpoint usage found", cat)
         return
 
     days = _sunset_urgency(hit_dates, today)
@@ -1773,10 +1795,10 @@ def check_deprecated_endpoints(root, scan, today=None):
         n = abs(days)
         unit = "day" if n == 1 else "days"
         when = f"{days} {unit} away" if days >= 0 else f"{n} {unit} PAST"
-        record("FAIL", "no calls to sunsetting endpoints",
+        record("FAIL", "no unexcused calls to sunsetting endpoints",
                f"nearest sunset is {when} (threshold {SUNSET_FAIL_WITHIN_DAYS}d): {detail}", cat)
     else:
-        record("WARN", "no calls to sunsetting endpoints",
+        record("WARN", "no unexcused calls to sunsetting endpoints",
                f"nearest sunset in {days} days: {detail}", cat)
 
 

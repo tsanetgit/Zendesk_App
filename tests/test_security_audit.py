@@ -61,13 +61,13 @@ def _load(path: pathlib.Path, name: str):
 audit = _load(AUDIT_PATH, "security_audit")
 
 # ── check names, centralized (assertion convention 2) ───────────────────
-DEP_CHECK = "no calls to sunsetting endpoints"
+DEP_CHECK = "no unexcused calls to sunsetting endpoints"
 READ_CHECK = "every file in deprecation scope was read"
 ANCHOR_CHECK = "the v1-base anchor is readable in every bundle file"
 STALE_CHECK = "every audit marker follows exactly one call it names"
 DATED_CHECK = "every audit marker is complete for its kind"
 DEGRADES_CHECK = "no calls that die at their sunset remain"
-DELIBERATE_CHECK = "no deliberate sunsetting calls remain"
+DELIBERATE_CHECK = "no sunsetting calls carry a current allow marker"
 TREE_CHECK = "the scanned tree is exactly this tree"
 DRIFT_CHECK = "duplicated bundle helpers stay identical"
 SECRETS_CHECK = "no embedded credentials anywhere in the repository"
@@ -1072,6 +1072,67 @@ def test_readable_workflows_still_pass_201(tmp_path):
     assert r[WF_PERMS_CHECK]["status"] == "PASS"
     assert r[WF_INJECT_CHECK]["status"] == "PASS"
     assert r[WF_PIN_CHECK]["status"] == "PASS"
+
+
+@pytest.mark.parametrize("line_marker,completeness", [
+    (lambda: marker(kind=DEGRADES, tracker="#101"), "PASS"),
+    (lambda: marker(until="soon"), "FAIL"),
+    (lambda: marker(until="2025-06-01"), "FAIL"),
+    (lambda: marker(), "FAIL"),
+], ids=["degrades", "malformed-allow", "expired-allow", "undated-allow"])
+def test_allow_marker_check_passes_without_a_current_allow_marker_160(
+        tmp_path, line_marker, completeness):
+    """#160 review: the check was named "no deliberate sunsetting calls
+    remain" and PASSed beside the degrades WARN on "1 deliberate call(s)",
+    two opposite readings of one call, live in the shipped tree. It lists
+    calls under a CURRENT allow marker, so it is named for that. A degrades
+    marker is not an allow marker, and an expired or malformed allow marker
+    is not current, so each of these PASSes and the name is true. The call
+    itself stays a finding in every case, and an allow marker that is not
+    current is reported by the completeness check instead."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js":
+            anchor_block(V1) + "\n" + rel_call() + "  " + line_marker()})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[DELIBERATE_CHECK]["status"] == "PASS"
+    assert r[DELIBERATE_CHECK]["detail"] == "no call carries a current allow marker"
+    assert r[DEP_CHECK]["status"] == "WARN"
+    assert r[DATED_CHECK]["status"] == completeness
+
+
+def test_sunset_pass_does_not_deny_an_excused_call_160(tmp_path):
+    """#160: with every remaining call excused by a current allow marker,
+    the sunset check PASSed with "no known-deprecated endpoint usage found"
+    beside the WARN listing that very call. The PASS stays a PASS, so the
+    exit code does not move, but it now says what is true: nothing
+    unexcused, and where the excused call is reported."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js":
+            anchor_block(V1) + "\n" + rel_call() + "  "
+            + marker(until="2026-12-31")})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[DEP_CHECK]["status"] == "PASS"
+    assert r[DEP_CHECK]["detail"].startswith(
+        "no unexcused calls; 1 call(s) excused by a current allow marker")
+    assert DELIBERATE_CHECK in r[DEP_CHECK]["detail"]
+    assert r[DELIBERATE_CHECK]["status"] == "WARN"
+    assert not [c for c, rec in r.items()
+                if "no known-deprecated endpoint usage found" in rec["detail"]]
+    assert "FAIL" not in {rec["status"] for rec in r.values()}
+
+
+def test_sunset_pass_is_plain_with_no_calls_at_all_160(tmp_path):
+    """#160 acceptance: with nothing marked and nothing unmarked, the
+    sunset check still reads as a plain PASS."""
+    root, scan = tree(tmp_path, {
+        "zaf-build/assets/main.js": anchor_block(V1) + "\nvar x = 1;"})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    r = by_check()
+    assert r[DEP_CHECK]["status"] == "PASS"
+    assert r[DEP_CHECK]["detail"] == "no known-deprecated endpoint usage found"
+    assert r[DELIBERATE_CHECK]["status"] == "PASS"
 
 
 # ── counts and their detail lines read the same list (#194) ─────────────
