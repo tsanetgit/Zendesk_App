@@ -12,6 +12,11 @@ name: Audit regression tests
 # an XPASS, which strict mode reports as a FAILURE — that is the signal to
 # promote the test to a plain assertion in the same PR as the fix.
 
+# Also validates .security-audit.json against the record it replaces, so a
+# review that drops a not_verified entry fails when it lands. Review commits
+# are pushed straight to main, so the push trigger is the one that sees them
+# (tsanetgit/Zendesk_App#140).
+
 # Reads the repo and runs pytest; writes nothing. Declared explicitly so it
 # does not inherit the repository default (tsanetgit/Zendesk_App#109).
 permissions:
@@ -21,11 +26,15 @@ on:
   push:
     paths:
       - 'scripts/security-audit.py'
+      - 'scripts/audit-record-fields.py'
+      - '.security-audit.json'
       - 'tests/**'
       - '.github/workflows/tests.yml'
   pull_request:
     paths:
       - 'scripts/security-audit.py'
+      - 'scripts/audit-record-fields.py'
+      - '.security-audit.json'
       - 'tests/**'
       - '.github/workflows/tests.yml'
 
@@ -34,6 +43,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The lineage step reads the record at the push's or the PR's base.
+          fetch-depth: 0
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -47,3 +59,21 @@ jobs:
 
       - name: Run the audit regression corpus
         run: python3 -m pytest -q tests/
+
+      # The prior record is the one this change replaces: the PR's base, or
+      # the commit before the push. When that commit has no record (a new
+      # branch, or before the record existed) the check is skipped with a
+      # warning on the run, never silently.
+      - name: Check the audit record's not_verified lineage
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          PRIOR_REF="${PR_BASE:-$PUSH_BEFORE}"
+          if [ -n "$PRIOR_REF" ] && git show "$PRIOR_REF:.security-audit.json" > "$RUNNER_TEMP/prior-audit.json" 2>/dev/null; then
+            python3 scripts/audit-record-fields.py --prior "$RUNNER_TEMP/prior-audit.json"
+          else
+            echo "::warning::no .security-audit.json at ${PRIOR_REF:-<no base>}; not_verified lineage not checked"
+            python3 scripts/audit-record-fields.py --no-prior
+          fi
