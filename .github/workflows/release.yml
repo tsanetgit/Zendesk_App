@@ -106,15 +106,17 @@ jobs:
             PRIOR_ARGS="--no-prior"
             PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
               | awk -v cur="$GITHUB_REF_NAME" 'hit { print; exit } $0 == cur { hit = 1 }')
-            if [ -n "$PREV_TAG" ] && git show "$PREV_TAG:.security-audit.json" > /tmp/prior-audit.json 2>/dev/null; then
+            if [ -z "$PREV_TAG" ]; then
+              LINEAGE="not checked: no version tag precedes $GITHUB_REF_NAME"
+            elif git show "$PREV_TAG:.security-audit.json" > /tmp/prior-audit.json 2>/dev/null; then
               PRIOR_ARGS="--prior /tmp/prior-audit.json"
               LINEAGE="checked against the $PREV_TAG record"
             else
-              LINEAGE="not checked: no earlier version tag carries a record"
+              LINEAGE="not checked: $PREV_TAG carries no record"
             fi
             # shellcheck disable=SC2086  # PRIOR_ARGS is one or two words by construction
             if ! AUDIT_FIELDS=$(python3 scripts/audit-record-fields.py $PRIOR_ARGS 2>/tmp/audit-parse.txt); then
-              flag_coverage "Audit record is unreadable or invalid ($(head -c 200 /tmp/audit-parse.txt | tr '\n' ' ')). Security status is INDETERMINATE, not clean."
+              flag_coverage "Audit record is unreadable, invalid, or drops a not_verified entry ($(head -c 200 /tmp/audit-parse.txt | tr '\n' ' ')). Security status is INDETERMINATE, not clean."
             else
               # Keyed JSON, not positional lines (#140).
               field() { printf '%s' "$AUDIT_FIELDS" | python3 -c "import json,sys; v=json.load(sys.stdin)['$1']; print(' '.join(map(str, v)) if isinstance(v, list) else v)"; }

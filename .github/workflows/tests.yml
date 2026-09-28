@@ -13,9 +13,11 @@ name: Audit regression tests
 # promote the test to a plain assertion in the same PR as the fix.
 
 # Also validates .security-audit.json against the record it replaces, so a
-# review that drops a not_verified entry fails when it lands. Review commits
-# are pushed straight to main, so the push trigger is the one that sees them
-# (tsanetgit/Zendesk_App#140).
+# review that drops a not_verified entry fails when it is pushed or opened as a
+# PR. Review commits are pushed straight to main, so the push trigger is the one
+# that sees them. When the replaced record cannot be read (a force-push, a new
+# branch) the step warns instead, and release.yml's check against the previous
+# tag's record is the backstop (tsanetgit/Zendesk_App#140).
 
 # Reads the repo and runs pytest; writes nothing. Declared explicitly so it
 # does not inherit the repository default (tsanetgit/Zendesk_App#109).
