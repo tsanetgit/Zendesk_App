@@ -19,8 +19,12 @@ TSANet webhook ping (eventType + requestToken)
       GetCollaboration   pull full case from TSANet API   (OAuth connection "tsanet_oauth")
       SearchTicket       find ticket by TSANet Token field (connection "zendesk")
       CheckTicketExists  branch on whether the ticket already exists
-      ├─ exists   → TransformForUpdate → UpdateTicket
-      │              jq: status → lowercase option value, respondBy → YYYY-MM-DD
+      ├─ exists   → ShowTicket → TransformForUpdate → CheckForChanges → UpdateTicket (or NoOp)
+      │              jq: status → lowercase option value; partner → submitting company on
+      │              INBOUND, receiving company on OUTBOUND; respondBy → YYYY-MM-DD while
+      │              responded is false, else cleared (the sidebar's rules, issue #235).
+      │              Only fields that differ from the ticket are written; nothing is
+      │              written when all match and the tsanet_updated tag is already set.
       └─ no match → GuardCreate                                   (idempotency guard, issue #42)
                      ├─ eventType collaboration-request.created → CreateTicket  new ticket w/ token/status/partner
                      └─ else (note.created, any V2 type)        → NoOp   only the creation event may create
@@ -335,6 +339,7 @@ Bundle `tsanet_connect` · template `2019-10-14` · 12 actions, 3 flows, 3 job s
   - `AutoAccept` (Action) → `action_ts_accept`
   - `AutoAcceptFail` (Action) → `action_zd_finish_fail`
   - `BuildSubmitter` (Action) → `Jq`
+  - `CheckForChanges` (Choice)
   - `CheckTicketExists` (Choice)
   - `CreateTicket` (Action) → `action_create_ticket`
   - `FinishAutoAccept` (Action) → `action_zd_finish_status`
