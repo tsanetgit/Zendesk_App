@@ -194,11 +194,22 @@
               "Type": "Action",
               "ActionName": "zis:common:transform:Jq",
               "Parameters": {
-                "expr": "(\"tsanet_status_\" + (.collab.status // \"\" | ascii_downcase)) as $status | ((.collab.respondBy // \"\")[0:10]) as $respond_by | {body: {ticket: {tags: (((.zd.ticket.tags // []) + [\"tsanet_updated\"]) | unique), safe_update: true, updated_stamp: .zd.ticket.updated_at, custom_fields: [{id: 1234567892, value: $status}, {id: 1234567893, value: .collab.receiveCompanyName}, {id: 1234567894, value: $respond_by}]}}}",
+                "expr": "(.zd.ticket.custom_fields // []) as $cf | (.zd.ticket.tags // []) as $tags | (\"tsanet_status_\" + (.collab.status // \"\" | ascii_downcase)) as $status | (if .collab.direction == \"INBOUND\" then .collab.submitCompanyName else .collab.receiveCompanyName end) as $partner | (if .collab.responded == false and (.collab.respondBy // \"\") != \"\" then .collab.respondBy[0:10] else null end) as $respond_by | ([{id: 1234567892, value: $status}, {id: 1234567893, value: $partner}, {id: 1234567894, value: $respond_by}] | map(.id as $i | select((.value // \"\") != ([$cf[] | select(.id == $i) | .value][0] // \"\")))) as $changes | (([$tags[] | select(. == \"tsanet_updated\")] | length) == 0) as $tag_missing | {writes: (($changes | length) + (if $tag_missing then 1 else 0 end)), body: {ticket: ({tags: (($tags + [\"tsanet_updated\"]) | unique), safe_update: true, updated_stamp: .zd.ticket.updated_at} + (if ($changes | length) > 0 then {custom_fields: $changes} else {} end))}}",
                 "data.$": "$"
               },
               "ResultPath": "$.xform",
-              "Next": "UpdateTicket"
+              "Next": "CheckForChanges"
+            },
+            "CheckForChanges": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.xform.writes",
+                  "NumericGreaterThan": 0,
+                  "Next": "UpdateTicket"
+                }
+              ],
+              "Default": "NoOp"
             },
             "GuardAutoAccept": {
               "Type": "Choice",
