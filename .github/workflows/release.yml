@@ -85,21 +85,50 @@ jobs:
 
           # 2. An audit record must exist, parse, and cover this commit.
           #
-          # Validated in ONE python call that either prints both fields or exits
-          # nonzero. A partial read is the dangerous case: a missing key that
-          # becomes an empty string, compared numerically, errors and reads as
-          # "no findings" — assurance manufactured from a parse failure, which is
-          # the #108 failure mode in a new place.
+          # Validated in ONE python call that either prints its fields as one
+          # keyed JSON object or exits nonzero (#140). A partial read is the
+          # dangerous case: a missing key that becomes an empty string,
+          # compared numerically, errors and reads as "no findings" — assurance
+          # manufactured from a parse failure, which is the #108 failure mode in
+          # a new place.
           ACCEPTED=""
+          NV_OPEN=""
+          LINEAGE=""
+          RECORD_VALID=false
           if [ ! -f .security-audit.json ]; then
             flag_coverage "No .security-audit.json — this build has never been security reviewed."
           else
             AUDIT_FIELDS=""
-            if ! AUDIT_FIELDS=$(python3 scripts/audit-record-fields.py 2>/tmp/audit-parse.txt); then
-              flag_coverage "Audit record is unreadable or invalid ($(head -c 200 /tmp/audit-parse.txt | tr '\n' ' ')). Security status is INDETERMINATE, not clean."
+            # The prior record is the one at the previous version tag, so a
+            # review that dropped a not_verified entry fails here even if it
+            # was pushed straight to main (#140). Version order, not date, and
+            # only vX.Y.Z tags. With no earlier tag record the lineage check is
+            # skipped, and the summary says so rather than implying it ran.
+            PRIOR_ARGS="--no-prior"
+            PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | awk -v cur="$GITHUB_REF_NAME" 'hit { print; exit } $0 == cur { hit = 1 }')
+            if ! printf '%s' "$GITHUB_REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              LINEAGE="not checked: $GITHUB_REF_NAME is not a vX.Y.Z tag"
+            elif [ -z "$PREV_TAG" ]; then
+              LINEAGE="not checked: no version tag precedes $GITHUB_REF_NAME"
+            elif git show "$PREV_TAG:.security-audit.json" > /tmp/prior-audit.json 2>/dev/null; then
+              PRIOR_ARGS="--prior /tmp/prior-audit.json"
+              LINEAGE="checked against the $PREV_TAG record"
             else
-              REVIEWED=$(printf '%s\n' "$AUDIT_FIELDS" | sed -n 1p)
-              ACCEPTED=$(printf '%s\n' "$AUDIT_FIELDS" | sed -n 2p)
+              LINEAGE="not checked: $PREV_TAG carries no record"
+            fi
+            # shellcheck disable=SC2086  # PRIOR_ARGS is one or two words by construction
+            if ! AUDIT_FIELDS=$(python3 scripts/audit-record-fields.py $PRIOR_ARGS 2>/tmp/audit-parse.txt); then
+              flag_coverage "Audit record is unreadable, invalid, or drops a not_verified entry ($(head -c 200 /tmp/audit-parse.txt | tr '\n' ' ')). Security status is INDETERMINATE, not clean."
+            else
+              # Keyed JSON, not positional lines (#140).
+              field() { printf '%s' "$AUDIT_FIELDS" | python3 -c "import json,sys; v=json.load(sys.stdin)['$1']; print(' '.join(map(str, v)) if isinstance(v, list) else v)"; }
+              if REVIEWED=$(field reviewed_commit) && ACCEPTED=$(field accepted_issues) \
+                  && NV_OPEN=$(field not_verified_open); then
+                RECORD_VALID=true
+              else
+                flag_coverage "Audit record fields could not be read from the validator's output. Security status is INDETERMINATE, not clean."
+              fi
               if ! git merge-base --is-ancestor "$REVIEWED" HEAD 2>/dev/null; then
                 flag_coverage "Audit record references commit $REVIEWED, which is not an ancestor of this tag."
               else
@@ -243,6 +272,19 @@ jobs:
                 echo ""
               fi
               echo "</details>"
+            fi
+            # Claims the review could not check (#140). Advisory, like the
+            # backlog above: counted and named from the same list, never a flag.
+            # Only a record that validated can be summarized. An invalid one is
+            # already named in the reasons, and "no open items" beside it would
+            # be false (a rehearsal of this job printed exactly that).
+            if [ "$RECORD_VALID" = true ] && [ -n "$NV_OPEN" ]; then
+              NV_COUNT=$(printf '%s' "$NV_OPEN" | wc -w | tr -d ' ')
+              echo ""
+              echo "**$NV_COUNT open not-verified item(s) in the audit record:** $NV_OPEN. The next review must carry each forward or resolve it (lineage $LINEAGE)."
+            elif [ "$RECORD_VALID" = true ]; then
+              echo ""
+              echo "No open not-verified items in the audit record (lineage $LINEAGE)."
             fi
             echo ""
             echo '<details><summary>Mechanical check output</summary>'
