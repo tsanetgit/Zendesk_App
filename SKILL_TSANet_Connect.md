@@ -79,7 +79,7 @@ This is now the **live, default** auth scheme for server-to-server integrations,
 | `POST` | `/v1/login` | Authenticate, get JWT |
 | `GET` | `/v1/me` | Verify identity, get companyId/domain |
 | `GET` | `/v1/partners/{searchTerm}` | Find partner companyId/departmentId |
-| `GET` | `/v1/partners/search?query=...` | Semantic partner search (natural-language `query`; optional `limit`, default 10) |
+| `GET` | `/v1/partners/search?query=...` | **Do not use.** Semantic partner search. Returns 500 on BETA and DEV, is not used by members, and is being deprecated in the spec. Use `/v1/partners/{searchTerm}` |
 | `GET` | `/v1/forms/department/{departmentId}` | Get form template + required `documentId` |
 | `GET` | `/v1/forms/company/{companyId}` | Same, by company |
 | `POST` | `/v1/collaboration-requests` | Submit new outbound case |
