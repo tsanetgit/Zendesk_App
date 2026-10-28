@@ -124,7 +124,7 @@ token creation for accounts created on or after **2026-07-28**, blocks new token
 everyone after **2026-10-27**, and deactivates all tokens on **2027-04-30**. The app
 runs on the admin's own session, so there is no credential to create or maintain.
 
-**As of 2026-10-28 the endpoint accepts a ZIS OAuth token.** The token must be minted
+**As of 2026-10-28 the endpoint accepts a ZIS OAuth token.** The token tested was minted
 from the integration's own `zis_<integration-name>` client, the same `$ZIS_TOKEN` the
 other ZIS calls use. On the d3v test instance, re-uploading the installed bundle with
 that token returned 200, and the job specs were reinstalled and verified afterwards
