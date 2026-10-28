@@ -1,7 +1,7 @@
 # TSANet Connect for Zendesk: Quick Start
 
 **App version:** see the [latest release](https://github.com/tsanetgit/Zendesk_App/releases/latest). Always install the newest ZIP; this guide is not pinned to a version.
-**Last updated:** July 2026
+**Last updated:** October 2026
 **Time to complete:** about half a day of focused work
 
 This is the single install guide for the TSANet Connect integration. It covers both halves:

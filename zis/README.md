@@ -226,9 +226,9 @@ Zendesk macros are per-instance Support config and **cannot ship in the ZIS bund
 
 Easiest route is the UI: **Admin Center → Workspaces → Macros → Add macro**, with one action setting **TSANet Action** to **Add Note**.
 
-Via the API, substitute your **TSANet Action** field id for `FIELD_ID`. Unlike bundle
-upload, this is a plain Support API endpoint and accepts OAuth, so use the
-`$SETUP_TOKEN` bearer from Step 1 rather than an API token:
+Via the API, substitute your **TSANet Action** field id for `FIELD_ID`. This is a
+plain Support API endpoint, not a ZIS one, so use the `$SETUP_TOKEN` bearer from
+Step 1 rather than `$ZIS_TOKEN` or an API token:
 
 ```bash
 curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/v2/macros.json" \

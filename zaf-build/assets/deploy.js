@@ -9,10 +9,11 @@
  * substitutes per-instance values and installs every job spec.) Zendesk is
  * removing API tokens (none for accounts created on/after 2026-07-28, none for
  * anyone after 2026-10-27, all deactivated 2027-04-30) and password auth for
- * APIs is already gone. So the documented curl install stops working for new
- * members, and this screen is the replacement: ZAF `client.request()` runs on the
- * signed-in admin's own session, which is the same mechanism Admin Center uses
- * against ZIS, and needs no credential the admin has to create or maintain.
+ * APIs is already gone. So the curl install, which needed one of those, stopped
+ * working for new members, and this screen replaced it: ZAF `client.request()`
+ * runs on the signed-in admin's own session, which is the same mechanism Admin
+ * Center uses against ZIS, and needs no credential the admin has to create or
+ * maintain.
  *
  * Deliberate design points
  * ------------------------
