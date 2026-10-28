@@ -131,8 +131,11 @@ that token returned 200, and the job specs were reinstalled and verified afterwa
 (probe record: `tsanetgit/Zendesk_App#238`).
 A token from a client you created yourself gets `401 Authorization failed due to
 integration mismatch` on `GET .../job_specs`; a full upload with one was not tried.
-Zendesk has not announced the change, and it has been seen on one instance, so treat
-it as observed behaviour that could be reversed. The app stays the deploy path
+Zendesk's API reference for this endpoint lists "an OAuth token with `zis:write`
+permission" among the accepted credentials, but the endpoint refused OAuth in
+practice until late October, and Zendesk's developer changelog has no entry for the
+change (both checked 2026-10-28). It has been seen on one instance, so treat it as
+observed behaviour that could be reversed. The app stays the deploy path
 either way. A bare upload sends the bundle's placeholders as they are, and leaves the
 job specs it orphans uninstalled. The app fills in the per-instance values, installs
 every job spec and reads the registry back.
