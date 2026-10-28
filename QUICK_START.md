@@ -261,6 +261,7 @@ Zendesk validates the package and shows the installation settings screen.
 | **TSANet integration name** | **Leave as `tsanet_connect`** unless Step 1b forced you onto a different name, in which case enter the exact name you registered | No |
 | **Shared author user id** | Numeric user id of a dedicated shared user (for example "IBM via TSANet") to author connector-written comments. Create the user first: email on your own domain (never the partner's), end user or light agent both work. Empty means comments show under the connection user | No |
 | **Auto-accept inbound requests** | **Leave off** unless your team has decided to accept every inbound request automatically. See *Optional: Auto-Accept Inbound Requests* below before enabling | No |
+| **TSANet engineer email** | The address TSANet records as the engineer on accepts this integration makes in ZIS: auto-accept and field actions. Must be on your member-registered domain. Leave blank to use the API username. The sidebar's own Accept always uses the API username | No |
 | **Auto-accept next steps** | The nextSteps text partners see on ZIS-driven accepts. Leave as the default unless auto-accepting, in which case something like `Case accepted automatically; an engineer will follow up shortly.` sets expectations better | No |
 
 `BETA` maps to `connect2.tsanet.net` and `PRODUCTION` to `connect2.tsanet.org`. Set it to match where your account is provisioned.
@@ -534,7 +535,7 @@ Macros are per-instance Zendesk configuration and cannot be bundled with the int
 
 Off by default. When enabled, every inbound collaboration request is accepted the moment its ticket is created: the inbound flow continues past ticket creation into the Accept call, sets **TSANet Status** to accepted, and leaves a private confirmation comment. The partner sees the acceptance seconds after submitting, with your ticket number as the case reference.
 
-**Decide with eyes open before enabling.** Auto-accept satisfies the response SLA instantly, but it also commits you to every inbound case with no triage window: nobody looks at the request before your company accepts it, and the Reject / Request Information options are never exercised. The partner sees your API user as the accepting engineer, and the **Auto-accept next steps** text as the engineer's note, so set that text to something that tells the partner what actually happens next.
+**Decide with eyes open before enabling.** Auto-accept satisfies the response SLA instantly, but it also commits you to every inbound case with no triage window: nobody looks at the request before your company accepts it, and the Reject / Request Information options are never exercised. The partner sees your **TSANet engineer email** (or, when that setting is blank, your API username) as the accepting engineer, and the **Auto-accept next steps** text as the engineer's note, so set that text to something that tells the partner what actually happens next.
 
 There are two ways to get auto-accept, and they suit different policies:
 
