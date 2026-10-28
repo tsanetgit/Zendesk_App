@@ -127,7 +127,8 @@ runs on the admin's own session, so there is no credential to create or maintain
 **As of 2026-10-28 the endpoint accepts a ZIS OAuth token.** The token must be minted
 from the integration's own `zis_<integration-name>` client, the same `$ZIS_TOKEN` the
 other ZIS calls use. On the d3v test instance, re-uploading the installed bundle with
-that token returned 200, and the job specs were reinstalled and verified afterwards.
+that token returned 200, and the job specs were reinstalled and verified afterwards
+(probe record: `tsanetgit/Zendesk_App#238`).
 A token from a client you created yourself gets `401 Authorization failed due to
 integration mismatch` on `GET .../job_specs`; a full upload with one was not tried.
 Zendesk has not announced the change, and it has been seen on one instance, so treat
