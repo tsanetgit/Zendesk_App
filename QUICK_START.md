@@ -124,8 +124,7 @@ ZIS_TOKEN=$(curl -s -X POST \
   -d '{"token":{"client_id":ZIS_CLIENT_NUMERIC_ID,"scopes":["read","write"]}}' | jq -r '.token.full_token')
 ```
 
-<!-- PROVISIONAL(tsanetgit/Zendesk_App#239): remove this note when the mint moves off the deprecated Create Token endpoint -->
-> **Check the token before you go on.** Zendesk deprecated this endpoint (`POST /api/v2/oauth/tokens`) on 2026-08-26; it still worked on 2026-10-28. If `echo $ZIS_TOKEN` prints `null`, the mint failed, and every later ZIS call will return `401 Authentication failed`, which points at the token rather than this step. Tracked in [tsanetgit/Zendesk_App#239](https://github.com/tsanetgit/Zendesk_App/issues/239).
+> **Check the token before you go on.** Zendesk deprecated this endpoint (`POST /api/v2/oauth/tokens`) on 2026-08-26; it still worked on 2026-10-28. Run `[ -n "$ZIS_TOKEN" ] && [ "$ZIS_TOKEN" != null ] && echo ok || echo "mint failed"`. If it prints `mint failed`, stop here: every later ZIS call would return `401 Authentication failed`, and that error won't point you back to this step. Tracked in [tsanetgit/Zendesk_App#239](https://github.com/tsanetgit/Zendesk_App/issues/239).
 
 The mint needs only the numeric id, not the client's secret, so if you did not keep the create response you can look the id up at any time. Find the entry whose `identifier` is `zis_tsanet_connect`:
 
