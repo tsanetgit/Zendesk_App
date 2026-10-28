@@ -261,6 +261,7 @@ Zendesk validates the package and shows the installation settings screen.
 | **TSANet integration name** | **Leave as `tsanet_connect`** unless Step 1b forced you onto a different name, in which case enter the exact name you registered | No |
 | **Shared author user id** | Numeric user id of a dedicated shared user (for example "IBM via TSANet") to author connector-written comments. Create the user first: email on your own domain (never the partner's), end user or light agent both work. Empty means comments show under the connection user | No |
 | **Auto-accept inbound requests** | **Leave off** unless your team has decided to accept every inbound request automatically. See *Optional: Auto-Accept Inbound Requests* below before enabling | No |
+| **TSANet engineer email** | The address TSANet records as the engineer on accepts this integration makes in ZIS: auto-accept and field actions. Must be on your member-registered domain. Leave blank to use the API username. The sidebar's own Accept always uses the API username | No |
 | **Auto-accept next steps** | The nextSteps text partners see on ZIS-driven accepts. Leave as the default unless auto-accepting, in which case something like `Case accepted automatically; an engineer will follow up shortly.` sets expectations better | No |
 
 `BETA` maps to `connect2.tsanet.net` and `PRODUCTION` to `connect2.tsanet.org`. Set it to match where your account is provisioned.
@@ -499,7 +500,7 @@ You do not need to note the IDs. Once both fields exist, run **Detect field IDs*
 
 ### Turn the field actions on
 
-Run **Detect field IDs** and **Apply** to fill in the two field IDs, then add your **TSANet engineer email** by hand. That one is not a ticket field, so detection cannot find it. It is the address TSANet records as the engineer on an Accept, and it must be on your member-registered domain.
+Run **Detect field IDs** and **Apply** to fill in the two field IDs. Optionally add your **TSANet engineer email** by hand; leave it blank and the app uses your TSANet API username. That one is not a ticket field, so detection cannot find it. It is the address TSANet records as the engineer on an Accept, and it must be on your member-registered domain.
 
 Then run **Deploy bundle** again. The app re-uploads with the field-action resources included and reinstalls every job spec.
 
@@ -534,7 +535,7 @@ Macros are per-instance Zendesk configuration and cannot be bundled with the int
 
 Off by default. When enabled, every inbound collaboration request is accepted the moment its ticket is created: the inbound flow continues past ticket creation into the Accept call, sets **TSANet Status** to accepted, and leaves a private confirmation comment. The partner sees the acceptance seconds after submitting, with your ticket number as the case reference.
 
-**Decide with eyes open before enabling.** Auto-accept satisfies the response SLA instantly, but it also commits you to every inbound case with no triage window: nobody looks at the request before your company accepts it, and the Reject / Request Information options are never exercised. The partner sees your API user as the accepting engineer, and the **Auto-accept next steps** text as the engineer's note, so set that text to something that tells the partner what actually happens next.
+**Decide with eyes open before enabling.** Auto-accept satisfies the response SLA instantly, but it also commits you to every inbound case with no triage window: nobody looks at the request before your company accepts it, and the Reject / Request Information options are never exercised. The partner sees your **TSANet engineer email** (or, when that setting is blank, your API username) as the accepting engineer, and the **Auto-accept next steps** text as the engineer's note, so set that text to something that tells the partner what actually happens next.
 
 There are two ways to get auto-accept, and they suit different policies:
 
@@ -630,8 +631,8 @@ Seven authentication contexts. None of them uses a Zendesk API token.
 
 | Context | Method | Where it is stored |
 |---|---|---|
-| Setup commands (Steps 1c, 2, 4a, 4d, macros) | Short-lived OAuth setup token (`$SETUP_TOKEN`) | Minted per use, nothing stored |
-| ZIS management calls | ZIS OAuth bearer (`$ZIS_TOKEN`) | Used per session, nothing stored |
+| Setup commands (Step 1b, macros) | Short-lived OAuth setup token (`$SETUP_TOKEN`) | Minted per use, nothing stored |
+| ZIS management calls (Steps 2, 4a, 4d, 4e) | ZIS OAuth bearer (`$ZIS_TOKEN`) | Used per session, nothing stored |
 | Bundle deploy (Step 4c) | Your own signed-in admin session, via the app | Nothing stored. Besides uploading, the app fills in your instance's values and installs and checks the job specs |
 | ZIS to TSANet API (runtime) | OAuth client credentials (Microsoft Entra) | ZIS connection, minted and renewed automatically |
 | ZIS to Zendesk API (runtime) | OAuth client credentials against your own instance (`zendesk`, scope `read tickets:write`) | ZIS connection from Step 4a, renewed automatically |
