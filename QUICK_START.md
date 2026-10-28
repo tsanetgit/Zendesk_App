@@ -499,7 +499,7 @@ You do not need to note the IDs. Once both fields exist, run **Detect field IDs*
 
 ### Turn the field actions on
 
-Run **Detect field IDs** and **Apply** to fill in the two field IDs, then add your **TSANet engineer email** by hand. That one is not a ticket field, so detection cannot find it. It is the address TSANet records as the engineer on an Accept, and it must be on your member-registered domain.
+Run **Detect field IDs** and **Apply** to fill in the two field IDs. Optionally add your **TSANet engineer email** by hand; leave it blank and the app uses your TSANet API username. That one is not a ticket field, so detection cannot find it. It is the address TSANet records as the engineer on an Accept, and it must be on your member-registered domain.
 
 Then run **Deploy bundle** again. The app re-uploads with the field-action resources included and reinstalls every job spec.
 

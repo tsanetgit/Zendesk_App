@@ -183,7 +183,8 @@ The bundle also includes `flow_field_action` + `jobspec_field_action` (issue #22
 **This feature is off unless you turn it on**, and it is off on a first install. The
 app decides from its own settings: leave **TSANet Action** and **TSANet Action Text**
 blank and the deploy screen omits `flow_field_action`, `jobspec_field_action` and the
-seven actions only that flow uses, then deploys everything else normally. Fill both in
+three actions only that flow uses (`action_ts_reject`, `action_ts_info`,
+`action_zd_finish_note_receipt`), then deploys everything else normally. Fill both in
 and deploy again to add it. Nothing about the sidebar app changes either way — it never
 reads these two fields, and performs Accept / Reject / Request Info / Add Note by
 calling the TSANet API directly.
@@ -193,7 +194,7 @@ calling the TSANet API directly.
 1. Create two more custom ticket fields:
    - **TSANet Action** — dropdown with options `Accept` (tag `tsanet_action_accept`), `Reject` (`tsanet_action_reject`), `Request Info` (`tsanet_action_request_info`), `Add Note` (`tsanet_action_add_note`)
    - **TSANet Action Text** — text; holds the reject reason / info question / note body
-2. Run **Detect field IDs** → **Apply** on the app's nav-bar screen. Both new fields are in the app's expected-field list as optional entries, so detection picks them up once they exist; there is no need to copy IDs out of Admin Center URLs. Then set **`tsanet_engineer_email`** by hand — it is not a ticket field, so it cannot be detected, and TSANet's Accept endpoint requires an `engineerEmail` from your registered domain (agent emails fail validation). All three are required together: the two field IDs are a pair, and the deploy screen rejects one without the other rather than guessing.
+2. Run **Detect field IDs** → **Apply** on the app's nav-bar screen. Both new fields are in the app's expected-field list as optional entries, so detection picks them up once they exist; there is no need to copy IDs out of Admin Center URLs. Optionally set **`tsanet_engineer_email`** by hand — it is not a ticket field, so it cannot be detected. TSANet's Accept endpoint requires an `engineerEmail` from your registered domain (agent emails fail validation); leave the setting blank and the app uses `tsanet_username`, which satisfies the same rule. The two field IDs are a pair: the deploy screen rejects one without the other rather than guessing.
 3. **Deploy again** from the app. The bundle now carries the field-driven flow, and every job spec — including `jobspec_field_action` — is reinstalled, which is necessary because uploading a bundle orphans the specs from the previous one.
 4. Optional but recommended: four macros ("TSANet: Accept", ...) that set the Action (and prompt for Action Text where relevant) for one-click agent UX.
 
