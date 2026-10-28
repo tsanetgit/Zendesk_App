@@ -116,12 +116,29 @@ bundle, installs each job spec, and then **reads the registry back** to confirm 
 is actually installed. It reports per-step results and offers **Retry all** if any
 step fails.
 
-Why the app rather than curl: this endpoint **rejects OAuth** (401 `Authorization
-failed due to OAuth being disabled for this API request`, re-verified 2026-07-27).
-It accepts only an API token or an authenticated admin session. Zendesk blocks API
+Why the app rather than curl: until late October 2026 this endpoint **rejected
+OAuth** (401 `Authorization failed due to OAuth being disabled for this API
+request`, verified 2026-07-07 and 2026-07-27, and still returned on 2026-10-21). It
+accepted only an API token or an authenticated admin session. Zendesk blocks API
 token creation for accounts created on or after **2026-07-28**, blocks new tokens for
 everyone after **2026-10-27**, and deactivates all tokens on **2027-04-30**. The app
 runs on the admin's own session, so there is no credential to create or maintain.
+
+**As of 2026-10-28 the endpoint accepts a ZIS OAuth token.** The token tested was minted
+from the integration's own `zis_<integration-name>` client, the same `$ZIS_TOKEN` the
+other ZIS calls use. On the d3v test instance, re-uploading the installed bundle with
+that token returned 200, and the job specs were reinstalled and verified afterwards
+(probe record: `tsanetgit/Zendesk_App#238`).
+A token from a client you created yourself gets `401 Authorization failed due to
+integration mismatch` on `GET .../job_specs`; a full upload with one was not tried.
+Zendesk's API reference for this endpoint lists "an OAuth token with `zis:write`
+permission" among the accepted credentials, but the endpoint refused OAuth in
+practice until late October, and Zendesk's developer changelog has no entry for the
+change (both checked 2026-10-28). It has been seen on one instance, so treat it as
+observed behaviour that could be reversed. The app stays the deploy path
+either way. A bare upload sends the bundle's placeholders as they are, and leaves the
+job specs it orphans uninstalled. The app fills in the per-instance values, installs
+every job spec and reads the registry back.
 
 Notes:
 
@@ -213,9 +230,9 @@ Zendesk macros are per-instance Support config and **cannot ship in the ZIS bund
 
 Easiest route is the UI: **Admin Center → Workspaces → Macros → Add macro**, with one action setting **TSANet Action** to **Add Note**.
 
-Via the API, substitute your **TSANet Action** field id for `FIELD_ID`. Unlike bundle
-upload, this is a plain Support API endpoint and accepts OAuth, so use the
-`$SETUP_TOKEN` bearer from Step 1 rather than an API token:
+Via the API, substitute your **TSANet Action** field id for `FIELD_ID`. This is a
+plain Support API endpoint, not a ZIS one, so use the `$SETUP_TOKEN` bearer from
+Step 1 rather than `$ZIS_TOKEN` or an API token:
 
 ```bash
 curl -X POST "https://YOURSUBDOMAIN.zendesk.com/api/v2/macros.json" \

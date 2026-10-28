@@ -1,7 +1,7 @@
 # TSANet Connect for Zendesk: Quick Start
 
 **App version:** see the [latest release](https://github.com/tsanetgit/Zendesk_App/releases/latest). Always install the newest ZIP; this guide is not pinned to a version.
-**Last updated:** July 2026
+**Last updated:** October 2026
 **Time to complete:** about half a day of focused work
 
 This is the single install guide for the TSANet Connect integration. It covers both halves:
@@ -384,7 +384,7 @@ The app substitutes your per-instance values, uploads the bundle, **installs eve
 
 > **You must be a Zendesk administrator.** The nav bar screen is visible to any agent, so the app's own role check is a convenience gate rather than a security boundary. The boundary is server-side: Zendesk documents the ZIS registry endpoints as [Allowed for: Admins](https://developer.zendesk.com/api-reference/integration-services/registry/bundles/), and TSANet has now tested that claim. On 2026-07-28 a session holding the `Staff` custom role, the most privileged non-admin role on the test instance, was refused with `403 Only admin user is allowed` on the bundles endpoint and `403 Forbidden` on `PUT /api/v2/apps/installations/{id}`, which is what **Apply** on the same screen writes to. That is one role, on one instance, on one day (`tsanetgit/Zendesk_App#125`): evidence that the vendor documentation is accurate, not an exhaustive proof.
 
-> **Why the app and not a curl command.** The bundles endpoint rejects OAuth outright (401 "Authorization failed due to OAuth being disabled for this API request", re-verified 2026-07-27), so neither `$SETUP_TOKEN` nor `$ZIS_TOKEN` works on it. The only credentials it accepts are a Zendesk API token and your own signed-in admin session, and Zendesk is withdrawing API tokens on the timeline in Step 1a. The app runs on your admin session, so there is nothing to create, store, or rotate for this step.
+> **Why the app and not a curl command.** Until late October 2026 the bundles endpoint rejected OAuth outright (401 "Authorization failed due to OAuth being disabled for this API request"). As of 2026-10-28 it accepts `$ZIS_TOKEN`, but Zendesk's changelog has no entry for it and it has been seen on one instance; [`zis/README.md`](zis/README.md#1-upload-the-bundle-and-install-job-specs--in-the-app) has the details. The app is still how you deploy. A curl upload needs every per-instance value substituted by hand and every job spec reinstalled by hand afterwards, while the app fills in your instance's values, installs every job spec and checks the result. It runs on your admin session, so there is nothing to create, store, or rotate for this step.
 
 > **Deploying replaces the installed bundle**, and an upload orphans the job specs installed from the previous one. The app reinstalls all of them immediately and verifies the result, but the integration is briefly inactive in between, so do not close the tab mid-run. If a step fails, the screen names it and offers **Retry all**. If the read-back reports job specs that are installed but not in the current bundle, those are stale orphans from an older generation and they still intercept events: uninstall them with `DELETE /api/services/zis/registry/job_specs/install?job_spec_name=zis:tsanet_connect:job_spec:<name>`.
 
@@ -632,7 +632,7 @@ Seven authentication contexts. None of them uses a Zendesk API token.
 |---|---|---|
 | Setup commands (Steps 1c, 2, 4a, 4d, macros) | Short-lived OAuth setup token (`$SETUP_TOKEN`) | Minted per use, nothing stored |
 | ZIS management calls | ZIS OAuth bearer (`$ZIS_TOKEN`) | Used per session, nothing stored |
-| Bundle deploy (Step 4c) | Your own signed-in admin session, via the app | Nothing stored. This endpoint refuses OAuth, which is why it runs in the app |
+| Bundle deploy (Step 4c) | Your own signed-in admin session, via the app | Nothing stored. Besides uploading, the app fills in your instance's values and installs and checks the job specs |
 | ZIS to TSANet API (runtime) | OAuth client credentials (Microsoft Entra) | ZIS connection, minted and renewed automatically |
 | ZIS to Zendesk API (runtime) | OAuth client credentials against your own instance (`zendesk`, scope `read tickets:write`) | ZIS connection from Step 4a, renewed automatically |
 | ZAF app to Zendesk (runtime) | Inherited agent session via the ZAF SDK | Automatic, no credential needed |
