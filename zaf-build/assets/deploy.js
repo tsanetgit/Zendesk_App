@@ -2,12 +2,15 @@
  *
  * Why this exists
  * ---------------
- * `POST /api/services/zis/registry/{integration}/bundles` rejects OAuth. It
- * accepts an API token or an authenticated admin session. Zendesk is removing
- * API tokens (none for accounts created on/after 2026-07-28, none for anyone
- * after 2026-10-27, all deactivated 2027-04-30) and password auth for APIs is
- * already gone. So the documented curl install stops working for new members,
- * and this screen is the replacement: ZAF `client.request()` runs on the
+ * `POST /api/services/zis/registry/{integration}/bundles` rejected OAuth until
+ * late October 2026, accepting only an API token or an authenticated admin
+ * session. (As of 2026-10-28 it also accepts a ZIS OAuth token; zis/README.md
+ * has the evidence. This screen stays the deploy path regardless: it also
+ * substitutes per-instance values and installs every job spec.) Zendesk is
+ * removing API tokens (none for accounts created on/after 2026-07-28, none for
+ * anyone after 2026-10-27, all deactivated 2027-04-30) and password auth for
+ * APIs is already gone. So the documented curl install stops working for new
+ * members, and this screen is the replacement: ZAF `client.request()` runs on the
  * signed-in admin's own session, which is the same mechanism Admin Center uses
  * against ZIS, and needs no credential the admin has to create or maintain.
  *

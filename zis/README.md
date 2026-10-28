@@ -116,12 +116,25 @@ bundle, installs each job spec, and then **reads the registry back** to confirm 
 is actually installed. It reports per-step results and offers **Retry all** if any
 step fails.
 
-Why the app rather than curl: this endpoint **rejects OAuth** (401 `Authorization
-failed due to OAuth being disabled for this API request`, re-verified 2026-07-27).
-It accepts only an API token or an authenticated admin session. Zendesk blocks API
+Why the app rather than curl: until late October 2026 this endpoint **rejected
+OAuth** (401 `Authorization failed due to OAuth being disabled for this API
+request`, verified 2026-07-07 and 2026-07-27, and still returned on 2026-10-21). It
+accepted only an API token or an authenticated admin session. Zendesk blocks API
 token creation for accounts created on or after **2026-07-28**, blocks new tokens for
 everyone after **2026-10-27**, and deactivates all tokens on **2027-04-30**. The app
 runs on the admin's own session, so there is no credential to create or maintain.
+
+**As of 2026-10-28 the endpoint accepts a ZIS OAuth token.** The token must be minted
+from the integration's own `zis_<integration-name>` client, the same `$ZIS_TOKEN` the
+other ZIS calls use. On the d3v test instance, re-uploading the installed bundle with
+that token returned 200, and the job specs were reinstalled and verified afterwards.
+A token from a client you created yourself gets `401 Authorization failed due to
+integration mismatch` on `GET .../job_specs`; a full upload with one was not tried.
+Zendesk has not announced the change, and it has been seen on one instance, so treat
+it as observed behaviour that could be reversed. The app stays the deploy path
+either way. A bare upload sends the bundle's placeholders as they are, and leaves the
+job specs it orphans uninstalled. The app fills in the per-instance values, installs
+every job spec and reads the registry back.
 
 Notes:
 
