@@ -632,7 +632,7 @@ Seven authentication contexts. None of them uses a Zendesk API token.
 |---|---|---|
 | Setup commands (Steps 1c, 2, 4a, 4d, macros) | Short-lived OAuth setup token (`$SETUP_TOKEN`) | Minted per use, nothing stored |
 | ZIS management calls | ZIS OAuth bearer (`$ZIS_TOKEN`) | Used per session, nothing stored |
-| Bundle deploy (Step 4c) | Your own signed-in admin session, via the app | Nothing stored. The app also fills in your instance's values and installs and checks the job specs |
+| Bundle deploy (Step 4c) | Your own signed-in admin session, via the app | Nothing stored. Besides uploading, the app fills in your instance's values and installs and checks the job specs |
 | ZIS to TSANet API (runtime) | OAuth client credentials (Microsoft Entra) | ZIS connection, minted and renewed automatically |
 | ZIS to Zendesk API (runtime) | OAuth client credentials against your own instance (`zendesk`, scope `read tickets:write`) | ZIS connection from Step 4a, renewed automatically |
 | ZAF app to Zendesk (runtime) | Inherited agent session via the ZAF SDK | Automatic, no credential needed |
