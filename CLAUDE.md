@@ -4,7 +4,7 @@ TSANet Connect for Zendesk: a private Zendesk Apps Framework (ZAF) sidebar app p
 
 ## Build and test
 
-There is no build step: the files under `zaf-build/` are exactly what ships. You need Python 3, Node and the `jq` CLI, plus `python3 -m pip install pytest pyyaml`.
+There is no build step: `scripts/package.sh` zips `manifest.json`, `assets/` and `translations/` from `zaf-build/` exactly as committed. `zaf-build/README.md` doesn't ship. You need Python 3, Node and the `jq` CLI, plus `python3 -m pip install pytest pyyaml`.
 
 ```bash
 python3 -m pytest -q tests/                  # audit regression corpus and the ZIS update-path jq tests
@@ -23,7 +23,7 @@ Two files are derived from `zis/tsanet_connect_bundle.json`. After changing the 
 
 ## Layout
 
-- `zaf-build/`: the app as shipped: `manifest.json`, `assets/main.js` (sidebar), `assets/background.html` (poller), `assets/deploy.html` and `deploy.js` (the deploy screen), `translations/`
+- `zaf-build/`: the app source, which ships as is except `README.md`: `manifest.json`, `assets/main.js` (sidebar), `assets/background.html` (poller), `assets/deploy.html` and `deploy.js` (the deploy screen), `translations/`
 - `zis/`: `tsanet_connect_bundle.json`, the ZIS bundle and its source of truth, with its reference in `README.md`
 - `scripts/`: the probes, the packaging script, the security audit and the credential rotation scripts
 - `tests/`: pytest suites
