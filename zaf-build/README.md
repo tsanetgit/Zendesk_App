@@ -4,7 +4,7 @@ A Zendesk Apps Framework (ZAF) sidebar app that embeds TSANet Connect collaborat
 
 **Current version:** see [`manifest.json`](manifest.json) and the [latest release](https://github.com/tsanetgit/Zendesk_App/releases).
 **Distribution:** Private ZAF app, ZIP upload via Zendesk Admin Center.
-**Canonical source:** this repository. The files under `zaf-build/` are edited directly, and everything here except this README ships as is — there is no separate source tree that compiles into them.
+**Canonical source:** this repository. The files under `zaf-build/` are edited directly, and `scripts/package.sh` zips `manifest.json`, `assets/` and `translations/` from here as is — there is no separate source tree that compiles into them.
 
 ---
 
