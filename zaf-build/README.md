@@ -4,7 +4,7 @@ A Zendesk Apps Framework (ZAF) sidebar app that embeds TSANet Connect collaborat
 
 **Current version:** see [`manifest.json`](manifest.json) and the [latest release](https://github.com/tsanetgit/Zendesk_App/releases).
 **Distribution:** Private ZAF app, ZIP upload via Zendesk Admin Center.
-**Canonical source:** this repository. The files under `zaf-build/` are edited directly and are exactly what ships — there is no separate source tree that compiles into them.
+**Canonical source:** this repository. The files under `zaf-build/` are edited directly, and `scripts/package.sh` zips `manifest.json`, `assets/` and `translations/` from here as is — there is no separate source tree that compiles into them.
 
 ---
 
@@ -59,7 +59,7 @@ This bundle **is** the source. Edit the files under `zaf-build/` directly; there
 
 # 2. Bump "version" in zaf-build/manifest.json
 
-# 3. Package the installable zip (pure zip of the committed files, no build):
+# 3. Package the installable zip (manifest.json, assets/ and translations/, zipped as is; no build):
 bash scripts/package.sh          # → dist/tsanet-connect-v<version>.zip
 
 # 4. Upload via Admin Center → Apps and integrations → Zendesk Support apps → Update
@@ -96,7 +96,7 @@ Tag the commit and CI packages the zip and attaches it to a GitHub Release autom
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-No `npm install`, no `vite build`. The zip is exactly the committed files.
+No `npm install`, no `vite build`. The zip is `manifest.json`, `assets/` and `translations/` exactly as committed.
 
 ---
 

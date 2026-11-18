@@ -1,8 +1,9 @@
 name: Package ZAF app
 
 # Build the installable ZAF zip and attach it to a GitHub Release whenever a
-# version tag is pushed. The zip is a pure package of the committed zaf-build/
-# files — no transpile step — so a release can never diverge from the repo.
+# version tag is pushed. The zip packages manifest.json, assets/ and
+# translations/ from the committed zaf-build/ as they are — no transpile
+# step — so a release can never diverge from the repo.
 #
 #   git tag vX.Y.Z && git push origin vX.Y.Z
 #
@@ -104,8 +105,9 @@ jobs:
                 flag_coverage "Audit record references commit $REVIEWED, which is not an ancestor of this tag."
               else
                 # Source changes since the audit invalidate it. Docs do not.
-                # The shipped artifact is a pure package of zaf-build/, so this
-                # allowlist covers everything that can reach a member.
+                # The shipped artifact packages only files from zaf-build/
+                # (scripts/package.sh), so this allowlist covers everything
+                # that can reach a member.
                 CHANGED=$(git diff --name-only "$REVIEWED"..HEAD -- zaf-build/ zis/ scripts/ .github/workflows/ | tr '\n' ' ')
                 if [ -n "$CHANGED" ]; then
                   flag_coverage "Source changed since the last audit ($REVIEWED): $CHANGED"
