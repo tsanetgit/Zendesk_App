@@ -2,8 +2,9 @@
 #
 # Package the ZAF app bundle into a Zendesk-installable zip.
 #
-# There is NO transpile or build step. This zips the committed files under
-# zaf-build/ exactly as they are: what you edit is what ships. The version is
+# There is NO transpile or build step. This zips manifest.json, assets/ and
+# translations/ from zaf-build/ exactly as they are: what you edit there is
+# what ships. The version is
 # read from zaf-build/manifest.json so the zip name always matches the manifest.
 #
 # Output: dist/tsanet-connect-v<version>.zip
