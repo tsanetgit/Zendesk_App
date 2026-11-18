@@ -19,7 +19,7 @@ bash scripts/package.sh                      # dist/tsanet-connect-v<version>.zi
 
 CI runs the first six on a PR only when their paths change, so run the ones for the files you touch. The release workflow runs the audit and the packaging when a tag is pushed. The audit can exit 1 on `main` while a known finding is still open, so compare its result with `main`'s rather than expecting 0.
 
-Two files are derived from `zis/tsanet_connect_bundle.json`. After changing the bundle, run `python3 zis/gen_readme_reference.py` to rewrite the reference block in `zis/README.md`, and `cp zis/tsanet_connect_bundle.json zaf-build/assets/tsanet_connect_bundle.json`. CI fails if either has drifted. `zaf-bundle-sync.yml` also checks, inline, that `zaf-build/assets/deploy.js` substitutes every placeholder in the bundle, and the reverse.
+Two files are derived from `zis/tsanet_connect_bundle.json`. After changing the bundle, run `python3 zis/gen_readme_reference.py` to rewrite the reference block in `zis/README.md`, and `cp zis/tsanet_connect_bundle.json zaf-build/assets/tsanet_connect_bundle.json`. CI fails if either has drifted. Then run `python3 -m pytest -q tests/`: `tests/test_transform_for_update.py` tests the bundle's update path, and CI doesn't run pytest on a bundle-only change. `zaf-bundle-sync.yml` also checks, inline, that `zaf-build/assets/deploy.js` substitutes every placeholder in the bundle, and the reverse.
 
 ## Layout
 
