@@ -79,11 +79,14 @@ The script:
 2. Finds the TSANet subscription whose `callbackUrl` points at it, on v1 or
    v2 (pass `--subscription-id` if none does). If two already point at it,
    each case is getting two tickets now, so it stops: delete the extra one
-   first.
-3. Checks that the deployed `flow_handle_ping` starts at `NormalizeEvent`
-   (app v1.0.72 or later), and maps v1 event types to their v2 names. If
-   either check fails it stops here, before changing anything. `--dry-run`
-   runs both checks too.
+   first. Until the 2027-01-01 sunset it also stops if it can't list v1
+   subscriptions; after it, it looks on v2 only, and a v1 subscription has
+   to be moved by hand (see *Manual fallback*).
+3. Checks that the subscription is active (a v2 subscription can't be
+   created inactive, so rotating would turn deliveries back on), that the
+   deployed `flow_handle_ping` starts at `NormalizeEvent` (app v1.0.72 or
+   later), and maps v1 event types to their v2 names. If any check fails it
+   stops here, before changing anything. `--dry-run` runs the checks too.
 4. Creates the replacement ZIS webhook and writes the new credentials to
    `zis-webhook-credentials.json` (chmod 600) **before** any cutover.
 5. Verifies the new path end to end with a synthetic v2 `note.created`
@@ -92,13 +95,16 @@ The script:
    probe, not a bug.
 6. Registers the replacement subscription on `/v2/webhooks`, with the old
    one's event types (v1 names mapped to v2), case directions and partner
-   filter, the new URL and the new `callbackAuth`.
+   filter (an empty filter is left out: both mean no filter), the new URL
+   and the new `callbackAuth`.
 7. Deletes the old TSANet subscription, then the old ZIS webhook. If either
    delete fails the script says so loudly and exits non-zero. Follow up
    manually: until the old webhook is deleted the old credential still works.
 
 On any verification failure the script rolls back (deletes whatever new
-halves it created) and leaves the old pipe untouched.
+halves it created) and leaves the old pipe untouched. If that delete fails
+too, it keeps `zis-webhook-credentials.json`, the only record of the new
+webhook's `uuid`, and says to delete the webhook by hand.
 
 **Afterwards:** store the contents of `zis-webhook-credentials.json` in your
 secret manager, record the new `uuid` next to it, and delete the file.

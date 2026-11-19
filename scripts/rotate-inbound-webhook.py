@@ -46,6 +46,7 @@ import urllib.request
 import uuid
 
 INTEGRATION_DEFAULT = "tsanet_connect"
+V1_SUNSET = "2027-01-01"   # GET and POST /v1/webhooks stop working
 
 # v1 event type -> its v2 name (Connect-API-Code 3.2.5, WebhookEventType and
 # WebhookEventTypeV2). v2's other three types have no v1 counterpart.
@@ -86,19 +87,27 @@ def request(method, url, bearer=None, basic=None, body=None,
         except Exception:
             payload = {}
         return e.code, payload
+    except OSError as e:
+        # No response (timeout, DNS, refused). Status 0 sends every caller
+        # down its failure path instead of out through a traceback.
+        return 0, {"error": str(e)}
 
 
 def find_subscription(ts, token, subscription_id, old_path):
     """Return (subscription, "v1" or "v2") for the one to rotate, or exit.
 
     v1 is listed first, and an id found there is v1: a v2 subscription does
-    not appear in the v1 list. The v1 list stops working at its 2027-01-01
-    sunset, so failing to read it is a warning, not a stop.
+    not appear in the v1 list. Before the v1 sunset a failed v1 list stops
+    the run, since skipping it could miss a v1 duplicate; after the sunset
+    the list is gone, so it is a warning.
     """
     found = {}
     status, subs = request("GET", f"{ts}/v1/webhooks", bearer=token)  # audit-degrades: v1-webhooks until 2027-01-01 tracked-by tsanetgit/Zendesk_App#101
-    if status == 200:
+    v1_listed = status == 200
+    if v1_listed:
         found.update((s["id"], (s, "v1")) for s in subs)
+    elif time.strftime("%Y-%m-%d", time.gmtime()) < V1_SUNSET:
+        die(f"cannot list v1 subscriptions (HTTP {status})")
     else:
         print(f"warning: cannot list v1 subscriptions (HTTP {status}); "
               "looking on v2 only", file=sys.stderr)
@@ -117,6 +126,10 @@ def find_subscription(ts, token, subscription_id, old_path):
         matches = [found[subscription_id]] if subscription_id in found else []
     else:
         matches = on_url
+    if not matches and not v1_listed:
+        die("no matching subscription on v2, and v1 subscriptions can't be "
+            "listed after the sunset. Move a v1 subscription by hand: see "
+            "Manual fallback in ZIS_Rotation_Runbook.md.")
     if len(matches) != 1:
         die(f"expected exactly 1 matching subscription, found {len(matches)}. "
             "Pass --subscription-id explicitly.")
@@ -247,7 +260,11 @@ def main():
           f"eventTypes={sub.get('eventTypes')} active={sub.get('active')} "
           f"auth={sub.get('callbackAuthType')}")
 
-    # Both checks stop the run before anything changes, dry run included.
+    # These checks stop the run before anything changes, dry run included.
+    if sub.get("active") is False:
+        die(f"subscription {sub['id']} is inactive, and a v2 subscription can't "
+            "be created inactive, so rotating would turn its deliveries back "
+            "on. Reactivate or delete it first.")
     check_bundle(zd, args.integration, env["ZIS_TOKEN"])
     event_types = replacement_event_types(sub, version)
     print(f"replacement: on v2 eventTypes={event_types}")
@@ -279,7 +296,13 @@ def main():
 
     def rollback(reason):
         print(f"verification failed ({reason}); rolling back", file=sys.stderr)
-        request("DELETE", f"{zis_webhooks}/{new['uuid']}", bearer=env["ZIS_TOKEN"])
+        status, _ = request("DELETE", f"{zis_webhooks}/{new['uuid']}",
+                            bearer=env["ZIS_TOKEN"])
+        if status not in (200, 204):
+            # Keep the file: it is the only record of the new webhook's uuid.
+            die(f"rotation aborted, but deleting the new webhook returned HTTP "
+                f"{status}. Delete uuid={new['uuid']} by hand; its credentials "
+                f"are in {args.out}. The old webhook and subscription are untouched.")
         os.unlink(args.out)
         die("rotation aborted; the old webhook and subscription are untouched")
 
@@ -299,15 +322,20 @@ def main():
             "callbackAuth": {"type": "BASIC",
                              "username": new["username"],
                              "password": new["password"]}}
-    if event_types is not None:
+    # An empty or missing filter means "no filter" in both versions, and an
+    # empty caseDirections fails v2's minItems: 1, so only non-empty ones go.
+    if event_types:
         body["eventTypes"] = event_types
     for key in ("caseDirections", "partnerCompanyIds"):
-        if sub.get(key) is not None:
+        if sub.get(key):
             body[key] = sub[key]
     status, new_sub = request("POST", f"{ts}/v2/webhooks",
                               bearer=env["TSANET_TOKEN"], body=body)
     if status not in (200, 201):
-        rollback(f"TSANet subscription create returned HTTP {status}: {new_sub}")
+        rollback(f"TSANet subscription create returned HTTP {status}: {new_sub}"
+                 + ("; with no response it may exist anyway: look for one on "
+                    "the new URL in GET /v2/webhooks and delete it" if not status
+                    else ""))
     print(f"new subscription: id={new_sub.get('id')} on v2")
 
     # ── 6. Retire the old halves (this is the actual revocation) ────────────
@@ -327,8 +355,10 @@ def main():
               + ("" if status in (200, 204) else "  <-- FOLLOW UP MANUALLY: old credential still live"))
     else:
         print("old webhook delete: SKIPPED (uuid unknown). The old credential "
-              "is orphaned, not revoked; nothing routes to it, but treat it "
-              "as live if it may have been exposed.")
+              "is orphaned, not revoked; "
+              + ("the old subscription still delivers to it until deleted."
+                 if failed else "nothing routes to it, but treat it as live "
+                 "if it may have been exposed."))
 
     store = (f"Store the credentials from {args.out} in your secret manager, "
              f"record uuid={new['uuid']}, then delete the file.")

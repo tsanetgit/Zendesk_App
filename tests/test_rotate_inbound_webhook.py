@@ -34,8 +34,11 @@ def _load():
 
 def _run(monkeypatch, tmp_path, *argv, v1=(200, [V1_SUB]), v2=(200, []),
          start="NormalizeEvent", verify_status=200, sub_status=200,
-         del_status=204):
+         del_status=204, new_del_status=204, sunset="9999-12-31",
+         old_uuid="old-uuid"):
     mod = _load()
+    # Default: before the v1 sunset, whatever today's date is.
+    monkeypatch.setattr(mod, "V1_SUNSET", sunset)
     calls, bodies = [], {}
 
     def fake(method, url, bearer=None, basic=None, body=None, **kw):
@@ -62,13 +65,18 @@ def _run(monkeypatch, tmp_path, *argv, v1=(200, [V1_SUB]), v2=(200, []),
             return verify_status, {}
         if method == "DELETE" and url.startswith(TS):
             return del_status, {}
+        if method == "DELETE" and url == f"{ZIS}/new-uuid":
+            return new_del_status, {}
         return 204, {}
 
     monkeypatch.setattr(mod, "request", fake)
     for k, v in {"ZENDESK_SUBDOMAIN": "sub", "ZIS_TOKEN": "z",
                  "TSANET_HOST": "tsanet.example", "TSANET_TOKEN": "t",
-                 "OLD_WEBHOOK_UUID": "old-uuid"}.items():
-        monkeypatch.setenv(k, v)
+                 "OLD_WEBHOOK_UUID": old_uuid}.items():
+        if v is None:
+            monkeypatch.delenv(k, raising=False)
+        else:
+            monkeypatch.setenv(k, v)
     out = tmp_path / "creds.json"
     monkeypatch.setattr("sys.argv", ["rotate", "--out", str(out), *argv])
     return mod, calls, out, bodies
@@ -133,14 +141,37 @@ def test_v2_subscription_keeps_its_scope(monkeypatch, tmp_path):
     assert ("DELETE", f"{TS}/v1/webhooks/9") in calls
 
 
-def test_unreadable_v1_list_warns_and_uses_v2(monkeypatch, tmp_path, capsys):
+def test_after_the_sunset_an_unreadable_v1_list_warns_and_uses_v2(
+        monkeypatch, tmp_path, capsys):
     sub = dict(V1_SUB, id=9, eventTypes=[
         "org.tsanet.connect.collaboration-request.created"])
     mod, calls, _, bodies = _run(monkeypatch, tmp_path, v1=(404, {}),
-                                 v2=(200, [sub]))
+                                 v2=(200, [sub]), sunset="2000-01-01")
     mod.main()
     assert "cannot list v1 subscriptions" in capsys.readouterr().err
     assert bodies[V2][0]["eventTypes"] == sub["eventTypes"]
+
+
+def test_after_the_sunset_a_missing_subscription_points_at_the_runbook(
+        monkeypatch, tmp_path, capsys):
+    mod, calls, _, _ = _run(monkeypatch, tmp_path, "--subscription-id", "7",
+                            v1=(404, {}), sunset="2000-01-01")
+    with pytest.raises(SystemExit):
+        mod.main()
+    err = capsys.readouterr().err
+    # Not "pass --subscription-id": the id was passed and can't be seen.
+    assert "Manual fallback" in err and "Pass --subscription-id" not in err
+    assert {m for m, _ in calls} == {"GET"}
+
+
+def test_empty_filters_are_left_out(monkeypatch, tmp_path):
+    sub = dict(V1_SUB, eventTypes=[], caseDirections=[], partnerCompanyIds=[])
+    mod, _, _, bodies = _run(monkeypatch, tmp_path, v1=(200, [sub]))
+    mod.main()
+    body = bodies[V2][0]
+    # Empty means no filter; an empty caseDirections fails v2's minItems: 1.
+    assert "caseDirections" not in body and "partnerCompanyIds" not in body
+    assert len(body["eventTypes"]) == 2
 
 
 @pytest.mark.parametrize("argv", [(), ("--dry-run",)])
@@ -148,10 +179,15 @@ def test_unreadable_v1_list_warns_and_uses_v2(monkeypatch, tmp_path, capsys):
     {"start": "GetCollaboration"},
     {"v1": (200, [dict(V1_SUB, eventTypes=["case.closed"])])},
     {"v2": (200, [dict(V1_SUB, id=9)])},
+    {"v1": (200, [dict(V1_SUB, active=False)])},
+    # Before the sunset a failed v1 list could hide a v1 duplicate of the
+    # v2 subscription it would otherwise rotate.
+    {"v1": (500, {}), "v2": (200, [dict(V1_SUB, id=9, eventTypes=None)])},
 ])
 def test_refusals_change_nothing(monkeypatch, tmp_path, argv, case):
-    """An older bundle, an unmappable v1 type, or two subscriptions already
-    on the old URL (duplicate tickets now) stop the run before any write."""
+    """An older bundle, an unmappable v1 type, two subscriptions already on
+    the old URL (duplicate tickets now), an inactive subscription, or a failed
+    v1 list before the sunset stop the run before any write."""
     mod, calls, out, _ = _run(monkeypatch, tmp_path, *argv, **case)
     with pytest.raises(SystemExit):
         mod.main()
@@ -197,6 +233,35 @@ def test_failed_old_subscription_delete_still_retires_webhook_and_fails(
     assert calls[-1] == ("DELETE", f"{ZIS}/old-uuid")
     # The new pipe is live, so its credentials must survive the failure.
     assert out.exists()
+
+
+def test_failed_rollback_keeps_the_credentials_file(monkeypatch, tmp_path):
+    mod, calls, out, _ = _run(monkeypatch, tmp_path, verify_status=401,
+                              new_del_status=0)
+    with pytest.raises(SystemExit):
+        mod.main()
+    # The file is the only record of a webhook that may still be live.
+    assert out.exists()
+
+
+def test_legacy_path_says_the_old_subscription_still_delivers(
+        monkeypatch, tmp_path, capsys):
+    mod, _, _, _ = _run(monkeypatch, tmp_path, "--old-ingest-path", OLD_PATH,
+                        old_uuid=None, del_status=500)
+    with pytest.raises(SystemExit):
+        mod.main()
+    out = capsys.readouterr().out
+    assert "still delivers to it" in out and "nothing routes to it" not in out
+
+
+def test_no_response_is_a_status_not_a_traceback(monkeypatch):
+    mod = _load()
+
+    def boom(*a, **kw):
+        raise mod.urllib.error.URLError("timed out")
+    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    status, body = mod.request("DELETE", f"{TS}/v1/webhooks/7", bearer="t")
+    assert status == 0 and "timed out" in body["error"]
 
 
 def test_dry_run_only_reads(monkeypatch, tmp_path):
