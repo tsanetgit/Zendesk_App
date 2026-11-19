@@ -78,6 +78,8 @@ def test_rotation_creates_verifies_then_retires(monkeypatch, tmp_path):
     probe, basic = bodies["https://sub.zendesk.com" + NEW_PATH]
     assert basic == "u:p"
     assert probe["requestToken"] == "rotation-verify-synthetic"
+    # Not a creation event, so the flow can't turn the probe into a ticket.
+    assert probe["eventType"] == "note.created"
 
 
 def test_failed_verify_rolls_back_only_the_new_halves(monkeypatch, tmp_path):

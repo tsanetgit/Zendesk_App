@@ -55,6 +55,7 @@ credential.
 | ZIS OAuth bearer token | Mint per Quick Start Step 3. Scopes must be `zis:read zis:write`. |
 | TSANet API bearer token | Entra client-credentials grant, per Quick Start Prerequisites. |
 | Old webhook `uuid` | From the create response when the webhook was first set up. |
+| Zendesk OAuth token with the `read` scope | Only for the duplicate check after a rotation (see *Overlap window*). The ZIS token can't read tickets. |
 
 ## Scripted procedure
 
@@ -281,8 +282,10 @@ which is what the procedures above are for.
 
 ## Scheduling the rotations
 
-All three rotations are safe to run during business hours (each is
-designed for zero or near-zero delivery downtime). A reasonable baseline:
+All three rotations are designed for zero or near-zero delivery downtime.
+The webhook rotation can still give a case created during its overlap
+window two tickets (see *Overlap window*), so run it when case traffic is
+low and check for duplicates afterwards. A reasonable baseline:
 
 | Credential | Cadence | How |
 |---|---|---|
