@@ -1,5 +1,5 @@
 {
-  "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit.",
+  "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit. not_verified (tsanetgit/Zendesk_App#140): claims a review could not check. An entry is never removed; a later review carries it forward or sets its status to resolved or not_applicable with a resolution, and scripts/audit-record-fields.py fails the record if a prior id is missing. NV-001 to NV-008 were migrated once from the notes prose of the v1.0.50 record and this record, all left open for the next review to decide.",
   "schema": 1,
   "reviewed_commit": "32cbc4b",
   "reviewed_at": "2026-10-09",
@@ -36,6 +36,66 @@
     119,
     140,
     153
+  ],
+  "not_verified": [
+    {
+      "id": "NV-001",
+      "summary": "ZIS rejects an agent-role session.",
+      "first_seen": "v1.0.50 record (reviewed 2daf22f, 2026-07-27)",
+      "status": "open",
+      "refs": [
+        "tsanetgit/Zendesk_App#125"
+      ]
+    },
+    {
+      "id": "NV-002",
+      "summary": "Whether Zendesk writes an audit-log entry for ZIS registry writes.",
+      "first_seen": "v1.0.50 record (reviewed 2daf22f, 2026-07-27)",
+      "status": "open",
+      "refs": [
+        "tsanetgit/Zendesk_App#96",
+        "tsanetgit/Zendesk_App#140"
+      ]
+    },
+    {
+      "id": "NV-003",
+      "summary": "Private apps do not auto-update. The v1.0.49 'exposure believed nil' assessment rests on it.",
+      "first_seen": "v1.0.50 record (reviewed 2daf22f, 2026-07-27)",
+      "status": "open"
+    },
+    {
+      "id": "NV-004",
+      "summary": "release.yml's behavior when the mechanical audit genuinely FAILs has not been exercised.",
+      "first_seen": "record at 4cbca06 (2026-07-29)",
+      "status": "open"
+    },
+    {
+      "id": "NV-005",
+      "summary": "The status code a safe_update tag write returns on a collision.",
+      "first_seen": "record at 4cbca06 (2026-07-29)",
+      "status": "open"
+    },
+    {
+      "id": "NV-006",
+      "summary": "Runtime behavior against PROD.",
+      "first_seen": "record at 4cbca06 (2026-07-29)",
+      "status": "open"
+    },
+    {
+      "id": "NV-007",
+      "summary": "The declared-anchor check FAILs on a missing or incoherent declaration. Verified by reading and by #164's closure, not by mutation.",
+      "first_seen": "record at 97e41f3 (2026-08-18)",
+      "status": "open",
+      "refs": [
+        "tsanetgit/Zendesk_App#164"
+      ]
+    },
+    {
+      "id": "NV-008",
+      "summary": "What the 2026-08-01 review session at 2cfd42e found. Its findings were not recovered; the next review re-walked the window instead.",
+      "first_seen": "record at 97e41f3 (2026-08-18)",
+      "status": "open"
+    }
   ],
   "independent_pass": false,
   "marked_calls": {
