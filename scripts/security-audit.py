@@ -1503,9 +1503,11 @@ def check_deprecated_endpoints(root, scan, today=None):
         # Only list and create are deprecated. DELETE /v1/webhooks/{id}, its
         # /deliveries and /secret are not (Connect-API-Code 3.2.5), and DELETE
         # is the only delete, so they survive the sunset. The lookahead skips a
-        # path whose id is written inline (/{sid}, /${id}, /55). An id joined
-        # on with + or %s still flags: failing closed beats guessing.
-        _Deprecated(r"(?<!\s)/v1/webhooks(?!/[\w{$])", False, "v1-webhooks",
+        # path whose id is written inline: a number (/55) or a placeholder
+        # holding a word that ends in "id" (/{sid}, /{sub['id']}, /${id}). Any other
+        # placeholder (/{suffix}), a literal sub-path, or an id joined on with
+        # + or %s still flags: failing closed beats guessing.
+        _Deprecated(r"(?<!\s)/v1/webhooks(?!/(?:\d|\$?\{[^}]*id\b[^}]*\}))", False, "v1-webhooks",
          "v1 webhook registration/list", "2027-01-01", "/v2/webhooks"),
     ]
     found = []

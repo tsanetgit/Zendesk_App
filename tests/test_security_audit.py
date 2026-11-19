@@ -198,7 +198,7 @@ def test_escalation_window_withdraws_the_excuse_151():
 # ── _credit_calls: grant mechanics (per key since #230) ──────────────────
 
 PAT_REL = r"""['"`]/webhooks['"`](?!\s*,\s*['"`]v2['"`])"""
-PAT_ABS = r"(?<!\s)/" + V1 + WH_REL + r"(?!/[\w{$])"  # fixture convention 1
+PAT_ABS = r"(?<!\s)/" + V1 + WH_REL + r"(?!/(?:\d|\$?\{[^}]*id\b[^}]*\}))"  # fixture convention 1
 REL_ENTRY = audit._Deprecated(
     pattern=PAT_REL, needs_v1_base=True, key="v1-webhooks",
     label="v1 webhook registration/list", sunset="2027-01-01", repl="/v2/webhooks")
@@ -575,8 +575,13 @@ ABS = "/" + V1 + WH_REL
     ("requests.get(f'{ts}" + ABS + "/{sid}/deliveries')", "PASS"),
     ("fetch(`${base}" + ABS + "/${id}/secret`)", "PASS"),
     ("requests.delete('https://h" + ABS + "/55')", "PASS"),
+    ("requests.delete(f'{ts}" + ABS + "/{sub[\"id\"]}')", "PASS"),
     # The deprecated list and create, however spelled, and an id the
-    # pattern can't see (joined on with + or %s) are still flagged.
+    # pattern can't see (joined on with + or %s) are still flagged. So is
+    # a placeholder not named as an id, or a literal sub-path.
+    ("requests.get(f'{ts}" + ABS + "/{suffix}')", "WARN"),
+    ("fetch(`${base}" + ABS + "/${path}`)", "WARN"),
+    ("requests.post('https://h" + ABS + "/batch')", "WARN"),
     ("requests.get(f'{ts}" + ABS + "')", "WARN"),
     ("requests.get(f'{ts}" + ABS + "/')", "WARN"),
     ("fetch('https://h" + ABS + "/' + id)", "WARN"),
