@@ -198,7 +198,7 @@ def test_escalation_window_withdraws_the_excuse_151():
 # ── _credit_calls: grant mechanics (per key since #230) ──────────────────
 
 PAT_REL = r"""['"`]/webhooks['"`](?!\s*,\s*['"`]v2['"`])"""
-PAT_ABS = r"(?<!\s)/" + V1 + WH_REL      # assembled: fixture convention 1
+PAT_ABS = r"(?<!\s)/" + V1 + WH_REL + r"(?!/[\w{$])"  # fixture convention 1
 REL_ENTRY = audit._Deprecated(
     pattern=PAT_REL, needs_v1_base=True, key="v1-webhooks",
     label="v1 webhook registration/list", sunset="2027-01-01", repl="/v2/webhooks")
@@ -563,6 +563,29 @@ def test_absolute_v1_call_needs_no_base_context_144(tmp_path):
         "sync.py": "requests.get(f'{ts}" + "/" + V1 + WH_REL + "')"})
     audit.check_deprecated_endpoints(root, scan, today=JAN1)
     assert by_check()[DEP_CHECK]["status"] == "WARN"
+
+
+ABS = "/" + V1 + WH_REL
+
+
+@pytest.mark.parametrize("call, status", [
+    # Not deprecated in the spec (Connect-API-Code 3.2.5), and the only
+    # delete, so they survive the sunset: an id written inline is not flagged.
+    ("requests.delete(f'{ts}" + ABS + "/{sid}')", "PASS"),
+    ("requests.get(f'{ts}" + ABS + "/{sid}/deliveries')", "PASS"),
+    ("fetch(`${base}" + ABS + "/${id}/secret`)", "PASS"),
+    ("requests.delete('https://h" + ABS + "/55')", "PASS"),
+    # The deprecated list and create, however spelled, and an id the
+    # pattern can't see (joined on with + or %s) are still flagged.
+    ("requests.get(f'{ts}" + ABS + "')", "WARN"),
+    ("requests.get(f'{ts}" + ABS + "/')", "WARN"),
+    ("fetch('https://h" + ABS + "/' + id)", "WARN"),
+    ("requests.get(ts + '" + ABS + "/%s' % sid)", "WARN"),
+])
+def test_absolute_id_paths_survive_the_sunset_101(tmp_path, call, status):
+    root, scan = tree(tmp_path, {"sync.py": call})
+    audit.check_deprecated_endpoints(root, scan, today=JAN1)
+    assert by_check()[DEP_CHECK]["status"] == status
 
 
 def test_html_call_sites_are_scanned_145(tmp_path):
