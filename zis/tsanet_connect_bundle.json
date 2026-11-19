@@ -101,8 +101,29 @@
       "type": "ZIS::Flow",
       "properties": {
         "definition": {
-          "StartAt": "GetCollaboration",
+          "StartAt": "NormalizeEvent",
           "States": {
+            "NormalizeEvent": {
+              "Type": "Action",
+              "ActionName": "zis:common:transform:Jq",
+              "Parameters": {
+                "expr": "(.input.type // .input.eventType // \"\") as $t | (.input.data.requestToken // .input.requestToken // \"\") as $tok | {token: $tok, event: (if $t == \"org.tsanet.connect.collaboration-request.created\" then \"collaboration-request.created\" else $t end), ok: (if ($tok | type) == \"string\" and $tok != \"\" then \"yes\" else \"no\" end)}",
+                "data.$": "$"
+              },
+              "ResultPath": "$.evt",
+              "Next": "GuardEventToken"
+            },
+            "GuardEventToken": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.evt.ok",
+                  "StringEquals": "yes",
+                  "Next": "GetCollaboration"
+                }
+              ],
+              "Default": "NoOp"
+            },
             "CheckTicketExists": {
               "Choices": [
                 {
@@ -118,7 +139,7 @@
               "Type": "Choice",
               "Choices": [
                 {
-                  "Variable": "$.input.eventType",
+                  "Variable": "$.evt.event",
                   "StringEquals": "collaboration-request.created",
                   "Next": "BuildSubmitter"
                 }
@@ -157,7 +178,7 @@
               "ActionName": "zis:tsanet_connect:action:action_get_collaboration",
               "Next": "SearchTicket",
               "Parameters": {
-                "requestToken.$": "$.input.requestToken"
+                "requestToken.$": "$.evt.token"
               },
               "ResultPath": "$.collab",
               "Type": "Action"
