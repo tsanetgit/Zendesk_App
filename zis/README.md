@@ -13,9 +13,12 @@ zis/
 ## What the flow does
 
 ```
-TSANet webhook ping (eventType + requestToken)
+TSANet webhook ping (V1 flat eventType + requestToken, or V2 CloudEvent type + data.requestToken)
   → ZIS inbound webhook (Basic auth)            … via callbackAuth (issue #2, in API v3.1.0)
   → jobspec_handle_ping → flow_handle_ping
+      NormalizeEvent     jq: token and event name from either shape; the V2 creation
+                         type maps to collaboration-request.created (issue #101)
+      GuardEventToken    no token → NoOp
       GetCollaboration   pull full case from TSANet API   (OAuth connection "tsanet_oauth")
       SearchTicket       find ticket by TSANet Token field (connection "zendesk")
       CheckTicketExists  branch on whether the ticket already exists
@@ -26,9 +29,11 @@ TSANet webhook ping (eventType + requestToken)
       │              Only fields that differ from the ticket are written; nothing is
       │              written when all match and the tsanet_updated tag is already set.
       └─ no match → GuardCreate                                   (idempotency guard, issue #42)
-                     ├─ eventType collaboration-request.created → CreateTicket  new ticket w/ token/status/partner
-                     └─ else (note.created, any V2 type)        → NoOp   only the creation event may create
+                     ├─ event collaboration-request.created     → CreateTicket  new ticket w/ token/status/partner
+                     └─ else (note.created, other V2 types)     → NoOp   only the creation event may create
 ```
+
+**One TSANet subscription per install: v1 or v2, never both.** Each subscription delivers every event, and two creation deliveries for the same case can both pass the `external_id` lookup before either ticket exists, so a case created while both are active gets two tickets ([BETA check on tsanetgit/Zendesk_App#101](https://github.com/tsanetgit/Zendesk_App/issues/101#issuecomment-7001736172)).
 
 ## Prerequisites
 
@@ -353,7 +358,7 @@ Bundle `tsanet_connect` · template `2019-10-14` · 12 actions, 3 flows, 3 job s
   - `GuardComment` (Choice)
   - `GuardToken` (Choice)
   - `NoOp` (Succeed)
-- **`flow_handle_ping`** — StartAt `GetCollaboration`
+- **`flow_handle_ping`** — StartAt `NormalizeEvent`
   - `AutoAccept` (Action) → `action_ts_accept`
   - `AutoAcceptFail` (Action) → `action_zd_finish_fail`
   - `BuildSubmitter` (Action) → `Jq`
@@ -364,7 +369,9 @@ Bundle `tsanet_connect` · template `2019-10-14` · 12 actions, 3 flows, 3 job s
   - `GetCollaboration` (Action) → `action_get_collaboration`
   - `GuardAutoAccept` (Choice)
   - `GuardCreate` (Choice)
+  - `GuardEventToken` (Choice)
   - `NoOp` (Succeed)
+  - `NormalizeEvent` (Action) → `Jq`
   - `SearchTicket` (Action) → `action_search_ticket`
   - `ShowTicket` (Action) → `action_zd_get_ticket`
   - `TransformForUpdate` (Action) → `Jq`
