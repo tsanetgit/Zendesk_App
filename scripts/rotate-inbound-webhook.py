@@ -2,11 +2,13 @@
 """Rotate the ZIS inbound-webhook Basic credential (make-before-break).
 
 Replaces the TSANet -> ZIS ingest webhook and its Basic credential with a
-fresh one, re-points the TSANet webhook subscription at it, verifies the new
-path accepts an authenticated delivery, then deletes the old subscription and
-old ZIS webhook. The old credential is fully revoked at the end: ZIS inbound
-webhooks CAN be deleted (DELETE .../generic/{integration}/{uuid}, validated
-2026-07-22) even though the Zendesk docs do not list the operation.
+fresh one, verifies the new path accepts an authenticated delivery, registers
+a v2 TSANet webhook subscription at it with the old one's scope, then deletes
+the old subscription (v1 or v2) and old ZIS webhook. Needs app 1.0.72 or
+later deployed (checked first). The old credential is fully revoked
+at the end: ZIS inbound webhooks CAN be deleted (DELETE
+.../generic/{integration}/{uuid}, validated 2026-07-22) even though the
+Zendesk docs do not list the operation.
 
 Rotation always changes the ingest URL. That is inherent to ZIS (credentials
 cannot be regenerated in place); it is why the TSANet subscription must be
@@ -41,8 +43,17 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 INTEGRATION_DEFAULT = "tsanet_connect"
+
+# v1 event type -> its v2 name (Connect-API-Code 3.2.5, WebhookEventType and
+# WebhookEventTypeV2). v2's other three types have no v1 counterpart.
+V1_TO_V2_EVENT_TYPES = {
+    "collaboration-request.created":
+        "org.tsanet.connect.collaboration-request.created",
+    "note.created": "org.tsanet.connect.collaboration-request.note.created",
+}
 
 
 def die(msg):
@@ -78,32 +89,108 @@ def request(method, url, bearer=None, basic=None, body=None,
 
 
 def find_subscription(ts, token, subscription_id, old_path):
-    """Return the one TSANet subscription to rotate, or exit."""
-    status, subs = request("GET", f"{ts}/v1/webhooks", bearer=token)
-    if status != 200:
-        die(f"cannot list TSANet subscriptions (HTTP {status})")
-    if subscription_id:
-        matches = [s for s in subs if s["id"] == subscription_id]
+    """Return (subscription, "v1" or "v2") for the one to rotate, or exit.
+
+    v1 is listed first, and an id found there is v1: a v2 subscription does
+    not appear in the v1 list. The v1 list stops working at its 2027-01-01
+    sunset, so failing to read it is a warning, not a stop.
+    """
+    found = {}
+    status, subs = request("GET", f"{ts}/v1/webhooks", bearer=token)  # audit-degrades: v1-webhooks until 2027-01-01 tracked-by tsanetgit/Zendesk_App#101
+    if status == 200:
+        found.update((s["id"], (s, "v1")) for s in subs)
     else:
-        matches = [s for s in subs if s.get("callbackUrl", "").rstrip("/")
-                   .endswith(old_path.rstrip("/"))]
+        print(f"warning: cannot list v1 subscriptions (HTTP {status}); "
+              "looking on v2 only", file=sys.stderr)
+    status, subs = request("GET", f"{ts}/v2/webhooks", bearer=token)
+    if status != 200:
+        die(f"cannot list TSANet v2 subscriptions (HTTP {status})")
+    for s in subs:
+        found.setdefault(s["id"], (s, "v2"))
+    on_url = [m for m in found.values() if m[0].get("callbackUrl", "")
+              .rstrip("/").endswith(old_path.rstrip("/"))]
+    if len(on_url) > 1:
+        die(f"{len(on_url)} subscriptions point at the old ingest URL, so each "
+            "case is getting more than one ticket now. Delete the extra "
+            "subscriptions before rotating.")
+    if subscription_id:
+        matches = [found[subscription_id]] if subscription_id in found else []
+    else:
+        matches = on_url
     if len(matches) != 1:
         die(f"expected exactly 1 matching subscription, found {len(matches)}. "
             "Pass --subscription-id explicitly.")
     return matches[0]
 
 
+def check_bundle(zd, integration, zis_token):
+    """Exit unless the deployed flow_handle_ping can read v2 deliveries.
+
+    From app 1.0.72 the flow starts at NormalizeEvent, which reads either
+    payload shape. An older flow reads only v1's flat requestToken and fails
+    every v2 delivery. A stale bundle could be the one its job spec runs, so
+    every deployed bundle that defines the flow must be the new one.
+    """
+    bundles = f"{zd}/api/services/zis/registry/{integration}/bundles"
+    status, listing = request("GET", bundles, bearer=zis_token)
+    if status != 200:
+        die(f"cannot list deployed ZIS bundles (HTTP {status})")
+    flows = 0
+    for b in listing.get("bundles") or []:
+        status, bundle = request("GET", f"{bundles}/{b['uuid']}",
+                                 bearer=zis_token)
+        if status != 200:
+            die(f"cannot read deployed bundle {b['uuid']} (HTTP {status})")
+        flow = (bundle.get("resources") or {}).get("flow_handle_ping")
+        if not flow:
+            continue
+        flows += 1
+        start = flow.get("properties", {}).get("definition", {}).get("StartAt")
+        if start != "NormalizeEvent":
+            die(f"deployed bundle {b['uuid']} starts flow_handle_ping at "
+                f"{start!r}, so it cannot read v2 deliveries. Deploy app "
+                "1.0.72 or later first.")
+    if not flows:
+        die("no deployed bundle defines flow_handle_ping. Deploy app 1.0.72 "
+            "or later first.")
+
+
+def replacement_event_types(sub, version):
+    """The v2 eventTypes for the replacement, keeping the old scope."""
+    types = sub.get("eventTypes")
+    if version == "v2":
+        return types
+    unknown = [t for t in types or [] if t not in V1_TO_V2_EVENT_TYPES]
+    if unknown:
+        die(f"subscription {sub['id']} has v1 event types with no v2 "
+            f"mapping: {unknown}")
+    # No v1 filter means every v1 type. Written out, because on v2 no filter
+    # means all five v2 types, three of which v1 never delivered.
+    return [V1_TO_V2_EVENT_TYPES[t] for t in types or V1_TO_V2_EVENT_TYPES]
+
+
 def delete_subscription(ts, token, sub_id):
-    """Delete a TSANet subscription; return the HTTP status."""
+    """Delete a TSANet subscription, v1 or v2; return the HTTP status.
+
+    The v1 path is the only delete there is, and it is not deprecated.
+    """
     status, _ = request("DELETE", f"{ts}/v1/webhooks/{sub_id}", bearer=token)
     return status
 
 
 def build_verify_probe(rotated_at):
-    """The synthetic delivery that proves the new ingest path accepts auth."""
-    return {"eventType": "note.created",
-            "requestToken": "rotation-verify-synthetic",
-            "timestamp": rotated_at}
+    """The synthetic delivery that proves the new ingest path accepts auth.
+
+    A v2 CloudEvent with no requestToken: flow_handle_ping stops at
+    GuardEventToken and ends at NoOp, without calling TSANet.
+    """
+    return {"specversion": "1.0",
+            "id": f"rotation-verify-{uuid.uuid4()}",
+            "source": "urn:tsanet-zendesk:rotation-verify",
+            "type": "org.tsanet.connect.collaboration-request.note.created",
+            "time": rotated_at,
+            "datacontenttype": "application/json",
+            "data": {}}
 
 
 def main():
@@ -111,8 +198,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                     help="read-only: show what would be rotated, change nothing")
     ap.add_argument("--subscription-id", type=int,
-                    help="TSANet subscription id to rotate (required if "
-                         "callbackUrl matching is ambiguous)")
+                    help="TSANet subscription id to rotate (needed when no "
+                         "callbackUrl ends in the old ingest path)")
     ap.add_argument("--integration", default=INTEGRATION_DEFAULT)
     ap.add_argument("--old-ingest-path",
                     help="ingest path of the current webhook; use when "
@@ -154,16 +241,23 @@ def main():
               "orphan. Treat the new webhook's uuid as a must-keep record.")
 
     # ── 2. Find the TSANet subscription pointing at it ──────────────────────
-    sub = find_subscription(ts, env["TSANET_TOKEN"], args.subscription_id,
-                            old_path)
-    print(f"subscription: id={sub['id']} eventTypes={sub.get('eventTypes')} "
+    sub, version = find_subscription(ts, env["TSANET_TOKEN"],
+                                     args.subscription_id, old_path)
+    print(f"subscription: id={sub['id']} on {version} "
+          f"eventTypes={sub.get('eventTypes')} active={sub.get('active')} "
           f"auth={sub.get('callbackAuthType')}")
+
+    # Both checks stop the run before anything changes, dry run included.
+    check_bundle(zd, args.integration, env["ZIS_TOKEN"])
+    event_types = replacement_event_types(sub, version)
+    print(f"replacement: on v2 eventTypes={event_types}")
 
     if args.dry_run:
         tail = ("delete the old subscription and old webhook" if old_uuid
                 else "delete the old subscription (old webhook stays: uuid unknown)")
         print("\n--dry-run: no changes made. Would: create new ZIS webhook, "
-              f"re-point subscription {sub['id']}, verify, then {tail}.")
+              f"verify it, register a v2 subscription in place of {sub['id']}, "
+              f"then {tail}.")
         return
 
     # ── 3. Create the replacement ZIS webhook (old one stays live) ──────────
@@ -189,37 +283,46 @@ def main():
         os.unlink(args.out)
         die("rotation aborted; the old webhook and subscription are untouched")
 
-    # ── 4. Create the replacement TSANet subscription ───────────────────────
-    body = {"callbackUrl": new_url,
-            "eventTypes": sub.get("eventTypes") or None,
-            "callbackAuth": {"type": "BASIC",
-                             "username": new["username"],
-                             "password": new["password"]}}
-    status, new_sub = request("POST", f"{ts}/v1/webhooks",
-                              bearer=env["TSANET_TOKEN"], body=body)
-    if status != 200:
-        rollback(f"TSANet subscription create returned HTTP {status}: {new_sub}")
-    print(f"new subscription: id={new_sub.get('id')}")
-
-    # ── 5. Verify the new ingest path end to end ────────────────────────────
-    # A synthetic note.created with an unknown token is a designed no-op in
-    # flow_handle_ping (GuardCreate) but proves ingest auth + wiring. Expect
-    # one failed flow run in the Integration Log; that is the probe, not a bug.
+    # ── 4. Verify the new ingest path, before any subscription points at it ─
+    # Doing this first keeps the time both subscriptions are live (step 5 to
+    # step 6), when a new case can get two tickets, as short as possible.
+    # The probe ends at NoOp in the Integration Log; that is the probe.
     status, _ = request("POST", new_url,
                         basic=f"{new['username']}:{new['password']}",
                         body=build_verify_probe(out["rotated_at"]))
     if status != 200:
-        delete_subscription(ts, env["TSANET_TOKEN"], new_sub["id"])
         rollback(f"synthetic delivery to new ingest URL returned HTTP {status}")
     print("verify: new ingest path accepts authenticated deliveries (HTTP 200)")
 
+    # ── 5. Register the replacement subscription on v2, same scope ─────────
+    body = {"callbackUrl": new_url,
+            "callbackAuth": {"type": "BASIC",
+                             "username": new["username"],
+                             "password": new["password"]}}
+    if event_types is not None:
+        body["eventTypes"] = event_types
+    for key in ("caseDirections", "partnerCompanyIds"):
+        if sub.get(key) is not None:
+            body[key] = sub[key]
+    status, new_sub = request("POST", f"{ts}/v2/webhooks",
+                              bearer=env["TSANET_TOKEN"], body=body)
+    if status not in (200, 201):
+        rollback(f"TSANet subscription create returned HTTP {status}: {new_sub}")
+    print(f"new subscription: id={new_sub.get('id')} on v2")
+
     # ── 6. Retire the old halves (this is the actual revocation) ────────────
+    failed = False
     status = delete_subscription(ts, env["TSANET_TOKEN"], sub["id"])
+    if status not in (200, 204):
+        failed = True
     print(f"old subscription {sub['id']} delete: HTTP {status}"
-          + ("" if status in (200, 204) else "  <-- FOLLOW UP MANUALLY"))
+          + ("" if status in (200, 204) else "  <-- FOLLOW UP MANUALLY: "
+             "duplicate tickets until this or the old webhook is deleted"))
     if old_uuid:
         status, _ = request("DELETE", f"{zis_webhooks}/{old_uuid}",
                             bearer=env["ZIS_TOKEN"])
+        if status not in (200, 204):
+            failed = True
         print(f"old webhook delete: HTTP {status}"
               + ("" if status in (200, 204) else "  <-- FOLLOW UP MANUALLY: old credential still live"))
     else:
@@ -227,9 +330,12 @@ def main():
               "is orphaned, not revoked; nothing routes to it, but treat it "
               "as live if it may have been exposed.")
 
-    print("\nrotation complete. Store the credentials from "
-          f"{args.out} in your secret manager, record uuid={new['uuid']}, "
-          "then delete the file.")
+    store = (f"Store the credentials from {args.out} in your secret manager, "
+             f"record uuid={new['uuid']}, then delete the file.")
+    if failed:
+        die(f"the new pipe is live but a retire step failed (FOLLOW UP "
+            f"MANUALLY above). {store}")
+    print(f"\nrotation complete. {store}")
 
 
 if __name__ == "__main__":

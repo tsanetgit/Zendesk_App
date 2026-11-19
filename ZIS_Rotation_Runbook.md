@@ -34,8 +34,8 @@ transmission, scheduling, and monitoring for credential abuse.
 
 ZIS cannot regenerate a webhook's credential in place, so rotation is
 make-before-break: create a new inbound webhook (new ingest URL, new
-credential), re-point the TSANet subscription at it, verify, then delete the
-old subscription and the old webhook. **The ingest URL changes on every
+credential), verify it, register a v2 TSANet subscription at it, then delete
+the old subscription (v1 or v2) and the old webhook. **The ingest URL changes on every
 rotation.** Deleting the old webhook is what actually revokes the old
 credential.
 
@@ -55,6 +55,7 @@ credential.
 | ZIS OAuth bearer token | Mint per Quick Start Step 3. Scopes must be `zis:read zis:write`. |
 | TSANet API bearer token | Entra client-credentials grant, per Quick Start Prerequisites. |
 | Old webhook `uuid` | From the create response when the webhook was first set up. |
+| App v1.0.72 or later, deployed | The script stops otherwise: an older `flow_handle_ping` can't read v2 deliveries. |
 | Zendesk OAuth token with the `read` scope | Only for the duplicate check after a rotation (see *Overlap window*). The ZIS token can't read tickets. |
 
 ## Scripted procedure
@@ -75,20 +76,26 @@ python3 scripts/rotate-inbound-webhook.py
 
 The script:
 1. Resolves the old webhook's ingest path from its `uuid`.
-2. Finds the TSANet subscription whose `callbackUrl` points at it (pass
-   `--subscription-id` if you have more than one candidate).
-3. Creates the replacement ZIS webhook and writes the new credentials to
+2. Finds the TSANet subscription whose `callbackUrl` points at it, on v1 or
+   v2 (pass `--subscription-id` if none does). If two already point at it,
+   each case is getting two tickets now, so it stops: delete the extra one
+   first.
+3. Checks that the deployed `flow_handle_ping` starts at `NormalizeEvent`
+   (app v1.0.72 or later), and maps v1 event types to their v2 names. If
+   either check fails it stops here, before changing anything. `--dry-run`
+   runs both checks too.
+4. Creates the replacement ZIS webhook and writes the new credentials to
    `zis-webhook-credentials.json` (chmod 600) **before** any cutover.
-4. Creates the replacement TSANet subscription (same event types, new URL,
-   new `callbackAuth`).
-5. Verifies the new path end to end with a synthetic `note.created` delivery
-   carrying an unknown token. This is a designed no-op in `flow_handle_ping`
-   (the `GuardCreate` state drops it), but it proves ingest auth and wiring.
-   Expect one failed flow run in the ZIS Integration Log; that is the probe,
-   not a bug.
-6. Deletes the old TSANet subscription, then the old ZIS webhook. If either
-   delete fails the script says so loudly; follow up manually, because until
-   the old webhook is deleted the old credential still works.
+5. Verifies the new path end to end with a synthetic v2 `note.created`
+   delivery carrying no token, before any subscription points at it. The
+   flow ends it at `NoOp`: one such run in the ZIS Integration Log is the
+   probe, not a bug.
+6. Registers the replacement subscription on `/v2/webhooks`, with the old
+   one's event types (v1 names mapped to v2), case directions and partner
+   filter, the new URL and the new `callbackAuth`.
+7. Deletes the old TSANet subscription, then the old ZIS webhook. If either
+   delete fails the script says so loudly and exits non-zero. Follow up
+   manually: until the old webhook is deleted the old credential still works.
 
 On any verification failure the script rolls back (deletes whatever new
 halves it created) and leaves the old pipe untouched.
@@ -112,7 +119,7 @@ every future rotation gets full revocation.
 
 ## Overlap window
 
-Between steps 4 and 6 both subscriptions are live and TSANet delivers each
+Between steps 6 and 7 both subscriptions are live and TSANet delivers each
 event to both. The window is seconds long under normal operation, but a case
 created inside it can get **two tickets**: both creation deliveries arrive
 together, each `flow_handle_ping` run looks for an existing ticket before
@@ -129,15 +136,17 @@ scopes gets HTTP 403). A `count` above 1 is a duplicate.
 
 ## Manual fallback
 
-If you cannot run the script, the same six steps as curl commands are the
+If you cannot run the script, the same steps as curl commands are the
 webhook-creation command from [zis/README.md](zis/README.md) (Deploy step 2),
-the subscription registration from Quick Start Step 5, and:
+the subscription registration from Quick Start Step 4d (on `/v2/webhooks`,
+with the old subscription's event types under their v2 names), and:
 
 ```bash
-# list subscriptions to find the old id
+# list subscriptions to find the old id: v2 first, then v1 (until 2027-01-01)
+curl -H "Authorization: Bearer $TSANET_TOKEN" "https://$TSANET_HOST/v2/webhooks"
 curl -H "Authorization: Bearer $TSANET_TOKEN" "https://$TSANET_HOST/v1/webhooks"
 
-# delete the old subscription
+# delete the old subscription, v1 or v2 (this is the only delete)
 curl -X DELETE -H "Authorization: Bearer $TSANET_TOKEN" \
   "https://$TSANET_HOST/v1/webhooks/OLD_SUBSCRIPTION_ID"
 
@@ -146,8 +155,8 @@ curl -X DELETE -H "Authorization: Bearer $ZIS_TOKEN" \
   "https://$ZENDESK_SUBDOMAIN.zendesk.com/api/services/zis/inbound_webhooks/generic/tsanet_connect/OLD_WEBHOOK_UUID"
 ```
 
-Verify before deleting: send the synthetic delivery from the script's step 5
-(a `note.created` body with a made-up `requestToken`, Basic auth with the new
+Verify before registering: send the synthetic delivery from the script's
+step 5 (the exact body `build_verify_probe` returns, Basic auth with the new
 credentials, POSTed to the new ingest URL) and confirm HTTP 200.
 
 ## Zendesk OAuth client secret rotation
@@ -320,7 +329,8 @@ tripwire.
 
 ## Versioning note
 
-Subscriptions today use the v1 webhook API (`/v1/webhooks`), which is
-deprecated with a sunset of 2027-01-01 in favor of `/v2/webhooks`
-(CloudEvents payloads). This runbook and script target v1 and will be
-revised as part of the v2 migration.
+The v1 webhook list and create calls (`/v1/webhooks`) are deprecated with a
+sunset of 2027-01-01 in favor of `/v2/webhooks` (CloudEvents payloads). The
+script always registers the replacement on v2, so rotating a v1 install also
+moves it to v2. It deletes through `DELETE /v1/webhooks/{id}`, which is not
+deprecated and is the only delete for either version.
