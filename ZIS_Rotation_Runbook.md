@@ -289,7 +289,7 @@ low and check for duplicates afterwards. A reasonable baseline:
 
 | Credential | Cadence | How |
 |---|---|---|
-| Webhook Basic | Quarterly | cron: `rotate-inbound-webhook.py` |
+| Webhook Basic | Quarterly | cron: `rotate-inbound-webhook.py`, then check for duplicates by hand (see *Overlap window*) |
 | Zendesk OAuth secret | Quarterly | cron: `rotate-zendesk-oauth-secret.py` |
 | Entra secret | Before expiry, at least annually | Calendar + the coordinated procedure above |
 | Connection auth audit | Weekly | cron: `audit-connection-auth.py` (exit non-zero alerts) |

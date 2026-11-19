@@ -25,7 +25,7 @@ def _load():
     return mod
 
 
-def _run(monkeypatch, tmp_path, *argv, verify_status=200):
+def _run(monkeypatch, tmp_path, *argv, verify_status=200, sub_status=200):
     mod = _load()
     calls, bodies = [], {}
 
@@ -42,7 +42,7 @@ def _run(monkeypatch, tmp_path, *argv, verify_status=200):
             return 201, {"uuid": "new-uuid", "path": NEW_PATH,
                          "username": "u", "password": "p"}
         if method == "POST" and url == f"{TS}/v1/webhooks":
-            return 200, {"id": 8}
+            return sub_status, {"id": 8}
         if method == "POST" and url.endswith(NEW_PATH):
             return verify_status, {}
         return 204, {}
@@ -69,10 +69,13 @@ def test_rotation_creates_verifies_then_retires(monkeypatch, tmp_path):
         ("DELETE", f"{TS}/v1/webhooks/7"),
         ("DELETE", f"{ZIS}/old-uuid"),
     ]
-    assert json.loads(out.read_text())["uuid"] == "new-uuid"
+    creds = json.loads(out.read_text())
+    assert creds["uuid"] == "new-uuid"
     assert out.stat().st_mode & 0o777 == 0o600
     sub_body, _ = bodies[f"{TS}/v1/webhooks"]
     assert sub_body["callbackUrl"].endswith(NEW_PATH)
+    # The replacement keeps the old subscription's event types.
+    assert sub_body["eventTypes"] == ["collaboration-request.created"]
     assert sub_body["callbackAuth"] == {"type": "BASIC", "username": "u",
                                         "password": "p"}
     probe, basic = bodies["https://sub.zendesk.com" + NEW_PATH]
@@ -80,6 +83,17 @@ def test_rotation_creates_verifies_then_retires(monkeypatch, tmp_path):
     assert probe["requestToken"] == "rotation-verify-synthetic"
     # Not a creation event, so the flow can't turn the probe into a ticket.
     assert probe["eventType"] == "note.created"
+    assert probe["timestamp"] == creds["rotated_at"]
+
+
+def test_failed_subscription_create_deletes_only_the_new_webhook(
+        monkeypatch, tmp_path):
+    mod, calls, out, _ = _run(monkeypatch, tmp_path, sub_status=500)
+    with pytest.raises(SystemExit):
+        mod.main()
+    assert calls[-1] == ("DELETE", f"{ZIS}/new-uuid")
+    assert not [c for c in calls if c[0] == "DELETE" and c[1].startswith(TS)]
+    assert not out.exists()
 
 
 def test_failed_verify_rolls_back_only_the_new_halves(monkeypatch, tmp_path):
