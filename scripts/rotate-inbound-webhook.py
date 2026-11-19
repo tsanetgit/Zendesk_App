@@ -25,10 +25,22 @@ Required environment:
                       pass --old-ingest-path instead, and accept that the
                       old webhook cannot be deleted (its credential stays
                       valid; ZIS has no list API to recover the uuid).
+  ZENDESK_READ_TOKEN  optional Zendesk OAuth token with the `read` scope, for
+                      the duplicate-ticket sweep. Without it the sweep is
+                      skipped and the command to run it later is printed.
 
 Usage:
   rotate-inbound-webhook.py [--dry-run] [--subscription-id N]
                             [--integration NAME] [--out FILE]
+                            [--sweep-wait SECONDS] [--findings FILE]
+  rotate-inbound-webhook.py --sweep --since TIME [--until TIME]
+
+While both subscriptions are live, a new case can get two tickets. After a
+rotation the script waits, then looks up every case TSANet created in that
+window and reports any with more than one ticket. It reports only; it never
+changes a ticket. --sweep re-runs that check on its own.
+
+Exit codes: 0 done; 1 error, or a retire step failed; 3 duplicates found.
 
 New credentials are written to --out (default: zis-webhook-credentials.json,
 chmod 600). They are never printed. Store the file contents in your secret
@@ -37,16 +49,25 @@ list operation, so a lost uuid cannot be recovered or deleted later.
 """
 import argparse
 import base64
+import datetime
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
 INTEGRATION_DEFAULT = "tsanet_connect"
 V1_SUNSET = "2027-01-01"   # GET and POST /v1/webhooks stop working
+FINDINGS_DEFAULT = "duplicate-tickets.json"
+# The sweep window is the swap's, widened: before, by TSANet's delivery
+# retries (4 more attempts, 10 s doubling, about 150 s in all, per 3.2.5);
+# after, by clock skew between this host and TSANet.
+SWEEP_PAD_BEFORE = 300
+SWEEP_PAD_AFTER = 60
 
 # v1 event type -> its v2 name (Connect-API-Code 3.2.5, WebhookEventType and
 # WebhookEventTypeV2). v2's other three types have no v1 counterpart.
@@ -55,6 +76,41 @@ V1_TO_V2_EVENT_TYPES = {
         "org.tsanet.connect.collaboration-request.created",
     "note.created": "org.tsanet.connect.collaboration-request.note.created",
 }
+
+
+def utc_now(offset=0):
+    t = datetime.datetime.now(datetime.timezone.utc)
+    return (t + datetime.timedelta(seconds=offset)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+RFC3339 = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?"
+                     r"(Z|[+-]\d{2}:\d{2})")
+
+
+def parse_utc(value):
+    """"YYYY-MM-DDTHH:MM:SS[.fraction]" then Z or +HH:MM/-HH:MM, as UTC.
+
+    Raises ValueError on anything else. Compare these, never strings.
+    """
+    m = RFC3339.fullmatch(value)
+    if not m:
+        raise ValueError(f"not a date-time: {value!r}")
+    t = datetime.datetime.strptime(m[1], "%Y-%m-%dT%H:%M:%S")
+    t += datetime.timedelta(microseconds=int(((m[2] or "") + "000000")[:6]))
+    if m[3] != "Z":
+        shift = datetime.timedelta(hours=int(m[3][1:3]), minutes=int(m[3][4:6]))
+        t = t - shift if m[3][0] == "+" else t + shift
+    return t
+
+
+def require_env(*names):
+    env = {}
+    for var in names:
+        val = os.environ.get(var)
+        if not val:
+            die(f"missing required environment variable {var} (see --help)")
+        env[var] = val
+    return env
 
 
 def die(msg):
@@ -206,6 +262,62 @@ def build_verify_probe(rotated_at):
             "data": {}}
 
 
+def sweep(ts, tsanet_token, zd, read_token, since, until):
+    """Each case TSANet created in [since, until], with its ticket ids.
+
+    Returns None if either lookup fails. Only ids, tokens and times are kept:
+    both responses carry case and ticket content, which never leaves here.
+    """
+    query = urllib.parse.urlencode({"createdAfter": since})
+    status, cases = request("GET", f"{ts}/v2/collaboration-requests/list?{query}",
+                            bearer=tsanet_token)
+    if status != 200:
+        print(f"warning: cannot list TSANet cases (HTTP {status})", file=sys.stderr)
+        return None
+    lo, hi = parse_utc(since), parse_utc(until)
+    found = []
+    for case in cases:
+        token, created = case.get("token"), case.get("createdAt")
+        try:
+            created_at = parse_utc(created) if token and created else None
+        except (TypeError, ValueError):
+            created_at = None
+        if created_at is None:
+            print(f"warning: case {case.get('id')} has no token or no readable "
+                  "createdAt; skipped", file=sys.stderr)
+            continue
+        if not lo <= created_at <= hi:
+            continue
+        query = urllib.parse.urlencode({"external_id": token})
+        status, tickets = request("GET", f"{zd}/api/v2/tickets.json?{query}",
+                                  bearer=read_token)
+        if status != 200:
+            print(f"warning: cannot look up tickets for case {case.get('id')} "
+                  f"(HTTP {status})", file=sys.stderr)
+            return None
+        found.append({"case": case.get("id"), "token": token,
+                      "created": created,
+                      "tickets": [t["id"] for t in tickets.get("tickets", [])]})
+    return found
+
+
+def report(found, since, until, path):
+    """Print the sweep's result, write it to path, return the duplicates."""
+    dups = [f for f in found if len(f["tickets"]) > 1]
+    single = sum(1 for f in found if len(f["tickets"]) == 1)
+    print(f"sweep {since} to {until}: {len(found)} case(s), {single} with one "
+          f"ticket, {len(found) - single - len(dups)} with none yet, "
+          f"{len(dups)} with more than one")
+    for d in dups:
+        print(f"  DUPLICATE: case {d['case']} (token {d['token']}) has tickets "
+              + ", ".join(str(t) for t in d["tickets"]))
+    with open(path, "w") as f:
+        json.dump({"since": since, "until": until, "cases": len(found),
+                   "duplicates": dups}, f, indent=2)
+    print(f"findings -> {path}")
+    return dups
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dry-run", action="store_true",
@@ -221,14 +333,44 @@ def main():
                          "and its credential stays valid as an orphan.")
     ap.add_argument("--out", default="zis-webhook-credentials.json",
                     help="file to write the new ingest credentials to (chmod 600)")
+    ap.add_argument("--sweep", action="store_true",
+                    help="only check for duplicate tickets between --since and "
+                         "--until; needs ZENDESK_READ_TOKEN, rotates nothing")
+    ap.add_argument("--since", help="with --sweep: window start, UTC "
+                                    "YYYY-MM-DDTHH:MM:SSZ")
+    ap.add_argument("--until", help="with --sweep: window end (default: now)")
+    ap.add_argument("--sweep-wait", type=int, default=120,
+                    help="seconds to wait after the swap before sweeping")
+    ap.add_argument("--findings", default=FINDINGS_DEFAULT,
+                    help="file to write the sweep's findings to")
     args = ap.parse_args()
+    if args.sweep_wait < 0:
+        die("--sweep-wait takes 0 or more seconds")
 
-    env = {}
-    for var in ("ZENDESK_SUBDOMAIN", "ZIS_TOKEN", "TSANET_HOST", "TSANET_TOKEN"):
-        val = os.environ.get(var)
-        if not val:
-            die(f"missing required environment variable {var} (see --help)")
-        env[var] = val
+    if args.sweep:
+        if not args.since:
+            die("--sweep needs --since")
+        env = require_env("ZENDESK_SUBDOMAIN", "TSANET_HOST", "TSANET_TOKEN",
+                          "ZENDESK_READ_TOKEN")
+        until = args.until or utc_now()
+        try:
+            reversed_window = parse_utc(args.since) > parse_utc(until)
+        except ValueError:
+            die("--since and --until take UTC times like 2026-01-01T00:00:00Z")
+        if reversed_window:
+            die("--since is after --until")
+        found = sweep(f"https://{env['TSANET_HOST']}", env["TSANET_TOKEN"],
+                      f"https://{env['ZENDESK_SUBDOMAIN']}.zendesk.com",
+                      env["ZENDESK_READ_TOKEN"], args.since, until)
+        if found is None:
+            die("sweep failed (see the warning above)")
+        if report(found, args.since, until, args.findings):
+            sys.exit(3)
+        return
+
+    env = require_env("ZENDESK_SUBDOMAIN", "ZIS_TOKEN", "TSANET_HOST",
+                      "TSANET_TOKEN")
+    read_token = os.environ.get("ZENDESK_READ_TOKEN")
     old_uuid = os.environ.get("OLD_WEBHOOK_UUID")
     if not old_uuid and not args.old_ingest_path:
         die("set OLD_WEBHOOK_UUID, or pass --old-ingest-path for a legacy "
@@ -268,6 +410,19 @@ def main():
     check_bundle(zd, args.integration, env["ZIS_TOKEN"])
     event_types = replacement_event_types(sub, version)
     print(f"replacement: on v2 eventTypes={event_types}")
+    if read_token:
+        # A rejected token should stop the run now, not after the swap.
+        query = urllib.parse.urlencode(
+            {"external_id": f"rotation-preflight-{uuid.uuid4()}"})
+        status, _ = request("GET", f"{zd}/api/v2/tickets.json?{query}",
+                            bearer=read_token)
+        if status != 200:
+            die(f"ZENDESK_READ_TOKEN was rejected (HTTP {status}). Fix it, or "
+                "unset it to rotate without the duplicate sweep.")
+    else:
+        print("WARNING: ZENDESK_READ_TOKEN is not set, so the duplicate-ticket "
+              "sweep will be skipped. The command to run it later is printed "
+              "at the end.")
 
     if args.dry_run:
         tail = ("delete the old subscription and old webhook" if old_uuid
@@ -318,6 +473,7 @@ def main():
     print("verify: new ingest path accepts authenticated deliveries (HTTP 200)")
 
     # ── 5. Register the replacement subscription on v2, same scope ─────────
+    swap_started = utc_now(-SWEEP_PAD_BEFORE)
     body = {"callbackUrl": new_url,
             "callbackAuth": {"type": "BASIC",
                              "username": new["username"],
@@ -339,9 +495,10 @@ def main():
     print(f"new subscription: id={new_sub.get('id')} on v2")
 
     # ── 6. Retire the old halves (this is the actual revocation) ────────────
-    failed = False
+    failed = webhook_deleted = False
     status = delete_subscription(ts, env["TSANET_TOKEN"], sub["id"])
-    if status not in (200, 204):
+    sub_deleted = status in (200, 204)
+    if not sub_deleted:
         failed = True
     print(f"old subscription {sub['id']} delete: HTTP {status}"
           + ("" if status in (200, 204) else "  <-- FOLLOW UP MANUALLY: "
@@ -349,7 +506,8 @@ def main():
     if old_uuid:
         status, _ = request("DELETE", f"{zis_webhooks}/{old_uuid}",
                             bearer=env["ZIS_TOKEN"])
-        if status not in (200, 204):
+        webhook_deleted = status in (200, 204)
+        if not webhook_deleted:
             failed = True
         print(f"old webhook delete: HTTP {status}"
               + ("" if status in (200, 204) else "  <-- FOLLOW UP MANUALLY: old credential still live"))
@@ -360,12 +518,53 @@ def main():
                  if failed else "nothing routes to it, but treat it as live "
                  "if it may have been exposed."))
 
+    # Either delete ends the duplicates: the old webhook gone, the old
+    # subscription's deliveries fail. With neither, the window is still open.
+    window_open = not sub_deleted and not webhook_deleted
+    swap_ended = None if window_open else utc_now(SWEEP_PAD_AFTER)
+    out["swap_window"] = {"since": swap_started, "until": swap_ended}
+    # Written aside and renamed over: an interrupted write leaves the first
+    # copy, the only record of the new password, whole.
+    tmp = f"{args.out}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(out, f, indent=2)
+    os.replace(tmp, args.out)
+
+    # Printed before the sweep's wait, so an interrupted wait loses nothing.
     store = (f"Store the credentials from {args.out} in your secret manager, "
              f"record uuid={new['uuid']}, then delete the file.")
     if failed:
-        die(f"the new pipe is live but a retire step failed (FOLLOW UP "
-            f"MANUALLY above). {store}")
-    print(f"\nrotation complete. {store}")
+        print(f"error: the new pipe is live but a retire step failed (FOLLOW "
+              f"UP MANUALLY above). {store}", file=sys.stderr)
+    else:
+        print(f"\nrotation complete. {store}")
+
+    # ── 7. Sweep for duplicate tickets created in the window ────────────────
+    until_arg = swap_ended or f"<when you delete subscription {sub['id']}>"
+    command = (f"python3 scripts/rotate-inbound-webhook.py --sweep "
+               f"--since {swap_started} --until {until_arg}")
+    if window_open:
+        print(f"WARNING: subscription {sub['id']} and the old webhook are both "
+              "still live, so new cases keep getting two tickets until you "
+              "delete one of them.")
+    dups = None
+    if not read_token:
+        print("duplicate sweep: SKIPPED (ZENDESK_READ_TOKEN not set).")
+    else:
+        print(f"duplicate sweep: waiting {args.sweep_wait}s for ZIS to run the "
+              "window's deliveries")
+        time.sleep(args.sweep_wait)
+        until = swap_ended or utc_now()
+        found = sweep(ts, env["TSANET_TOKEN"], zd, read_token, swap_started, until)
+        if found is not None:
+            dups = report(found, swap_started, until, args.findings)
+    print("\nRun the sweep again in 15 minutes (ZIS can start a run minutes "
+          f"after a delivery arrives):\n  {command}")
+    if failed:
+        sys.exit(1)
+    if dups:
+        sys.exit(3)
 
 
 if __name__ == "__main__":
