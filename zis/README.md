@@ -33,6 +33,8 @@ TSANet webhook ping (V1 flat eventType + requestToken, or V2 CloudEvent type + d
                      └─ else (note.created, other V2 types)     → NoOp   only the creation event may create
 ```
 
+**One TSANet subscription per install: v1 or v2, never both.** Each subscription delivers every event, and two creation deliveries for the same case can both pass the `external_id` lookup before either ticket exists, so a case created while both are active gets two tickets ([BETA check on tsanetgit/Zendesk_App#101](https://github.com/tsanetgit/Zendesk_App/issues/101#issuecomment-7001736172)).
+
 ## Prerequisites
 
 1. The ZIS integration `tsanet_connect` exists and the **OAuth client-credentials connection** `tsanet_oauth` is configured — see [QUICK_START.md](../QUICK_START.md) Steps 1–2.
