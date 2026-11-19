@@ -50,7 +50,8 @@ def die(msg):
     sys.exit(1)
 
 
-def request(method, url, bearer=None, basic=None, body=None):
+def request(method, url, bearer=None, basic=None, body=None,
+            content_type="application/json"):
     req = urllib.request.Request(url, method=method)
     # TSANet sits behind Cloudflare, which rejects python-urllib's default
     # User-Agent (error 1010). Any recognizable client string passes.
@@ -62,7 +63,7 @@ def request(method, url, bearer=None, basic=None, body=None):
                        "Basic " + base64.b64encode(basic.encode()).decode())
     data = None
     if body is not None:
-        req.add_header("Content-Type", "application/json")
+        req.add_header("Content-Type", content_type)
         data = json.dumps(body).encode()
     try:
         with urllib.request.urlopen(req, data=data) as resp:
@@ -74,6 +75,35 @@ def request(method, url, bearer=None, basic=None, body=None):
         except Exception:
             payload = {}
         return e.code, payload
+
+
+def find_subscription(ts, token, subscription_id, old_path):
+    """Return the one TSANet subscription to rotate, or exit."""
+    status, subs = request("GET", f"{ts}/v1/webhooks", bearer=token)
+    if status != 200:
+        die(f"cannot list TSANet subscriptions (HTTP {status})")
+    if subscription_id:
+        matches = [s for s in subs if s["id"] == subscription_id]
+    else:
+        matches = [s for s in subs if s.get("callbackUrl", "").rstrip("/")
+                   .endswith(old_path.rstrip("/"))]
+    if len(matches) != 1:
+        die(f"expected exactly 1 matching subscription, found {len(matches)}. "
+            "Pass --subscription-id explicitly.")
+    return matches[0]
+
+
+def delete_subscription(ts, token, sub_id):
+    """Delete a TSANet subscription; return the HTTP status."""
+    status, _ = request("DELETE", f"{ts}/v1/webhooks/{sub_id}", bearer=token)
+    return status
+
+
+def build_verify_probe(rotated_at):
+    """The synthetic delivery that proves the new ingest path accepts auth."""
+    return {"eventType": "note.created",
+            "requestToken": "rotation-verify-synthetic",
+            "timestamp": rotated_at}
 
 
 def main():
@@ -124,18 +154,8 @@ def main():
               "orphan. Treat the new webhook's uuid as a must-keep record.")
 
     # ── 2. Find the TSANet subscription pointing at it ──────────────────────
-    status, subs = request("GET", f"{ts}/v1/webhooks", bearer=env["TSANET_TOKEN"])
-    if status != 200:
-        die(f"cannot list TSANet subscriptions (HTTP {status})")
-    if args.subscription_id:
-        matches = [s for s in subs if s["id"] == args.subscription_id]
-    else:
-        matches = [s for s in subs if s.get("callbackUrl", "").rstrip("/")
-                   .endswith(old_path.rstrip("/"))]
-    if len(matches) != 1:
-        die(f"expected exactly 1 matching subscription, found {len(matches)}. "
-            "Pass --subscription-id explicitly.")
-    sub = matches[0]
+    sub = find_subscription(ts, env["TSANET_TOKEN"], args.subscription_id,
+                            old_path)
     print(f"subscription: id={sub['id']} eventTypes={sub.get('eventTypes')} "
           f"auth={sub.get('callbackAuthType')}")
 
@@ -187,18 +207,14 @@ def main():
     # one failed flow run in the Integration Log; that is the probe, not a bug.
     status, _ = request("POST", new_url,
                         basic=f"{new['username']}:{new['password']}",
-                        body={"eventType": "note.created",
-                              "requestToken": "rotation-verify-synthetic",
-                              "timestamp": out["rotated_at"]})
+                        body=build_verify_probe(out["rotated_at"]))
     if status != 200:
-        request("DELETE", f"{ts}/v1/webhooks/{new_sub['id']}",
-                bearer=env["TSANET_TOKEN"])
+        delete_subscription(ts, env["TSANET_TOKEN"], new_sub["id"])
         rollback(f"synthetic delivery to new ingest URL returned HTTP {status}")
     print("verify: new ingest path accepts authenticated deliveries (HTTP 200)")
 
     # ── 6. Retire the old halves (this is the actual revocation) ────────────
-    status, _ = request("DELETE", f"{ts}/v1/webhooks/{sub['id']}",
-                        bearer=env["TSANET_TOKEN"])
+    status = delete_subscription(ts, env["TSANET_TOKEN"], sub["id"])
     print(f"old subscription {sub['id']} delete: HTTP {status}"
           + ("" if status in (200, 204) else "  <-- FOLLOW UP MANUALLY"))
     if old_uuid:

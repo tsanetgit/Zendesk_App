@@ -111,10 +111,20 @@ every future rotation gets full revocation.
 
 ## Overlap window
 
-Between steps 4 and 6 both subscriptions are live and TSANet may deliver each
-event twice. This is safe: `flow_handle_ping` deduplicates by `requestToken`
-(ticket search plus the `GuardCreate` state), so no duplicate tickets are
-created. The window is seconds long under normal operation.
+Between steps 4 and 6 both subscriptions are live and TSANet delivers each
+event to both. The window is seconds long under normal operation, but a case
+created inside it can get **two tickets**: both creation deliveries arrive
+together, each `flow_handle_ping` run looks for an existing ticket before
+either has created one, and both create (`GuardCreate` stops only
+non-creation events, so it lets both through). This was reproduced on Beta with two
+subscriptions on one install (`tsanetgit/Zendesk_App#101`). A note update
+inside the window can also fail with HTTP 409 (`UpdateConflict`) in the ZIS
+Integration Log.
+
+After a rotation, check the cases TSANet created during the window: look up
+each case token with `GET /api/v2/tickets?external_id=<token>`, using a
+Zendesk credential that can read tickets (a ZIS token with only the `zis:`
+scopes gets HTTP 403). A `count` above 1 is a duplicate.
 
 ## Manual fallback
 
