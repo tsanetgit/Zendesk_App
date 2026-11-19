@@ -56,7 +56,7 @@ credential.
 | TSANet API bearer token | Entra client-credentials grant, per Quick Start Prerequisites. |
 | Old webhook `uuid` | From the create response when the webhook was first set up. |
 | App v1.0.72 or later, deployed | The script stops otherwise: an older `flow_handle_ping` can't read v2 deliveries. |
-| Zendesk OAuth token with the `read` scope | Only for the duplicate check after a rotation (see *Overlap window*). The ZIS token can't read tickets. |
+| Zendesk OAuth token with the `read` scope | Optional, as `ZENDESK_READ_TOKEN`: only for the duplicate sweep after a rotation (see *Overlap window*). The ZIS token can't read tickets. |
 
 ## Scripted procedure
 
@@ -66,6 +66,7 @@ export ZIS_TOKEN=...            # ZIS OAuth bearer
 export TSANET_HOST=connect2.tsanet.org   # or connect2.tsanet.net for Beta
 export TSANET_TOKEN=...         # TSANet bearer
 export OLD_WEBHOOK_UUID=...     # uuid of the current inbound webhook
+export ZENDESK_READ_TOKEN=...   # optional: Zendesk OAuth, `read` scope, for the duplicate sweep
 
 # Preview only (read-only, changes nothing):
 python3 scripts/rotate-inbound-webhook.py --dry-run
@@ -100,6 +101,14 @@ The script:
 7. Deletes the old TSANet subscription, then the old ZIS webhook. If either
    delete fails the script says so loudly and exits non-zero. Follow up
    manually: until the old webhook is deleted the old credential still works.
+8. Waits (`--sweep-wait`, default 120 seconds), then sweeps for duplicate
+   tickets (see *Overlap window*) and prints the command to sweep again 15
+   minutes later. Without `ZENDESK_READ_TOKEN` it skips the sweep, warning
+   at step 3, and still prints the command. If the token is set but
+   rejected, the script stops before changing anything.
+
+Exit codes: 0 done; 1 an error or a failed retire step; 3 duplicate tickets
+found (a failed retire step takes precedence).
 
 On any verification failure the script rolls back (deletes whatever new
 halves it created) and leaves the old pipe untouched. If that delete fails
@@ -135,10 +144,31 @@ subscriptions on one install (`tsanetgit/Zendesk_App#101`). A note update
 inside the window can also fail with HTTP 409 (`UpdateConflict`) in the ZIS
 Integration Log.
 
-After a rotation, check the cases TSANet created during the window: look up
-each case token with `GET /api/v2/tickets?external_id=<token>`, using a
-Zendesk credential that can read tickets (a ZIS token with only the `zis:`
-scopes gets HTTP 403). A `count` above 1 is a duplicate.
+The script's sweep (step 8) checks for this. It lists the cases TSANet
+created in the window, widened by 5 minutes before (TSANet retries a failed
+delivery for about 150 seconds) and 60 seconds after (clock skew). It looks
+up each one's tickets by case token and reports any case with more than one,
+printed and written to `duplicate-tickets.json`. It never changes a ticket:
+merge or close the extra ones yourself. ZIS can start a run minutes after a
+delivery arrives, so run the printed command again 15 minutes later:
+
+```bash
+python3 scripts/rotate-inbound-webhook.py --sweep \
+  --since 2026-01-01T00:00:00Z --until 2026-01-01T00:10:00Z
+```
+
+It needs `TSANET_HOST`, `TSANET_TOKEN`, `ZENDESK_SUBDOMAIN` and
+`ZENDESK_READ_TOKEN`, a Zendesk OAuth token with the `read` scope (a ZIS
+token with only the `zis:` scopes gets HTTP 403 on tickets). The window is
+also saved as `swap_window` in `zis-webhook-credentials.json`; since you
+delete that file, keep the printed command or `duplicate-tickets.json`
+instead. If neither old half could be deleted, the window is still open:
+`until` is `null`, and both subscriptions keep creating duplicates until you
+delete one. Sweep again with `--until` set to when you did.
+
+Without the script, look up each case token with
+`GET /api/v2/tickets?external_id=<token>` using the same token. A `count`
+above 1 is a duplicate.
 
 ## Manual fallback
 
@@ -163,7 +193,8 @@ curl -X DELETE -H "Authorization: Bearer $ZIS_TOKEN" \
 
 Verify before registering: send the synthetic delivery from the script's
 step 5 (the exact body `build_verify_probe` returns, Basic auth with the new
-credentials, POSTed to the new ingest URL) and confirm HTTP 200.
+credentials, POSTed to the new ingest URL) and confirm HTTP 200. Afterwards,
+check for duplicate tickets as *Overlap window* describes.
 
 ## Zendesk OAuth client secret rotation
 
@@ -304,7 +335,7 @@ low and check for duplicates afterwards. A reasonable baseline:
 
 | Credential | Cadence | How |
 |---|---|---|
-| Webhook Basic | Quarterly | cron: `rotate-inbound-webhook.py`, then check for duplicates by hand (see *Overlap window*) |
+| Webhook Basic | Quarterly | cron: `rotate-inbound-webhook.py`; 15 minutes later, run the `--sweep` command it printed, from the cron log (see *Overlap window*) |
 | Zendesk OAuth secret | Quarterly | cron: `rotate-zendesk-oauth-secret.py` |
 | Entra secret | Before expiry, at least annually | Calendar + the coordinated procedure above |
 | Connection auth audit | Weekly | cron: `audit-connection-auth.py` (exit non-zero alerts) |

@@ -4,9 +4,11 @@ tsanetgit/Zendesk_App#101 moved this script to the v2 webhook API. These tests
 pin the sequence against a fake TSANet and ZIS, and pin that each new refusal
 happens before anything changes. Nothing here touches the network.
 """
+import datetime
 import importlib.util
 import json
 import pathlib
+import urllib.parse
 
 import pytest
 
@@ -19,6 +21,11 @@ ZIS = ZD + "/api/services/zis/inbound_webhooks/generic/tsanet_connect"
 BUNDLES = ZD + "/api/services/zis/registry/tsanet_connect/bundles"
 OLD_PATH = "/api/services/zis/inbound_webhooks/generic/ingest/old"
 NEW_PATH = "/api/services/zis/inbound_webhooks/generic/ingest/new"
+LIST = f"{TS}/v2/collaboration-requests/list?"
+TICKETS = f"{ZD}/api/v2/tickets.json?"
+NOW = datetime.datetime(2026, 11, 19, 12, 0, 0)
+# The fakes return case and ticket content; none of it may be printed.
+SECRET = "CASE-CONTENT-MUST-NOT-LEAK"
 V1_SUB = {"id": 7, "callbackUrl": ZD + OLD_PATH,
           "eventTypes": ["collaboration-request.created"],
           "caseDirections": ["INBOUND"]}
@@ -35,16 +42,33 @@ def _load():
 def _run(monkeypatch, tmp_path, *argv, v1=(200, [V1_SUB]), v2=(200, []),
          start="NormalizeEvent", verify_status=200, sub_status=200,
          del_status=204, new_del_status=204, sunset="9999-12-31",
-         old_uuid="old-uuid"):
+         old_uuid="old-uuid", read_token=None, cases=(), tickets=None,
+         read_status=200):
     mod = _load()
     # Default: before the v1 sunset, whatever today's date is.
     monkeypatch.setattr(mod, "V1_SUNSET", sunset)
+    monkeypatch.setattr(mod, "utc_now", lambda offset=0: (
+        NOW + datetime.timedelta(seconds=offset)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    sleeps = []
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
     calls, bodies = [], {}
+    tickets = tickets or {}
 
     def fake(method, url, bearer=None, basic=None, body=None, **kw):
         calls.append((method, url))
         if method == "POST":
             bodies[url] = (body, basic)
+        if method == "GET" and url.startswith(LIST):
+            return 200, [dict(c, description=SECRET) for c in cases]
+        if method == "GET" and url.startswith(TICKETS):
+            if bearer != "r":
+                return 401, {}
+            tok = urllib.parse.parse_qs(url.split("?", 1)[1])["external_id"][0]
+            if tok.startswith("rotation-preflight-"):
+                return 200, {"tickets": [], "count": 0}
+            ids = tickets.get(tok, [])
+            return read_status, {"tickets": [{"id": i, "subject": SECRET}
+                                             for i in ids], "count": len(ids)}
         if method == "GET" and url == f"{ZIS}/old-uuid":
             return 200, {"path": OLD_PATH}
         if method == "GET" and url == V1_LIST:
@@ -72,13 +96,16 @@ def _run(monkeypatch, tmp_path, *argv, v1=(200, [V1_SUB]), v2=(200, []),
     monkeypatch.setattr(mod, "request", fake)
     for k, v in {"ZENDESK_SUBDOMAIN": "sub", "ZIS_TOKEN": "z",
                  "TSANET_HOST": "tsanet.example", "TSANET_TOKEN": "t",
-                 "OLD_WEBHOOK_UUID": old_uuid}.items():
+                 "OLD_WEBHOOK_UUID": old_uuid,
+                 "ZENDESK_READ_TOKEN": read_token}.items():
         if v is None:
             monkeypatch.delenv(k, raising=False)
         else:
             monkeypatch.setenv(k, v)
     out = tmp_path / "creds.json"
-    monkeypatch.setattr("sys.argv", ["rotate", "--out", str(out), *argv])
+    monkeypatch.setattr("sys.argv", ["rotate", "--out", str(out), "--findings",
+                                     str(tmp_path / "findings.json"), *argv])
+    mod.sleeps = sleeps
     return mod, calls, out, bodies
 
 
@@ -233,6 +260,9 @@ def test_failed_old_subscription_delete_still_retires_webhook_and_fails(
     assert calls[-1] == ("DELETE", f"{ZIS}/old-uuid")
     # The new pipe is live, so its credentials must survive the failure.
     assert out.exists()
+    # Deleting the old webhook closed the window, so it has an end.
+    assert json.loads(out.read_text())["swap_window"] == {
+        "since": "2026-11-19T11:55:00Z", "until": "2026-11-19T12:01:00Z"}
 
 
 def test_failed_rollback_keeps_the_credentials_file(monkeypatch, tmp_path):
@@ -269,3 +299,116 @@ def test_dry_run_only_reads(monkeypatch, tmp_path):
     mod.main()
     assert calls == READS
     assert not out.exists()
+
+
+# ── Duplicate-ticket sweep ──────────────────────────────────────────────────
+# The window is NOW - 300 s to NOW + 60 s: 11:55:00Z to 12:01:00Z.
+IN, IN2, IN3 = (f"2026-11-19T11:5{m}:30.123456Z" for m in (6, 7, 8))
+CASES = [
+    {"id": 1, "token": "dup", "createdAt": IN},
+    {"id": 2, "token": "one", "createdAt": IN2},
+    {"id": 3, "token": "none", "createdAt": IN3},
+    {"id": 4, "token": "late", "createdAt": "2026-11-19T12:01:00.5Z"},
+    {"id": 5, "token": "early", "createdAt": "2026-11-19T11:54:59.9Z"},
+    {"id": 6},   # no token or createdAt: skipped with a warning
+]
+TICKETS_BY_TOKEN = {"dup": [41, 42], "one": [43], "late": [44, 45],
+                    "early": [46, 47]}
+SWEEP = ("--sweep", "--since", "2026-11-19T11:55:00Z",
+         "--until", "2026-11-19T12:01:00Z")
+
+
+def test_sweep_reports_only_duplicates_inside_the_window(
+        monkeypatch, tmp_path, capsys):
+    mod, calls, out, _ = _run(monkeypatch, tmp_path, *SWEEP, read_token="r",
+                              cases=CASES, tickets=TICKETS_BY_TOKEN)
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 3
+    printed = capsys.readouterr().out
+    assert "DUPLICATE: case 1 (token dup) has tickets 41, 42" in printed
+    # 12:01:00.5 is after the window by half a second: compared as times.
+    assert "case 4" not in printed and "case 5" not in printed
+    assert "3 case(s), 1 with one ticket, 1 with none yet, 1 with more" in printed
+    findings = (tmp_path / "findings.json").read_text()
+    assert json.loads(findings)["duplicates"] == [
+        {"case": 1, "token": "dup", "created": IN, "tickets": [41, 42]}]
+    assert SECRET not in printed + findings
+    # A sweep never writes, and never touches the credentials file.
+    assert {m for m, _ in calls} == {"GET"} and not out.exists()
+
+
+def test_sweep_with_no_duplicates_exits_cleanly(monkeypatch, tmp_path):
+    mod, _, _, _ = _run(monkeypatch, tmp_path, *SWEEP, read_token="r",
+                        cases=CASES[1:3], tickets=TICKETS_BY_TOKEN)
+    mod.main()
+
+
+def test_rotation_sweeps_after_the_wait_and_prints_the_rerun(
+        monkeypatch, tmp_path, capsys):
+    mod, calls, out, _ = _run(monkeypatch, tmp_path, read_token="r",
+                              cases=CASES, tickets=TICKETS_BY_TOKEN)
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 3
+    assert mod.sleeps == [120]
+    window = json.loads(out.read_text())["swap_window"]
+    assert window == {"since": "2026-11-19T11:55:00Z",
+                      "until": "2026-11-19T12:01:00Z"}
+    # The sweep runs after every write, and the store line comes before it.
+    first_list = calls.index(next(c for c in calls if c[1].startswith(LIST)))
+    assert all(m == "GET" for m, _ in calls[first_list:])
+    printed = capsys.readouterr().out
+    assert printed.index("rotation complete") < printed.index("waiting 120s")
+    assert "DUPLICATE: case 1" in printed
+    assert printed.rstrip().endswith(
+        "--sweep --since 2026-11-19T11:55:00Z --until 2026-11-19T12:01:00Z")
+    assert SECRET not in printed
+
+
+@pytest.mark.parametrize("argv", [(), ("--dry-run",)])
+def test_rejected_read_token_stops_before_any_change(monkeypatch, tmp_path,
+                                                     argv):
+    mod, calls, out, _ = _run(monkeypatch, tmp_path, *argv, read_token="bad")
+    with pytest.raises(SystemExit):
+        mod.main()
+    assert {m for m, _ in calls} == {"GET"}
+    assert not out.exists()
+
+
+def test_missing_read_token_warns_skips_and_prints_the_command(
+        monkeypatch, tmp_path, capsys):
+    mod, calls, _, _ = _run(monkeypatch, tmp_path)
+    mod.main()
+    printed = capsys.readouterr().out
+    assert printed.index("ZENDESK_READ_TOKEN is not set") < printed.index(
+        "new webhook:")
+    assert "SKIPPED (ZENDESK_READ_TOKEN not set)" in printed
+    assert "--sweep --since 2026-11-19T11:55:00Z" in printed
+    assert mod.sleeps == [] and not [c for c in calls if c[1].startswith(LIST)]
+
+
+def test_open_window_is_reported_open_and_still_swept(
+        monkeypatch, tmp_path, capsys):
+    """Old subscription not deleted and no old uuid: both still deliver."""
+    mod, _, out, _ = _run(monkeypatch, tmp_path, "--old-ingest-path", OLD_PATH,
+                          old_uuid=None, del_status=500, read_token="r",
+                          cases=CASES, tickets=TICKETS_BY_TOKEN)
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    # A failed retire step outranks duplicates.
+    assert exc.value.code == 1
+    assert json.loads(out.read_text())["swap_window"]["until"] is None
+    printed = capsys.readouterr().out
+    assert "keep getting two tickets" in printed
+    assert "--until <when you delete subscription 7>" in printed
+    assert "DUPLICATE: case 1" in printed
+
+
+def test_a_failed_post_swap_sweep_only_warns(monkeypatch, tmp_path, capsys):
+    mod, _, _, _ = _run(monkeypatch, tmp_path, read_token="r", cases=CASES,
+                        tickets=TICKETS_BY_TOKEN, read_status=500)
+    mod.main()   # no retire failure, no findings: exit 0
+    captured = capsys.readouterr()
+    assert "cannot look up tickets" in captured.err
+    assert "--sweep --since 2026-11-19T11:55:00Z" in captured.out.splitlines()[-1]
