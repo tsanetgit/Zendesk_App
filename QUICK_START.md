@@ -381,7 +381,7 @@ The app substitutes your per-instance values, uploads the bundle, **installs eve
 >
 > Only the Bundle row bears on the decision, and it is driven by comparing the bundle's **actual contents**, never by comparing version numbers. That distinction is deliberate: between v1.0.54 and v1.0.60 there were six releases in which the ZIS bundle did not change once, so a version comparison would have asked every member to redeploy six times for no functional change. The two version rows are reference only and can never disable the Deploy button.
 >
-> The Bundle row distinguishes three answers, because the remedy differs for each. *Older than the one this app ships* means a genuinely different bundle generation, so deploy. *App settings changed since it was deployed* means the bundle is the right generation but was built with different values, so deploy to pick them up. *Not deployed yet* means the registry has nothing to compare.
+> The Bundle row distinguishes three answers, because the remedy differs for each. *Differs from what this app would deploy* means a genuinely different bundle generation, so deploy. *App settings changed since it was deployed* means the bundle is the right generation but was built with different values, so deploy to pick them up. *Not deployed yet* means the registry has nothing to compare.
 >
 > **"Matches what this app would deploy" is not the same as "no deploy needed."** It establishes what is registered and nothing about whether the job specs are installed. A deploy interrupted between the upload and the installs leaves a matching registry on an integration that processes no events. Installed state is what Pre-flight and the post-deploy read-back are for.
 
@@ -395,7 +395,7 @@ The app substitutes your per-instance values, uploads the bundle, **installs eve
 
 ### 4d. Create the inbound webhook, then subscribe TSANet to it
 
-**Requires the bundle from app v1.0.72 or later, deployed in 4c.** Older bundles can't read the delivery format registered below. If you deployed before installing v1.0.72, the Current state card's Bundle row reads *Older than the one this app ships*: deploy again.
+**Requires the bundle from app v1.0.72 or later, deployed in 4c.** Older bundles can't read the delivery format registered below. If you deployed before installing v1.0.72, the Current state card's Bundle row reads *Bundle: differs from what this app would deploy*: deploy again.
 
 This is **two API calls, both made by you.** Nothing here is an email to TSANet, and nobody at TSANet does anything on your behalf.
 
@@ -441,7 +441,7 @@ curl -s -X POST "https://connect2.tsanet.net/v2/webhooks" \
 
 Save the `id` from the response, which is what you need to inspect its deliveries (`GET /v1/webhooks/{id}/deliveries`) or remove it (`DELETE /v1/webhooks/{id}`) later. Both live under `/v1/` and work for a v2 subscription. The response also carries `secret`, the HMAC signing key, and it is returned only on creation.
 
-> **One subscription per install, on `/v2/webhooks`.** `/v2/` delivers CloudEvents, which the flow bundle reads from app **v1.0.72**. On an older bundle every delivery fails at `GetCollaboration` with "JSON path not found: requestToken" in the ZIS Integration Log, and no ticket is created. `/v1/webhooks` is deprecated with a sunset of 2027-01-01. **Never keep a v1 and a v2 subscription active at the same time:** each delivers every event, so each new case gets two tickets. If your install already has a `/v1/` subscription, don't add a second one; moving an existing install to v2 is tracked in `tsanetgit/Zendesk_App#101`.
+> **One subscription per install, on `/v2/webhooks`.** `/v2/` delivers CloudEvents, which the flow bundle reads from app **v1.0.72**. On an older bundle every delivery fails at `GetCollaboration` with "JSON path not found: requestToken" in the ZIS Integration Log, and no ticket is created. `/v1/webhooks` is deprecated with a sunset of 2027-01-01. **Never keep a v1 and a v2 subscription active at the same time:** both deliver every event at the same moment, and each creation run looks for a ticket before either has made one, so each new case gets two tickets. If your install already has a `/v1/` subscription, don't add a second one; moving an existing install to v2 is tracked in `tsanetgit/Zendesk_App#101`.
 
 > **Inbound push is live.** TSANet to ZIS delivery uses the `callbackAuth` capability (`tsanetgit/Zendesk_App#2`), delivered in Connect API **v3.1.0** and validated on Beta: authenticated deliveries return 200 and create exactly one ticket per case. You can also exercise the pipeline manually by POSTing a `WebhookPayload`-shaped body to the ingest URL with its Basic credentials.
 
