@@ -55,6 +55,7 @@ credential.
 | ZIS OAuth bearer token | Mint per Quick Start Step 3. Scopes must be `zis:read zis:write`. |
 | TSANet API bearer token | Entra client-credentials grant, per Quick Start Prerequisites. |
 | Old webhook `uuid` | From the create response when the webhook was first set up. |
+| Zendesk OAuth token with the `read` scope | Only for the duplicate check after a rotation (see *Overlap window*). The ZIS token can't read tickets. |
 
 ## Scripted procedure
 
@@ -111,10 +112,20 @@ every future rotation gets full revocation.
 
 ## Overlap window
 
-Between steps 4 and 6 both subscriptions are live and TSANet may deliver each
-event twice. This is safe: `flow_handle_ping` deduplicates by `requestToken`
-(ticket search plus the `GuardCreate` state), so no duplicate tickets are
-created. The window is seconds long under normal operation.
+Between steps 4 and 6 both subscriptions are live and TSANet delivers each
+event to both. The window is seconds long under normal operation, but a case
+created inside it can get **two tickets**: both creation deliveries arrive
+together, each `flow_handle_ping` run looks for an existing ticket before
+either has created one, and both create (`GuardCreate` stops only
+non-creation events, so it lets both through). This was reproduced on Beta with two
+subscriptions on one install (`tsanetgit/Zendesk_App#101`). A note update
+inside the window can also fail with HTTP 409 (`UpdateConflict`) in the ZIS
+Integration Log.
+
+After a rotation, check the cases TSANet created during the window: look up
+each case token with `GET /api/v2/tickets?external_id=<token>`, using a
+Zendesk credential that can read tickets (a ZIS token with only the `zis:`
+scopes gets HTTP 403). A `count` above 1 is a duplicate.
 
 ## Manual fallback
 
@@ -271,12 +282,14 @@ which is what the procedures above are for.
 
 ## Scheduling the rotations
 
-All three rotations are safe to run during business hours (each is
-designed for zero or near-zero delivery downtime). A reasonable baseline:
+All three rotations are designed for zero or near-zero delivery downtime.
+The webhook rotation can still give a case created during its overlap
+window two tickets (see *Overlap window*), so run it when case traffic is
+low and check for duplicates afterwards. A reasonable baseline:
 
 | Credential | Cadence | How |
 |---|---|---|
-| Webhook Basic | Quarterly | cron: `rotate-inbound-webhook.py` |
+| Webhook Basic | Quarterly | cron: `rotate-inbound-webhook.py`, then check for duplicates by hand (see *Overlap window*) |
 | Zendesk OAuth secret | Quarterly | cron: `rotate-zendesk-oauth-secret.py` |
 | Entra secret | Before expiry, at least annually | Calendar + the coordinated procedure above |
 | Connection auth audit | Weekly | cron: `audit-connection-auth.py` (exit non-zero alerts) |
