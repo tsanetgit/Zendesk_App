@@ -581,6 +581,7 @@ ABS = "/" + V1 + WH_REL
     ("requests.get(f'{ts}" + ABS + "/')", "WARN"),
     ("fetch('https://h" + ABS + "/' + id)", "WARN"),
     ("requests.get(ts + '" + ABS + "/%s' % sid)", "WARN"),
+    ("requests.get(f'{ts}" + ABS + "?page=0')", "WARN"),
 ])
 def test_absolute_id_paths_survive_the_sunset_101(tmp_path, call, status):
     root, scan = tree(tmp_path, {"sync.py": call})
