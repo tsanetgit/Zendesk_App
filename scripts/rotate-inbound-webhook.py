@@ -52,6 +52,7 @@ import base64
 import datetime
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -82,11 +83,24 @@ def utc_now(offset=0):
     return (t + datetime.timedelta(seconds=offset)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+RFC3339 = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?"
+                     r"(Z|[+-]\d{2}:\d{2})")
+
+
 def parse_utc(value):
-    """UTC "YYYY-MM-DDTHH:MM:SS[.fraction]Z"; compare these, never strings."""
-    whole = datetime.datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")
-    digits = value[20:].rstrip("Z") if value[19:20] == "." else ""
-    return whole + datetime.timedelta(microseconds=int((digits + "000000")[:6]))
+    """"YYYY-MM-DDTHH:MM:SS[.fraction]" then Z or +HH:MM/-HH:MM, as UTC.
+
+    Raises ValueError on anything else. Compare these, never strings.
+    """
+    m = RFC3339.fullmatch(value)
+    if not m:
+        raise ValueError(f"not a date-time: {value!r}")
+    t = datetime.datetime.strptime(m[1], "%Y-%m-%dT%H:%M:%S")
+    t += datetime.timedelta(microseconds=int(((m[2] or "") + "000000")[:6]))
+    if m[3] != "Z":
+        shift = datetime.timedelta(hours=int(m[3][1:3]), minutes=int(m[3][4:6]))
+        t = t - shift if m[3][0] == "+" else t + shift
+    return t
 
 
 def require_env(*names):
@@ -264,11 +278,15 @@ def sweep(ts, tsanet_token, zd, read_token, since, until):
     found = []
     for case in cases:
         token, created = case.get("token"), case.get("createdAt")
-        if not token or not created:
-            print(f"warning: case {case.get('id')} has no token or createdAt; "
-                  "skipped", file=sys.stderr)
+        try:
+            created_at = parse_utc(created) if token and created else None
+        except (TypeError, ValueError):
+            created_at = None
+        if created_at is None:
+            print(f"warning: case {case.get('id')} has no token or no readable "
+                  "createdAt; skipped", file=sys.stderr)
             continue
-        if not lo <= parse_utc(created) <= hi:
+        if not lo <= created_at <= hi:
             continue
         query = urllib.parse.urlencode({"external_id": token})
         status, tickets = request("GET", f"{zd}/api/v2/tickets.json?{query}",
@@ -326,6 +344,8 @@ def main():
     ap.add_argument("--findings", default=FINDINGS_DEFAULT,
                     help="file to write the sweep's findings to")
     args = ap.parse_args()
+    if args.sweep_wait < 0:
+        die("--sweep-wait takes 0 or more seconds")
 
     if args.sweep:
         if not args.since:
@@ -334,9 +354,11 @@ def main():
                           "ZENDESK_READ_TOKEN")
         until = args.until or utc_now()
         try:
-            parse_utc(args.since), parse_utc(until)
+            reversed_window = parse_utc(args.since) > parse_utc(until)
         except ValueError:
             die("--since and --until take UTC times like 2026-01-01T00:00:00Z")
+        if reversed_window:
+            die("--since is after --until")
         found = sweep(f"https://{env['TSANET_HOST']}", env["TSANET_TOKEN"],
                       f"https://{env['ZENDESK_SUBDOMAIN']}.zendesk.com",
                       env["ZENDESK_READ_TOKEN"], args.since, until)
@@ -501,9 +523,13 @@ def main():
     window_open = not sub_deleted and not webhook_deleted
     swap_ended = None if window_open else utc_now(SWEEP_PAD_AFTER)
     out["swap_window"] = {"since": swap_started, "until": swap_ended}
-    fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # Written aside and renamed over: an interrupted write leaves the first
+    # copy, the only record of the new password, whole.
+    tmp = f"{args.out}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(out, f, indent=2)
+    os.replace(tmp, args.out)
 
     # Printed before the sweep's wait, so an interrupted wait loses nothing.
     store = (f"Store the credentials from {args.out} in your secret manager, "

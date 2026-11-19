@@ -412,3 +412,77 @@ def test_a_failed_post_swap_sweep_only_warns(monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert "cannot look up tickets" in captured.err
     assert "--sweep --since 2026-11-19T11:55:00Z" in captured.out.splitlines()[-1]
+
+
+def test_an_interrupted_window_write_keeps_the_credentials(
+        monkeypatch, tmp_path):
+    mod, _, out, _ = _run(monkeypatch, tmp_path)
+    dump = json.dump
+
+    def disk_full(obj, f, **kw):
+        if "swap_window" in obj:
+            raise OSError("No space left on device")
+        dump(obj, f, **kw)
+
+    monkeypatch.setattr(mod.json, "dump", disk_full)
+    with pytest.raises(OSError):
+        mod.main()
+    # The new subscription is live by now; the password must survive.
+    assert json.loads(out.read_text())["password"] == "p"
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("2026-11-19T12:00:00Z", NOW),
+    ("2026-11-19T07:00:00-05:00", NOW),
+    ("2026-11-19T13:30:00.5+01:30", NOW + datetime.timedelta(seconds=0.5)),
+    ("2026-11-19T12:00:00.1234567Z", NOW + datetime.timedelta(
+        microseconds=123456)),
+])
+def test_parse_utc_reads_offsets_and_fractions(value, expected):
+    assert _load().parse_utc(value) == expected
+
+
+@pytest.mark.parametrize("value", [
+    "2026-11-19T12:00:00", "2026-11-19T12:00:00Zjunk", "2026-11-19T12:00:00.Z",
+    "2026-11-19 12:00:00Z", "2026-11-19T12:00:00+0500"])
+def test_parse_utc_refuses_what_it_cannot_read(value):
+    with pytest.raises(ValueError):
+        _load().parse_utc(value)
+
+
+def test_sweep_window_with_an_offset_covers_the_same_instants(
+        monkeypatch, tmp_path, capsys):
+    mod, _, _, _ = _run(monkeypatch, tmp_path, "--sweep",
+                        "--since", "2026-11-19T06:55:00-05:00",
+                        "--until", "2026-11-19T07:01:00-05:00",
+                        read_token="r", cases=CASES, tickets=TICKETS_BY_TOKEN)
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 3
+    assert "DUPLICATE: case 1 (token dup)" in capsys.readouterr().out
+
+
+def test_an_unreadable_created_at_is_skipped_not_fatal(
+        monkeypatch, tmp_path, capsys):
+    cases = [*CASES, {"id": 9, "token": "dup", "createdAt": "yesterday"}]
+    mod, _, _, _ = _run(monkeypatch, tmp_path, read_token="r", cases=cases,
+                        tickets=TICKETS_BY_TOKEN)
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 3
+    captured = capsys.readouterr()
+    assert "case 9 has no token or no readable createdAt" in captured.err
+    assert "--sweep --since 2026-11-19T11:55:00Z" in captured.out.splitlines()[-1]
+
+
+@pytest.mark.parametrize("argv", [
+    ("--sweep-wait", "-1"),
+    ("--sweep", "--since", "2026-11-19T12:01:00Z",
+     "--until", "2026-11-19T11:55:00Z"),
+])
+def test_bad_sweep_arguments_stop_before_any_call(monkeypatch, tmp_path, argv):
+    mod, calls, out, _ = _run(monkeypatch, tmp_path, *argv, read_token="r")
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 1
+    assert calls == [] and not out.exists()
