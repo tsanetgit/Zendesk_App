@@ -1,12 +1,12 @@
 {
   "_comment": "Written by the Security Review persona. The pre-tag CI job reads this to decide whether a release is covered by a current audit. Do not hand-edit.",
   "schema": 1,
-  "reviewed_commit": "32cbc4b",
-  "reviewed_at": "2026-10-09",
+  "reviewed_commit": "1147273",
+  "reviewed_at": "2026-11-19",
   "taxonomy_version": 4,
   "reviewer": "tsanet-ops-security-review",
   "review_scope": "delta",
-  "self_reviewed": true,
+  "self_reviewed": false,
   "mechanical": {
     "pass": 21,
     "fail": 1,
@@ -18,18 +18,20 @@
     "medium": 0,
     "low": 0
   },
-  "register": 0,
+  "register": 2,
   "open_findings": [
-    "[HIGH][issue lane, existing issue tsanetgit/Zendesk_App#101] v1 webhook management endpoints are removed after 2027-01-01 (spec: POST /v1/webhooks deprecated, x-sunset 2027-01-01, 'This endpoint will be removed after 2027-01-01'; develop and beta). QUICK_START.md:418-435 instructs members to register with /v1/webhooks and explicitly not v2, and scripts/rotate-inbound-webhook.py rotates through v1, so the documented onboarding and inbound-credential rotation paths stop working on that date for certain. Whether TSANet keeps DELIVERING to existing v1 subscriptions after the sunset is not stated in the spec and was not verified; if delivery stops too, inbound ticket creation stops for every unmigrated install (#101's own statement). #101 is labeled enhancement/zis/high-priority but not security, is on no project board, and was last updated 2026-07-31; the release gate's findings query (open issues labeled security) cannot see it. Observable evidence the mechanical signal produced no action: the 97e41f3 record carried this as a 136-day WARN and #101 has had no activity since. Not filed as a new issue: recommended disposition is to label #101 security (+high-priority) and schedule it; acceptance is artifacts, not the label (dual-path bundle accepting v1 pings and v2 CloudEvents during transition, v2 rotation script, an install inventory that does not depend on GET /v1/webhooks, migration released to members before 2027-01-01). Awaiting Shawn's go."
+    "[HIGH][issue lane, existing issue tsanetgit/Zendesk_App#101, carried] v1 webhook list and create are removed after 2027-01-01 (Connect-API-Code 3.2.5, the current production release: GET and POST /v1/webhooks deprecated, x-sunset 2027-01-01). Progress in this window: the inbound flow reads v1 and v2 deliveries (#247), and the rotation script moves an install onto a v2 subscription (#248, #251, #252). Still open against #101's acceptance: member installs are not migrated (needs this release shipped first), and QUICK_START.md at 1147273 still tells members to register on /v1/webhooks and not v2, which the docs change tsanetgit/Zendesk_App#249 corrects after the tag. #101 is labeled security and high-priority and is NOT in accepted_issues, so the release gate reports it as an unaccepted HIGH. Whether to accept it for this release is Shawn's call; this review does not add it (the 32cbc4b record pre-registered that accepting #101 to quiet the gate is a loosening)."
   ],
   "notes": [
-    "DELTA record: extends 97e41f3 across PRs #228, #229, #231, #232, #233 and #237 (git log 97e41f3..32cbc4b). Watched-path drift: zis/tsanet_connect_bundle.json, zaf-build/assets/tsanet_connect_bundle.json, zaf-build/manifest.json (version line only, 1.0.70->1.0.71), scripts/security-audit.py. No .github/workflows change in the window.",
-    "SELF-REVIEWED: the reviewing session also authored #237 (as the Coder persona). independent_pass is false. An independent pass from a separate session would clear this flag.",
-    "#237 (ZIS update path applies the sidebar's Partner and Respond By rules): no findings. Cat3 blast radius unchanged (a forged ping still only triggers a re-fetch of the case by token from TSANet) and writes are narrower (CheckForChanges routes no-change to NoOp; safe_update and updated_stamp kept). Cat4: Partner on INBOUND is now submitCompanyName, the same data class the create path already writes; the tsanet_updated retention selector is still applied. Cat6/live probe on d3v-tsanet (Beta-paired), 2026-10-09, bundle built from the live bundle with only flow_handle_ping changed: partner fix, partner fix plus Respond By clear, outbound no-op, re-ping no-op, tag-only write, and a status transition plus Respond By set, each confirmed from ticket audits. The compared field set equals the written set by construction (one three-element list feeds both). Cat7: no new rendering sink.",
-    "AUDIT TOOLING (#229, #231, #232, #233): differential run on the 32cbc4b tree, the 97e41f3 script versus the 32cbc4b script, gives identical outcomes (21 PASS / 1 WARN / 1 FAIL, same two non-PASS items; only a check name changed). No loosening on this tree. Crediting logic was not exercised beyond this tree.",
-    "MECHANICAL: 21 PASS / 1 WARN / 1 FAIL at 32cbc4b. FAIL = 'no unexcused calls to sunsetting endpoints', nearest sunset 84 days (threshold 90d, security-audit.py SUNSET_FAIL_WITHIN_DAYS): background.html:96 (audit-degrades marker, #153) and scripts/rotate-inbound-webhook.py (owned by #101). This is the check working as designed; it crossed from WARN to FAIL on 2026-10-03. release.yml maps any nonzero audit to flag_coverage, so every release until the v1 calls are removed publishes 'NOT covered by a current security audit'; approving such a release accepts the risk and is recorded on the run. WARN = the degrades-marked background.html:96 call.",
-    "PRE-REGISTERED: the acceptable way to clear the sunset FAIL is removing the v1 calls through #101 and #153. Raising SUNSET_FAIL_WITHIN_DAYS, adding a blanket allow marker, or marking #101 accepted to quiet the gate is not; any of those is a loosening the review would flag.",
-    "NOT VERIFIED: TSANet's v1 delivery behavior after 2027-01-01; member instances' own triggers keyed on ticket updates (they now fire only on real changes); PROD-paired ZIS behavior (only d3v/Beta probed); marker-crediting behavior beyond this tree."
+    "DELTA record: extends 32cbc4b across #238, #240, #241, #242, #245, #246, #247, #248, #250, #251 and #252 (git log 32cbc4b..1147273, 13 commits). Watched-path drift: zis/tsanet_connect_bundle.json and its zaf-build/assets copy (identical after the change), zaf-build/manifest.json (version line only, 1.0.71->1.0.72), scripts/security-audit.py, scripts/rotate-inbound-webhook.py, and comment-only changes to .github/workflows/release.yml, scripts/package.sh, zaf-build/assets/deploy.js.",
+    "INDEPENDENT: the reviewing session authored none of the changes under review (they came from a separate Coder session), so self_reviewed is false and independent_pass is true for this window. It does not re-review #237, which the 32cbc4b record marked self-reviewed.",
+    "#247 (NormalizeEvent): Cat3 blast radius unchanged. A forged delivery still needs the ZIS inbound Basic credential, and the flow still re-fetches the case from TSANet by token. GuardCreate stays an allow-list (StringEquals collaboration-request.created, Default NoOp); only the v2 creation type maps onto it, the other four v2 types fall to the update path or NoOp. New GuardEventToken sends a delivery with no string token to NoOp, a tightening. Cat4: v2 delivery data carries ids and tokens only (Connect-API-Code 3.2.5 WebhookCaseData, WebhookNoteData, WebhookResponseData), so the move to v2 puts no new data class into ZIS integration logs. Cat6: v2 deliveries are HMAC-signed and ZIS still cannot verify the signature (accepted limitation #90); Basic remains the boundary. tests/test_normalize_event.py runs the bundle's jq through the jq CLI for v1 and v2 inputs.",
+    "#248, #251, #252 (rotation onto v2): Cat2. The replacement subscription carries callbackAuth BASIC with the new credential (3.2.5 CreateWebhookSubscriptionV2RequestDTO has callbackAuth). New credentials go to a 0600 file and are never printed. The v2 create response's HMAC secret is neither printed nor stored. Scope is kept: v1 event types map to their v2 names and an unfiltered v1 subscription becomes an explicit two-type list rather than all five v2 types; caseDirections and partnerCompanyIds are copied. Revocation: DELETE /v1/webhooks/{id} is not deprecated and deletes v2 subscriptions too (3.2.5 WebhookService.deleteWebhookSubscription looks the id up in the one subscription table and checks the company). The deployed-bundle check fails closed. The duplicate sweep keeps only case ids, tokens, ticket ids and times. Register rows from this window: the sweep's token scope, and the token guard's breadth.",
+    "#250 (audit tooling): the v1-webhooks pattern now skips paths with an inline id. Matches the spec: in 3.2.5 only GET and POST /v1/webhooks are deprecated, and every /v1/webhooks/{id} operation (DELETE, POST secret, GET deliveries) is not. Differential on the 1147273 tree, the e649920^ script versus the 1147273 script: byte-identical output. tests/test_security_audit.py pins both sides (id forms pass; list, create, query string, joined id and unnamed placeholders still flag). No loosening.",
+    "MECHANICAL: 21 PASS / 1 WARN / 1 FAIL at 1147273 (network run). FAIL = 'no unexcused calls to sunsetting endpoints', 43 days to 2027-01-01: zaf-build/assets/background.html:96 (#153), scripts/rotate-inbound-webhook.py:161 GET /v1/webhooks (#101) and its test fixture tests/test_rotate_inbound_webhook.py:17. The check keeps failing after the date passes (days <= threshold), so it clears only when those calls are deleted. The rotation script's v1 list is needed to find v1 subscriptions while installs migrate, so it is the last of the three to go. release.yml maps any nonzero audit to flag_coverage, so every release until then publishes 'NOT covered by a current security audit'; approving one accepts that risk on the run. The 32cbc4b pre-registration stands: raising SUNSET_FAIL_WITHIN_DAYS, a blanket marker, or accepting #101 to quiet the gate would be a loosening.",
+    "TAG: this record covers 1147273. Tag the commit that carries this record (its watched-path diff from 1147273 is empty), not 1147273 itself, whose .security-audit.json still reads 32cbc4b.",
+    "DEV TOOLING (#245, informational, no finding): .claude/settings.json enables the tsanetgit/ai-devkit plugin marketplace with autoUpdate true. It is not in the shipped zip (package.sh packages manifest.json, assets/ and translations/), but it runs on developer hosts that hold release rights. Its source is a tsanetgit repo, the same trust domain as this one, and release publishing stays gated on the release environment.",
+    "NOT VERIFIED: whether ZIS URL-encodes {{$.requestToken}} in action_get_collaboration (register row); whether tickets:read covers GET /api/v2/tickets?external_id= (register row); TSANet's v1 delivery behavior after 2027-01-01; PROD-paired ZIS behavior with v2 deliveries (the Coder session's end-to-end runs were on BETA and its paired test instance, not repeated here)."
   ],
   "accepted_issues": [
     96,
@@ -37,11 +39,13 @@
     140,
     153
   ],
-  "independent_pass": false,
+  "independent_pass": true,
   "marked_calls": {
-    "count": 1,
+    "count": 3,
     "sites": [
-      "zaf-build/assets/background.html:96 - GET /v1/webhooks, marker `audit-degrades: v1-webhooks until 2027-01-01 tracked-by tsanetgit/Zendesk_App#153`, sunset 2027-01-01, shipped in the bundle members install. Since 2026-10-03 it is inside the 90-day window: reported by the degrades WARN and by the sunsetting FAIL. Deleting it is tracked by #153."
+      "zaf-build/assets/background.html:96 - GET /v1/webhooks, marker `audit-degrades: v1-webhooks until 2027-01-01 tracked-by tsanetgit/Zendesk_App#153`, shipped in the bundle members install. Once v1 is removed the v2 answer beside it is discarded (the code comment says so); deleting the call is #153.",
+      "scripts/rotate-inbound-webhook.py:161 - GET /v1/webhooks, marker tracked-by tsanetgit/Zendesk_App#101. Operator tool, not shipped in the zip. Stops the run if v1 cannot be listed before the sunset, warns and continues on v2 after it.",
+      "tests/test_rotate_inbound_webhook.py:17 - the test fixture for the call above, marker tracked-by tsanetgit/Zendesk_App#101. Goes with it."
     ]
   }
 }
