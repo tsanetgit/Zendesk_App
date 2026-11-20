@@ -381,7 +381,7 @@ The app substitutes your per-instance values, uploads the bundle, **installs eve
 >
 > Only the Bundle row bears on the decision, and it is driven by comparing the bundle's **actual contents**, never by comparing version numbers. That distinction is deliberate: between v1.0.54 and v1.0.60 there were six releases in which the ZIS bundle did not change once, so a version comparison would have asked every member to redeploy six times for no functional change. The two version rows are reference only and can never disable the Deploy button.
 >
-> The Bundle row distinguishes three answers, because the remedy differs for each. *Older than the one this app ships* means a genuinely different bundle generation, so deploy. *App settings changed since it was deployed* means the bundle is the right generation but was built with different values, so deploy to pick them up. *Not deployed yet* means the registry has nothing to compare.
+> The Bundle row distinguishes three answers, because the remedy differs for each. *Differs from what this app would deploy* means a genuinely different bundle generation, so deploy. *App settings changed since it was deployed* means the bundle is the right generation but was built with different values, so deploy to pick them up. *Not deployed yet* means the registry has nothing to compare.
 >
 > **"Matches what this app would deploy" is not the same as "no deploy needed."** It establishes what is registered and nothing about whether the job specs are installed. A deploy interrupted between the upload and the installs leaves a matching registry on an integration that processes no events. Installed state is what Pre-flight and the post-deploy read-back are for.
 
@@ -394,6 +394,8 @@ The app substitutes your per-instance values, uploads the bundle, **installs eve
 > **Job specs no longer need a manual install.** Earlier revisions of this guide had you `POST .../job_specs/install` for `jobspec_handle_ping` by hand, and repeat it after every upload. The app now installs every job spec the bundle declares, on every deploy, and confirms it. Skip any older instructions that ask you to do it with curl.
 
 ### 4d. Create the inbound webhook, then subscribe TSANet to it
+
+**Requires the bundle from app v1.0.72 or later, deployed in 4c.** Older bundles can't read the delivery format registered below. If you deployed before installing v1.0.72, the Current state card's Bundle row reads *Bundle: differs from what this app would deploy*: deploy again.
 
 This is **two API calls, both made by you.** Nothing here is an email to TSANet, and nobody at TSANet does anything on your behalf.
 
@@ -418,11 +420,15 @@ curl -s -X POST \
 Authenticate with your TSANet API account, the same one the sidebar app uses. Get a token from `POST /v1/login`, then:
 
 ```bash
-curl -s -X POST "https://connect2.tsanet.net/v1/webhooks" \
+curl -s -X POST "https://connect2.tsanet.net/v2/webhooks" \
   -H "Authorization: Bearer YOUR_TSANET_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "callbackUrl": "THE_INGEST_URL_FROM_CALL_1",
+    "eventTypes": [
+      "org.tsanet.connect.collaboration-request.created",
+      "org.tsanet.connect.collaboration-request.note.created"
+    ],
     "callbackAuth": {
       "type": "BASIC",
       "username": "THE_BASIC_USERNAME_FROM_CALL_1",
@@ -431,11 +437,11 @@ curl -s -X POST "https://connect2.tsanet.net/v1/webhooks" \
   }'
 ```
 
-`connect2.tsanet.net` is Beta; Production is `connect2.tsanet.org`. Leave `eventTypes` out: omitted means both `collaboration-request.created` and `note.created`, which is what the flow bundle expects.
+`connect2.tsanet.net` is Beta; Production is `connect2.tsanet.org`. List both `eventTypes` exactly as shown: if you leave them out, TSANet sends all five v2 event types, and the other three haven't been tested with the flow bundle.
 
-Save the `id` from the response, which is what you need to inspect or remove the subscription later. The response also carries `secret`, the HMAC signing key, and it is returned only on creation.
+Save the `id` from the response, which is what you need to inspect its deliveries (`GET /v1/webhooks/{id}/deliveries`) or remove it (`DELETE /v1/webhooks/{id}`) later. Both live under `/v1/` and work for a v2 subscription. The response also carries `secret`, the HMAC signing key, and it is returned only on creation.
 
-> **Use `/v1/webhooks`, not `/v2/webhooks`.** Both endpoints exist and both will accept your subscription, which makes this easy to get wrong and hard to notice. `/v2/` delivers CloudEvents, whose event type strings are prefixed (`org.tsanet.connect.collaboration-request.created`). The flow bundle matches the unprefixed V1 name, so on a `/v2/` subscription every delivery is accepted, returns 200, and then falls through to a no-op: **no ticket is ever created and nothing reports an error.** `/v1/webhooks` is deprecated with a sunset of 2027-01-01; migrating the flow and existing subscriptions to CloudEvents is tracked in `tsanetgit/Zendesk_App#101` and will ship with a future app release. Until then `/v1/` is the correct choice.
+> **One subscription per install, on `/v2/webhooks`.** `/v2/` delivers CloudEvents, which the flow bundle reads from app **v1.0.72**. On an older bundle every delivery fails at `GetCollaboration` with "JSON path not found: requestToken" in the ZIS Integration Log, and no ticket is created. `/v1/webhooks` is deprecated with a sunset of 2027-01-01. **Never keep a v1 and a v2 subscription active at the same time:** both deliver every event at the same moment, and each creation run looks for a ticket before either has made one, so each new case gets two tickets. If your install already has a `/v1/` subscription, don't add a second one; moving an existing install to v2 is tracked in `tsanetgit/Zendesk_App#101`.
 
 > **Inbound push is live.** TSANet to ZIS delivery uses the `callbackAuth` capability (`tsanetgit/Zendesk_App#2`), delivered in Connect API **v3.1.0** and validated on Beta: authenticated deliveries return 200 and create exactly one ticket per case. You can also exercise the pipeline manually by POSTing a `WebhookPayload`-shaped body to the ingest URL with its Basic credentials.
 
